@@ -10,5 +10,9 @@ export default defineConfig({
     include: ['tests/**/*.test.{ts,tsx}'],
     exclude: ['tests/e2e/**'],
     testTimeout: 15000,
+    environmentMatchGlobs: [
+      ['tests/integration/**', 'node'],
+    ],
+    fileParallelism: false,
   },
 })
