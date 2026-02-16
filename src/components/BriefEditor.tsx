@@ -3,6 +3,9 @@ import { api } from '../lib/api'
 import { Upload, X, ImageIcon, FolderOpen, Tag, Loader2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useCallback, useRef, useState } from 'react'
+import { downscaleImages, filterImageFiles } from '../lib/imageUtils'
+
+const BATCH_SIZE = 5
 
 export function BriefEditor() {
   const project = useProjectStore((s) => s.activeProject())
@@ -12,19 +15,40 @@ export function BriefEditor() {
   const updateAssetLabel = useProjectStore((s) => s.updateAssetLabel)
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
 
   const handleUpload = useCallback(
-    async (files: File[]) => {
-      if (!project || files.length === 0) return
+    async (rawFiles: File[]) => {
+      if (!project || rawFiles.length === 0) return
+
+      // Filter to images only (important for folder selection)
+      const imageFiles = filterImageFiles(rawFiles)
+      if (imageFiles.length === 0) return
+
       setUploading(true)
+      setUploadProgress({ done: 0, total: imageFiles.length })
+
       try {
-        await api.assets.upload(project.id, files)
+        // Process in batches
+        for (let i = 0; i < imageFiles.length; i += BATCH_SIZE) {
+          const batch = imageFiles.slice(i, i + BATCH_SIZE)
+
+          // Downscale images in this batch
+          const compressed = await downscaleImages(batch)
+
+          // Upload batch
+          await api.assets.upload(project.id, compressed)
+          setUploadProgress({ done: Math.min(i + BATCH_SIZE, imageFiles.length), total: imageFiles.length })
+        }
+
         await loadProject(project.id)
       } catch (e) {
         console.error('Upload failed:', e)
       } finally {
         setUploading(false)
+        setUploadProgress({ done: 0, total: 0 })
       }
     },
     [project, loadProject]
@@ -122,6 +146,16 @@ export function BriefEditor() {
             onChange={handleFileInputChange}
             className="hidden"
           />
+          {/* Hidden folder input */}
+          {/* @ts-expect-error webkitdirectory is non-standard but widely supported */}
+          <input
+            ref={folderInputRef}
+            type="file"
+            multiple
+            webkitdirectory=""
+            onChange={handleFileInputChange}
+            className="hidden"
+          />
 
           {/* Drop zone */}
           <div
@@ -149,11 +183,23 @@ export function BriefEditor() {
               </div>
               <div>
                 <p className="text-sm font-medium">
-                  {uploading ? 'Загрузка...' : 'Перетащите файлы или папку сюда'}
+                  {uploading
+                    ? `Загрузка... ${uploadProgress.done}/${uploadProgress.total}`
+                    : 'Перетащите файлы или папку сюда'}
                 </p>
                 <p className="text-xs text-text-muted mt-1">
-                  JPG, PNG, WebP — рендеры, скриншоты, референсы
+                  {uploading
+                    ? 'Изображения сжимаются и загружаются пакетами'
+                    : 'JPG, PNG, WebP — рендеры, скриншоты, референсы (автосжатие до 1920px)'}
                 </p>
+                {uploading && uploadProgress.total > 0 && (
+                  <div className="w-48 h-1.5 bg-surface-3 rounded-full mt-2 mx-auto overflow-hidden">
+                    <div
+                      className="h-full bg-amber rounded-full transition-all duration-300"
+                      style={{ width: `${(uploadProgress.done / uploadProgress.total) * 100}%` }}
+                    />
+                  </div>
+                )}
               </div>
               <div className="flex gap-2 mt-2">
                 <button
@@ -164,7 +210,11 @@ export function BriefEditor() {
                   <ImageIcon size={13} />
                   Выбрать файлы
                 </button>
-                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3/80 transition-colors">
+                <button
+                  onClick={() => folderInputRef.current?.click()}
+                  disabled={uploading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3/80 transition-colors disabled:opacity-50"
+                >
                   <FolderOpen size={13} />
                   Выбрать папку
                 </button>
@@ -195,6 +245,7 @@ export function BriefEditor() {
                       <img
                         src={api.assets.url(project.id, asset.filename)}
                         alt={asset.label || asset.filename}
+                        loading="lazy"
                         className="w-full h-full object-cover"
                         onError={(e) => {
                           // Fallback to icon on error
