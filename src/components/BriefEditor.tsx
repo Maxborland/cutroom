@@ -1,9 +1,10 @@
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import { Upload, X, ImageIcon, FolderOpen, Tag, Loader2 } from 'lucide-react'
+import { Upload, X, ImageIcon, FolderOpen, Tag, Loader2, Wand2, Trash2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useCallback, useRef, useState } from 'react'
 import { downscaleImages, filterImageFiles } from '../lib/imageUtils'
+import { useLightboxStore } from '../stores/lightboxStore'
 
 const BATCH_SIZE = 5
 
@@ -13,6 +14,10 @@ export function BriefEditor() {
   const loadProject = useProjectStore((s) => s.loadProject)
   const removeBriefAsset = useProjectStore((s) => s.removeBriefAsset)
   const updateAssetLabel = useProjectStore((s) => s.updateAssetLabel)
+  const describeAllAssets = useProjectStore((s) => s.describeAllAssets)
+  const describeOneAsset = useProjectStore((s) => s.describeOneAsset)
+  const cancelDescribe = useProjectStore((s) => s.cancelDescribe)
+  const describeProgress = useProjectStore((s) => s.describeProgress)
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
@@ -44,8 +49,10 @@ export function BriefEditor() {
         }
 
         await loadProject(project.id)
+        useToastStore.getState().addToast('success', 'Файлы загружены', `${imageFiles.length} изображений добавлено в бриф`)
       } catch (e) {
         console.error('Upload failed:', e)
+        useToastStore.getState().addToast('error', 'Ошибка загрузки', String(e))
       } finally {
         setUploading(false)
         setUploadProgress({ done: 0, total: 0 })
@@ -101,6 +108,25 @@ export function BriefEditor() {
     [project, removeBriefAsset]
   )
 
+  const handleDescribeAll = useCallback(() => {
+    describeAllAssets()
+  }, [describeAllAssets])
+
+  const handleCancelDescribe = useCallback(() => {
+    cancelDescribe()
+  }, [cancelDescribe])
+
+  const handleDescribeOne = useCallback((assetId: string) => {
+    describeOneAsset(assetId)
+  }, [describeOneAsset])
+
+  const handleRemoveAll = useCallback(async () => {
+    if (!project) return
+    for (const asset of [...project.brief.assets]) {
+      removeBriefAsset(project.id, asset.id)
+    }
+  }, [project, removeBriefAsset])
+
   if (!project) return null
 
   return (
@@ -132,9 +158,55 @@ export function BriefEditor() {
               02
             </span>
             <h2 className="font-display font-semibold text-base">Ассеты</h2>
-            <span className="ml-auto font-mono text-xs text-text-muted">
+            <span className="ml-auto font-mono text-xs text-text-muted mr-2">
               {project.brief.assets.length} файлов
             </span>
+            {project.brief.assets.length > 0 && (
+              <div className="flex items-center gap-1">
+                {describeProgress.active && describeProgress.total > 1 ? (
+                  /* Progress indicator during bulk describe */
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] bg-amber-dim text-amber">
+                      <Loader2 size={11} className="animate-spin" />
+                      <span className="font-mono">{describeProgress.done}/{describeProgress.total}</span>
+                    </div>
+                    <div className="w-24 h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full bg-amber rounded-full"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(describeProgress.done / describeProgress.total) * 100}%` }}
+                        transition={{ duration: 0.3 }}
+                      />
+                    </div>
+                    <button
+                      onClick={handleCancelDescribe}
+                      title="Остановить"
+                      className="p-1 rounded hover:bg-rose-dim text-rose transition-colors"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleDescribeAll}
+                    disabled={describeProgress.active}
+                    title="Авто-описание всех"
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] bg-amber-dim text-amber hover:bg-amber/20 transition-colors disabled:opacity-50"
+                  >
+                    <Wand2 size={11} />
+                    Описать все
+                  </button>
+                )}
+                <button
+                  onClick={handleRemoveAll}
+                  disabled={describeProgress.active}
+                  title="Удалить все"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-rose hover:bg-rose-dim transition-colors disabled:opacity-50"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Hidden file input */}
@@ -238,10 +310,20 @@ export function BriefEditor() {
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 20 }}
                     transition={{ delay: i * 0.05 }}
-                    className="flex items-center gap-3 bg-surface-2 border border-border rounded-lg p-3 group hover:border-border-hover transition-colors"
+                    className={`flex items-center gap-3 bg-surface-2 border rounded-lg p-3 group transition-colors ${
+                      describeProgress.currentId === asset.id
+                        ? 'border-amber/30 ring-1 ring-amber/10'
+                        : 'border-border hover:border-border-hover'
+                    }`}
                   >
                     {/* Thumbnail */}
-                    <div className="w-12 h-12 rounded-md bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden">
+                    <div
+                      className="w-12 h-12 rounded-md bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                      onClick={() => {
+                        const allUrls = project.brief.assets.map((a) => api.assets.url(project.id, a.filename))
+                        useLightboxStore.getState().show(allUrls, i)
+                      }}
+                    >
                       <img
                         src={api.assets.url(project.id, asset.filename)}
                         alt={asset.label || asset.filename}
@@ -276,6 +358,22 @@ export function BriefEditor() {
                     <span className="font-mono text-[10px] text-text-muted bg-surface-3 px-2 py-0.5 rounded">
                       #{i + 1}
                     </span>
+
+                    {/* Auto-describe */}
+                    <button
+                      onClick={() => handleDescribeOne(asset.id)}
+                      disabled={describeProgress.active}
+                      title="Авто-описание"
+                      className={`p-1 rounded hover:bg-amber-dim transition-all disabled:opacity-50 ${
+                        describeProgress.currentId === asset.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                    >
+                      {describeProgress.currentId === asset.id ? (
+                        <Loader2 size={14} className="text-amber animate-spin" />
+                      ) : (
+                        <Wand2 size={14} className="text-amber" />
+                      )}
+                    </button>
 
                     {/* Remove */}
                     <button

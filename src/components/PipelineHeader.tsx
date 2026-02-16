@@ -53,7 +53,7 @@ export function PipelineHeader({ activeView }: PipelineHeaderProps) {
       <div className="flex items-center gap-4">
         <h1 className="font-display font-bold text-lg">{VIEW_TITLES[activeView] ?? activeView}</h1>
 
-        {activeView === 'shots' && stats.total > 0 && (
+        {(activeView === 'shots' || activeView === 'review') && stats.total > 0 && (
           <div className="flex items-center gap-3 ml-4">
             <div className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full bg-emerald" />

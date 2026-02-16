@@ -1,18 +1,37 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
-import { Key, Brain, Wand2, Save, Loader2, CheckCircle2 } from 'lucide-react'
+import { Key, Brain, Wand2, Save, Loader2, CheckCircle2, Sparkles, Maximize2 } from 'lucide-react'
 import { ModelSelect } from './ModelSelect'
+
+const SIZE_OPTIONS = [
+  { value: 'auto', label: 'Auto (модель выбирает)' },
+  { value: '1024x1024', label: '1024×1024' },
+  { value: '1536x1024', label: '1536×1024 (ландшафт)' },
+  { value: '1024x1536', label: '1024×1536 (портрет)' },
+]
+
+const QUALITY_OPTIONS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High (4K)' },
+]
 
 export function SettingsView() {
   const [apiKey, setApiKey] = useState('')
   const [textModel, setTextModel] = useState('openai/gpt-4o')
   const [imageModel, setImageModel] = useState('openai/gpt-image-1')
+  const [enhanceModel, setEnhanceModel] = useState('openai/gpt-image-1')
+  const [imageSize, setImageSize] = useState('auto')
+  const [imageQuality, setImageQuality] = useState('high')
+  const [enhanceSize, setEnhanceSize] = useState('auto')
+  const [enhanceQuality, setEnhanceQuality] = useState('high')
   const [scriptPrompt, setScriptPrompt] = useState(
     'Ты опытный сценарист рекламных роликов. Пиши кинематографично, описывай движения камеры. При наличии изображений — ссылайся на них по имени файла.'
   )
   const [splitterPrompt, setSplitterPrompt] = useState(
     'Раздели сценарий на отдельные шоты. Каждый шот = один непрерывный кадр. Укажи файлы изображений через "Используем: filename".'
   )
+  const [enhancePrompt, setEnhancePrompt] = useState('')
   const [textModels, setTextModels] = useState<{ id: string; name: string }[]>([])
   const [imageModels, setImageModels] = useState<{ id: string; name: string }[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -29,8 +48,14 @@ export function SettingsView() {
         if (settings.openRouterApiKey) setApiKey(settings.openRouterApiKey)
         if (settings.defaultTextModel) setTextModel(settings.defaultTextModel)
         if (settings.defaultImageModel) setImageModel(settings.defaultImageModel)
+        if (settings.defaultEnhanceModel) setEnhanceModel(settings.defaultEnhanceModel)
+        if (settings.imageSize) setImageSize(settings.imageSize)
+        if (settings.imageQuality) setImageQuality(settings.imageQuality)
+        if (settings.enhanceSize) setEnhanceSize(settings.enhanceSize)
+        if (settings.enhanceQuality) setEnhanceQuality(settings.enhanceQuality)
         if (settings.masterPromptScriptwriter) setScriptPrompt(settings.masterPromptScriptwriter)
         if (settings.masterPromptShotSplitter) setSplitterPrompt(settings.masterPromptShotSplitter)
+        if (settings.masterPromptEnhance) setEnhancePrompt(settings.masterPromptEnhance)
       })
       .catch((e) => {
         setError(e.message)
@@ -61,8 +86,14 @@ export function SettingsView() {
         openRouterApiKey: apiKey,
         defaultTextModel: textModel,
         defaultImageModel: imageModel,
+        defaultEnhanceModel: enhanceModel,
+        imageSize,
+        imageQuality,
+        enhanceSize,
+        enhanceQuality,
         masterPromptScriptwriter: scriptPrompt,
         masterPromptShotSplitter: splitterPrompt,
+        masterPromptEnhance: enhancePrompt,
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
@@ -129,7 +160,84 @@ export function SettingsView() {
               loading={modelsLoading}
               placeholder="openai/gpt-image-1"
             />
+            <ModelSelect
+              label="Модель постобработки (Enhance)"
+              value={enhanceModel}
+              onChange={setEnhanceModel}
+              models={imageModels}
+              loading={modelsLoading}
+              placeholder="openai/gpt-image-1"
+            />
           </div>
+        </section>
+
+        {/* Image Size & Quality */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <Maximize2 size={14} className="text-amber" />
+            <h2 className="font-display font-semibold text-base">Размер и качество</h2>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                Размер генерации
+              </label>
+              <select
+                value={imageSize}
+                onChange={(e) => setImageSize(e.target.value)}
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-amber/30 transition-all"
+              >
+                {SIZE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                Качество генерации
+              </label>
+              <select
+                value={imageQuality}
+                onChange={(e) => setImageQuality(e.target.value)}
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-amber/30 transition-all"
+              >
+                {QUALITY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                Размер Enhance
+              </label>
+              <select
+                value={enhanceSize}
+                onChange={(e) => setEnhanceSize(e.target.value)}
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-amber/30 transition-all"
+              >
+                {SIZE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                Качество Enhance
+              </label>
+              <select
+                value={enhanceQuality}
+                onChange={(e) => setEnhanceQuality(e.target.value)}
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-amber/30 transition-all"
+              >
+                {QUALITY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="text-[10px] text-text-muted mt-2">
+            Auto — модель сама выбирает пропорции. High (4K) — максимальное разрешение и детализация.
+          </p>
         </section>
 
         {/* Master prompts */}
@@ -169,6 +277,30 @@ export function SettingsView() {
                 шотам по имени.
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* Enhance prompt */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={14} className="text-amber" />
+            <h2 className="font-display font-semibold text-base">Мастер реализма</h2>
+          </div>
+          <div>
+            <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+              Промпт постобработки (Enhance)
+            </label>
+            <textarea
+              value={enhancePrompt}
+              onChange={(e) => setEnhancePrompt(e.target.value)}
+              rows={8}
+              placeholder="Промпт для превращения рендера в фотореалистичное изображение..."
+              className="w-full bg-surface-2 border border-border rounded-lg px-4 py-3 text-sm text-text-primary resize-none focus:outline-none focus:border-amber/30 transition-all leading-relaxed"
+            />
+            <p className="text-[10px] text-text-muted mt-1">
+              Используется при постобработке сгенерированных изображений. Если пусто — применяется
+              дефолтный промпт для фотореализма.
+            </p>
           </div>
         </section>
 

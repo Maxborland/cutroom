@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import type { ShotStatus } from '../types'
 import { useRef, useState } from 'react'
+import { useLightboxStore } from '../stores/lightboxStore'
 
 interface ShotDetailProps {
   onClose: () => void
@@ -37,8 +38,11 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   const updateShot = useProjectStore((s) => s.updateShot)
   const updateShotStatus = useProjectStore((s) => s.updateShotStatus)
   const generateImage = useProjectStore((s) => s.generateImage)
+  const enhanceImage = useProjectStore((s) => s.enhanceImage)
+  const cancelGeneration = useProjectStore((s) => s.cancelGeneration)
   const loadProject = useProjectStore((s) => s.loadProject)
-  const [generating, setGenerating] = useState(false)
+  const generatingShotIds = useProjectStore((s) => s.generatingShotIds)
+  const enhancingShotIds = useProjectStore((s) => s.enhancingShotIds)
   const [uploadingVideo, setUploadingVideo] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
@@ -54,13 +58,15 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     if (next) setActiveShotId(next.id)
   }
 
-  const handleGenerate = async () => {
-    setGenerating(true)
-    try {
-      await generateImage(shot.id)
-    } finally {
-      setGenerating(false)
-    }
+  const generating = shot ? generatingShotIds.has(shot.id) : false
+  const enhancing = shot ? enhancingShotIds.has(shot.id) : false
+
+  const handleGenerate = () => {
+    generateImage(shot.id)
+  }
+
+  const handleEnhance = (sourceImage: string) => {
+    enhanceImage(shot.id, sourceImage)
   }
 
   const handleCopy = async (text: string, label: string) => {
@@ -166,7 +172,14 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                   key={asset.id}
                   className="flex items-center gap-3 bg-surface-2 border border-border rounded-lg p-2.5"
                 >
-                  <div className="w-10 h-10 rounded bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden">
+                  <div
+                    className="w-10 h-10 rounded bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                    onClick={() => {
+                      const urls = linkedAssets.map((a) => api.assets.url(project.id, a.filename))
+                      const idx = linkedAssets.indexOf(asset)
+                      useLightboxStore.getState().show(urls, idx)
+                    }}
+                  >
                     <img
                       src={api.assets.url(project.id, asset.filename)}
                       alt={asset.label || asset.filename}
@@ -268,9 +281,59 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           {shot.generatedImages.length > 0 ? (
             <div className="grid grid-cols-2 gap-2">
               {shot.generatedImages.map((img, i) => (
+                <div key={i} className="space-y-1.5">
+                  <div
+                    className="aspect-video bg-surface-3 rounded-lg border border-border flex items-center justify-center overflow-hidden cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                    onClick={() => {
+                      const urls = shot.generatedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
+                      useLightboxStore.getState().show(urls, i)
+                    }}
+                  >
+                    <img
+                      src={api.shots.generatedImageUrl(project.id, shot.id, img)}
+                      alt={img}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement
+                        target.style.display = 'none'
+                        target.parentElement!.innerHTML = `<span class="font-mono text-[10px] text-text-muted">${img}</span>`
+                      }}
+                    />
+                  </div>
+                  <button
+                    onClick={() => handleEnhance(img)}
+                    disabled={enhancing}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-gradient-to-r from-violet/20 to-amber/20 text-amber hover:from-violet/30 hover:to-amber/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {enhancing ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <Sparkles size={10} />
+                    )}
+                    {enhancing ? 'Обработка...' : 'Enhance'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="border border-dashed border-border rounded-lg p-6 text-center">
+              <p className="text-xs text-text-muted">Изображения ещё не сгенерированы</p>
+            </div>
+          )}
+        </Field>
+
+        {/* Enhanced images */}
+        {shot.enhancedImages && shot.enhancedImages.length > 0 && (
+          <Field icon={<Sparkles size={13} />} label="Постобработка (Enhance)">
+            <div className="grid grid-cols-2 gap-2">
+              {shot.enhancedImages.map((img, i) => (
                 <div
                   key={i}
-                  className="aspect-video bg-surface-3 rounded-lg border border-border flex items-center justify-center overflow-hidden"
+                  className="aspect-video bg-surface-3 rounded-lg border border-emerald/20 flex items-center justify-center overflow-hidden cursor-pointer hover:ring-2 hover:ring-emerald/40 transition-all"
+                  onClick={() => {
+                    const urls = shot.enhancedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
+                    useLightboxStore.getState().show(urls, i)
+                  }}
                 >
                   <img
                     src={api.shots.generatedImageUrl(project.id, shot.id, img)}
@@ -285,12 +348,8 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                 </div>
               ))}
             </div>
-          ) : (
-            <div className="border border-dashed border-border rounded-lg p-6 text-center">
-              <p className="text-xs text-text-muted">Изображения ещё не сгенерированы</p>
-            </div>
-          )}
-        </Field>
+          </Field>
+        )}
 
         {/* Video */}
         <Field icon={<Play size={13} />} label="Видео">
@@ -340,9 +399,18 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           </button>
         )}
         {shot.status === 'generating' && (
-          <div className="flex items-center gap-2 text-violet text-xs">
-            <div className="w-3 h-3 rounded-full border-2 border-violet border-t-transparent animate-spin" />
-            Генерация в процессе...
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-violet text-xs">
+              <div className="w-3 h-3 rounded-full border-2 border-violet border-t-transparent animate-spin" />
+              Генерация в процессе...
+            </div>
+            <button
+              onClick={() => cancelGeneration(shot.id)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <X size={12} />
+              Отменить
+            </button>
           </div>
         )}
         {shot.status === 'review' && (

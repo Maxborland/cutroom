@@ -4,8 +4,11 @@ import { PipelineHeader } from './components/PipelineHeader'
 import { BriefEditor } from './components/BriefEditor'
 import { ScriptView } from './components/ScriptView'
 import { ShotBoard } from './components/ShotBoard'
+import { ReviewView } from './components/ReviewView'
 import { ExportView } from './components/ExportView'
 import { SettingsView } from './components/SettingsView'
+import { Toaster } from './components/Toaster'
+import { Lightbox } from './components/Lightbox'
 import { useProjectStore } from './stores/projectStore'
 import { Clapperboard, Plus, Loader2 } from 'lucide-react'
 
@@ -46,8 +49,9 @@ function App() {
       case 'script':
         return <ScriptView />
       case 'shots':
-      case 'review':
         return <ShotBoard />
+      case 'review':
+        return <ReviewView />
       case 'export':
         return <ExportView />
       case 'settings':
@@ -131,6 +135,8 @@ function App() {
         <PipelineHeader activeView={activeView} />
         {renderView()}
       </main>
+      <Toaster />
+      <Lightbox />
     </div>
   )
 }

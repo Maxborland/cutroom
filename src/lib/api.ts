@@ -38,6 +38,14 @@ export const api = {
       request<void>(`/projects/${projectId}/assets/${assetId}`, { method: 'DELETE' }),
     url: (projectId: string, filename: string) =>
       `${BASE}/projects/${projectId}/assets/file/${encodeURIComponent(filename)}`,
+    updateLabel: (projectId: string, assetId: string, label: string) =>
+      request<any>(`/projects/${projectId}/assets/${assetId}/label`, {
+        method: 'PUT', body: JSON.stringify({ label }),
+      }),
+    describe: (projectId: string, assetId: string) =>
+      request<{ id: string; label: string }>(`/projects/${projectId}/assets/${assetId}/describe`, { method: 'POST' }),
+    describeAll: (projectId: string) =>
+      request<{ described: number; total: number }>(`/projects/${projectId}/assets/describe-all`, { method: 'POST' }),
   },
   generate: {
     script: (projectId: string) =>
@@ -46,6 +54,17 @@ export const api = {
       request<{ shots: any[] }>(`/projects/${projectId}/split-shots`, { method: 'POST' }),
     image: (projectId: string, shotId: string) =>
       request<any>(`/projects/${projectId}/shots/${shotId}/generate-image`, { method: 'POST' }),
+    cancelImage: (projectId: string, shotId: string) =>
+      request<any>(`/projects/${projectId}/shots/${shotId}/cancel-generation`, { method: 'POST' }),
+    cancelAll: (projectId: string) =>
+      request<any>(`/projects/${projectId}/cancel-all-generation`, { method: 'POST' }),
+    enhance: (projectId: string, shotId: string, sourceImage: string) =>
+      request<{ filename: string; url: string }>(`/projects/${projectId}/shots/${shotId}/enhance-image`, {
+        method: 'POST',
+        body: JSON.stringify({ sourceImage }),
+      }),
+    enhanceAll: (projectId: string) =>
+      request<{ enhanced: number; total: number }>(`/projects/${projectId}/enhance-all`, { method: 'POST' }),
   },
   shots: {
     update: (projectId: string, shotId: string, data: any) =>

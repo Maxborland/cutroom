@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import type { Project, Shot, ShotStatus, PipelineStage, BriefAsset } from '../types'
 import { api } from '../lib/api'
+import { useToastStore } from './toastStore'
+
+const toast = (type: 'success' | 'info' | 'error', title: string, description?: string) =>
+  useToastStore.getState().addToast(type, title, description)
 
 interface ProjectState {
   projects: Project[]
@@ -8,6 +12,11 @@ interface ProjectState {
   activeShotId: string | null
   loading: boolean
   error: string | null
+
+  // Track in-flight async operations (survives page navigation)
+  generatingShotIds: Set<string>
+  enhancingShotIds: Set<string>
+  describeProgress: { active: boolean; currentId: string | null; done: number; total: number }
 
   activeProject: () => Project | null
   activeShot: () => Shot | null
@@ -19,6 +28,13 @@ interface ProjectState {
   generateScript: () => Promise<void>
   splitShots: () => Promise<void>
   generateImage: (shotId: string) => Promise<void>
+  enhanceImage: (shotId: string, sourceImage: string) => Promise<void>
+  enhanceAll: () => Promise<void>
+  cancelGeneration: (shotId: string) => Promise<void>
+  cancelAllGeneration: () => Promise<void>
+  describeAllAssets: () => Promise<void>
+  describeOneAsset: (assetId: string) => Promise<void>
+  cancelDescribe: () => void
 
   // Sync setters (local state)
   setActiveProject: (id: string | null) => void
@@ -41,6 +57,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   activeShotId: null,
   loading: false,
   error: null,
+  generatingShotIds: new Set<string>(),
+  enhancingShotIds: new Set<string>(),
+  describeProgress: { active: false, currentId: null, done: 0, total: 0 },
 
   activeProject: () => {
     const { projects, activeProjectId } = get()
@@ -104,14 +123,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ loading: true, error: null })
     try {
       await api.generate.script(projectId)
-      // Reload the project to get the updated script
       const project = await api.projects.get(projectId)
       set((state) => ({
         projects: state.projects.map((p) => (p.id === projectId ? project : p)),
         loading: false,
       }))
+      toast('success', 'Сценарий готов', 'Можно переходить к разбивке на шоты')
     } catch (e: any) {
       set({ error: e.message, loading: false })
+      toast('error', 'Ошибка генерации сценария', e.message)
     }
   },
 
@@ -121,23 +141,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ loading: true, error: null })
     try {
       await api.generate.splitShots(projectId)
-      // Reload to get updated shots
       const project = await api.projects.get(projectId)
       set((state) => ({
         projects: state.projects.map((p) => (p.id === projectId ? project : p)),
         loading: false,
       }))
+      const count = project.shots?.length || 0
+      toast('success', 'Шот-лист готов', `Создано ${count} шотов — проверьте привязку ассетов`)
     } catch (e: any) {
       set({ error: e.message, loading: false })
+      toast('error', 'Ошибка разбивки на шоты', e.message)
     }
   },
 
   generateImage: async (shotId: string) => {
     const projectId = get().activeProjectId
     if (!projectId) return
-    // Set shot status to generating optimistically
+    // Track in store — survives page navigation
     set((state) => ({
       error: null,
+      generatingShotIds: new Set([...state.generatingShotIds, shotId]),
       projects: state.projects.map((p) =>
         p.id === projectId
           ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status: 'generating' as ShotStatus } : s)) }
@@ -146,14 +169,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }))
     try {
       await api.generate.image(projectId, shotId)
-      // Reload project to get the generated image data
       const project = await api.projects.get(projectId)
-      set((state) => ({
-        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
-      }))
+      set((state) => {
+        const next = new Set(state.generatingShotIds)
+        next.delete(shotId)
+        return {
+          generatingShotIds: next,
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }
+      })
+      const shot = project.shots?.find((s: any) => s.id === shotId)
+      toast('success', `Изображение готово`, `Шот #${String((shot?.order ?? 0)).padStart(2, '0')} → ревью`)
     } catch (e: any) {
-      set({ error: e.message })
-      // Reload project to get correct state
+      set((state) => {
+        const next = new Set(state.generatingShotIds)
+        next.delete(shotId)
+        return { generatingShotIds: next }
+      })
+      const isCancelled = e.message?.includes('cancelled')
+      if (!isCancelled) {
+        set({ error: e.message })
+        toast('error', 'Ошибка генерации', e.message)
+      }
       try {
         const project = await api.projects.get(projectId)
         set((state) => ({
@@ -162,6 +199,172 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       } catch {
         // ignore reload error
       }
+    }
+  },
+
+  enhanceImage: async (shotId: string, sourceImage: string) => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set((state) => ({
+      enhancingShotIds: new Set([...state.enhancingShotIds, shotId]),
+    }))
+    try {
+      await api.generate.enhance(projectId, shotId, sourceImage)
+      const project = await api.projects.get(projectId)
+      set((state) => {
+        const next = new Set(state.enhancingShotIds)
+        next.delete(shotId)
+        return {
+          enhancingShotIds: next,
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }
+      })
+      toast('success', 'Enhance готов', `Постобработка шота завершена`)
+    } catch (e: any) {
+      set((state) => {
+        const next = new Set(state.enhancingShotIds)
+        next.delete(shotId)
+        return { enhancingShotIds: next }
+      })
+      toast('error', 'Ошибка enhance', e.message)
+    }
+  },
+
+  enhanceAll: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    try {
+      const result = await api.generate.enhanceAll(projectId)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+      }))
+      toast('success', 'Пакетный enhance', `Обработано ${result.enhanced} из ${result.total} шотов`)
+    } catch (e: any) {
+      toast('error', 'Ошибка пакетной обработки', e.message)
+    }
+  },
+
+  describeAllAssets: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    const project = get().activeProject()
+    if (!project) return
+    const toDescribe = project.brief.assets.filter((a) => !a.label?.trim())
+    if (toDescribe.length === 0) return
+
+    set({ describeProgress: { active: true, currentId: null, done: 0, total: toDescribe.length } })
+
+    let done = 0
+    for (const asset of toDescribe) {
+      // Check if cancelled
+      if (!get().describeProgress.active) break
+      set((state) => ({
+        describeProgress: { ...state.describeProgress, currentId: asset.id },
+      }))
+      try {
+        const result = await api.assets.describe(projectId, asset.id)
+        // Update label locally
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId
+              ? {
+                  ...p,
+                  brief: {
+                    ...p.brief,
+                    assets: p.brief.assets.map((a) =>
+                      a.id === asset.id ? { ...a, label: result.label } : a
+                    ),
+                  },
+                }
+              : p
+          ),
+        }))
+      } catch (e) {
+        console.error(`Describe failed for ${asset.filename}:`, e)
+      }
+      done++
+      set((state) => ({
+        describeProgress: { ...state.describeProgress, done },
+      }))
+    }
+
+    const wasCancelled = !get().describeProgress.active
+    set({ describeProgress: { active: false, currentId: null, done: 0, total: 0 } })
+    if (done > 0) {
+      toast(
+        wasCancelled ? 'info' : 'success',
+        wasCancelled ? 'Описание остановлено' : 'Описания готовы',
+        `Описано ${done} из ${toDescribe.length} ассетов`
+      )
+    }
+  },
+
+  describeOneAsset: async (assetId: string) => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set({ describeProgress: { active: true, currentId: assetId, done: 0, total: 1 } })
+    try {
+      const result = await api.assets.describe(projectId, assetId)
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id === projectId
+            ? {
+                ...p,
+                brief: {
+                  ...p.brief,
+                  assets: p.brief.assets.map((a) =>
+                    a.id === assetId ? { ...a, label: result.label } : a
+                  ),
+                },
+              }
+            : p
+        ),
+      }))
+    } catch (e) {
+      console.error('Describe failed:', e)
+    } finally {
+      set({ describeProgress: { active: false, currentId: null, done: 0, total: 0 } })
+    }
+  },
+
+  cancelDescribe: () => {
+    set({ describeProgress: { active: false, currentId: null, done: 0, total: 0 } })
+  },
+
+  cancelGeneration: async (shotId: string) => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    try {
+      await api.generate.cancelImage(projectId, shotId)
+      // Optimistic update
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id === projectId
+            ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status: 'draft' as ShotStatus } : s)) }
+            : p
+        ),
+      }))
+    } catch (e: any) {
+      console.error('Cancel failed:', e)
+    }
+  },
+
+  cancelAllGeneration: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    try {
+      await api.generate.cancelAll(projectId)
+      // Optimistic update — reset all generating to draft
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id === projectId
+            ? { ...p, shots: p.shots.map((s) => (s.status === 'generating' ? { ...s, status: 'draft' as ShotStatus } : s)) }
+            : p
+        ),
+      }))
+    } catch (e: any) {
+      console.error('Cancel all failed:', e)
     }
   },
 
@@ -247,7 +450,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     })
   },
 
-  updateAssetLabel: (projectId, assetId, label) =>
+  updateAssetLabel: (projectId, assetId, label) => {
     set((state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId
@@ -260,5 +463,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             }
           : p
       ),
-    })),
+    }))
+    // Background save
+    api.assets.updateLabel(projectId, assetId, label).catch((e) => {
+      console.error('Failed to save asset label:', e)
+    })
+  },
 }))

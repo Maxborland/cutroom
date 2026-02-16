@@ -1,3 +1,4 @@
+import { useState, useEffect, useRef } from 'react'
 import {
   Film,
   FileText,
@@ -6,10 +7,13 @@ import {
   Settings,
   Clapperboard,
   ChevronRight,
+  Plus,
+  ChevronDown,
+  Loader2,
 } from 'lucide-react'
 import type { PipelineStage } from '../types'
 import { useProjectStore } from '../stores/projectStore'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 
 const STAGES: { id: PipelineStage; label: string; icon: React.ReactNode }[] = [
   { id: 'brief', label: 'Бриф', icon: <FileText size={18} /> },
@@ -26,8 +30,47 @@ interface SidebarProps {
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const project = useProjectStore((s) => s.activeProject())
+  const projects = useProjectStore((s) => s.projects)
+  const loadProject = useProjectStore((s) => s.loadProject)
+  const createProject = useProjectStore((s) => s.createProject)
+  const loading = useProjectStore((s) => s.loading)
+
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const stageIndex = STAGES.findIndex((s) => s.id === project?.stage)
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!projectMenuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false)
+        setCreating(false)
+        setNewName('')
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [projectMenuOpen])
+
+  const handleCreate = async () => {
+    const name = newName.trim()
+    if (!name) return
+    await createProject(name)
+    setNewName('')
+    setCreating(false)
+    setProjectMenuOpen(false)
+    onViewChange('brief')
+  }
+
+  const handleSwitch = (id: string) => {
+    loadProject(id)
+    setProjectMenuOpen(false)
+    onViewChange('brief')
+  }
 
   return (
     <aside className="w-[220px] h-screen bg-surface-1 border-r border-border flex flex-col shrink-0">
@@ -39,15 +82,85 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         <span className="font-display font-bold text-sm tracking-wide">CUTROOM</span>
       </div>
 
-      {/* Project name */}
-      {project && (
-        <div className="px-5 py-4 border-b border-border">
-          <p className="font-mono text-[10px] uppercase tracking-widest text-text-muted mb-1">
-            Проект
-          </p>
-          <p className="text-sm font-medium text-text-primary truncate">{project.name}</p>
-        </div>
-      )}
+      {/* Project selector */}
+      <div ref={menuRef} className="px-3 py-3 border-b border-border relative">
+        <button
+          onClick={() => setProjectMenuOpen(!projectMenuOpen)}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-2 transition-colors group"
+        >
+          <div className="flex-1 min-w-0 text-left">
+            <p className="font-mono text-[9px] uppercase tracking-widest text-text-muted">Проект</p>
+            <p className="text-sm font-medium text-text-primary truncate">
+              {project?.name ?? 'Выберите...'}
+            </p>
+          </div>
+          <ChevronDown
+            size={14}
+            className={`text-text-muted shrink-0 transition-transform ${projectMenuOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+
+        <AnimatePresence>
+          {projectMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.15 }}
+              className="absolute left-3 right-3 top-full mt-1 z-50 bg-surface-2 border border-border rounded-lg shadow-xl overflow-hidden"
+            >
+              <div className="max-h-48 overflow-y-auto py-1">
+                {projects.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => handleSwitch(p.id)}
+                    className={`w-full text-left px-3 py-1.5 text-sm truncate transition-colors ${
+                      p.id === project?.id
+                        ? 'text-amber bg-amber/5'
+                        : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+
+              <div className="border-t border-border p-2">
+                {creating ? (
+                  <div className="flex gap-1.5">
+                    <input
+                      autoFocus
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleCreate()
+                        if (e.key === 'Escape') { setCreating(false); setNewName('') }
+                      }}
+                      placeholder="Название..."
+                      className="flex-1 min-w-0 bg-surface-3 border border-border rounded px-2 py-1 text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-amber/30"
+                    />
+                    <button
+                      onClick={handleCreate}
+                      disabled={!newName.trim() || loading}
+                      className="px-2 py-1 rounded bg-amber text-bg text-xs font-semibold disabled:opacity-50"
+                    >
+                      {loading ? <Loader2 size={10} className="animate-spin" /> : 'OK'}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setCreating(true)}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-amber hover:bg-amber/5 transition-colors"
+                  >
+                    <Plus size={12} />
+                    Новый проект
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
       {/* Pipeline stages */}
       <nav className="flex-1 py-4 px-3">

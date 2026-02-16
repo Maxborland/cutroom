@@ -14,6 +14,7 @@ export interface ProjectSettings {
 export interface BriefAsset {
   id: string;
   filename: string;
+  label: string;
   url: string;
   uploadedAt: string;
 }
@@ -38,10 +39,15 @@ export interface Project {
 export interface ShotMeta {
   id: string;
   order: number;
-  prompt: string;
-  durationSec: number;
+  scene: string;
+  audioDescription: string;
+  imagePrompt: string;
+  videoPrompt: string;
+  duration: number;
+  assetRefs: string[];
   status: string;
   generatedImages: string[];
+  enhancedImages: string[];
   selectedImage: string | null;
   videoFile: string | null;
 }
@@ -93,8 +99,29 @@ function normalizeProject(data: any): Project {
   if (!Array.isArray(project.brief.assets)) {
     project.brief.assets = [];
   }
+  for (const asset of project.brief.assets) {
+    if (!(asset as any).label) (asset as any).label = '';
+  }
   if (!Array.isArray(project.shots)) {
     project.shots = [];
+  }
+  // Migrate old shot format (prompt/durationSec) to new (imagePrompt/videoPrompt/duration/etc.)
+  for (const shot of project.shots) {
+    const s = shot as any;
+    if (s.prompt && !s.imagePrompt) {
+      s.imagePrompt = s.prompt;
+      s.videoPrompt = s.prompt;
+      delete s.prompt;
+    }
+    if (s.durationSec && !s.duration) {
+      s.duration = s.durationSec;
+      delete s.durationSec;
+    }
+    if (!s.scene) s.scene = s.description || '';
+    if (!s.audioDescription) s.audioDescription = '';
+    if (!Array.isArray(s.assetRefs)) s.assetRefs = [];
+    if (!Array.isArray(s.enhancedImages)) s.enhancedImages = [];
+    delete s.description;
   }
   if (!project.script) {
     project.script = '';

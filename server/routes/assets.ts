@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'crypto';
 import { getProject, saveProject, getProjectDir, ensureDir, type BriefAsset } from '../lib/storage.js';
+import { chatCompletion } from '../lib/openrouter.js';
+import { getGlobalSettings } from './settings.js';
 
 const router = Router({ mergeParams: true });
 
@@ -41,6 +43,7 @@ router.post('/', upload.array('files', 50), async (req: Request, res: Response) 
     const newAssets: BriefAsset[] = files.map((file) => ({
       id: randomUUID(),
       filename: file.originalname,
+      label: '',
       url: `/api/projects/${project.id}/assets/file/${encodeURIComponent(file.originalname)}`,
       uploadedAt: new Date().toISOString(),
     }));
@@ -120,6 +123,124 @@ router.delete('/:assetId', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Failed to delete asset:', err);
     res.status(500).json({ error: 'Failed to delete asset' });
+  }
+});
+
+// PUT /api/projects/:id/assets/:assetId/label — update asset label
+router.put('/:assetId/label', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const asset = project.brief.assets.find((a) => a.id === req.params.assetId);
+    if (!asset) { res.status(404).json({ error: 'Asset not found' }); return; }
+
+    asset.label = req.body.label || '';
+    await saveProject(project);
+    res.json(asset);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/projects/:id/assets/:assetId/describe — auto-describe one asset with vision model
+router.post('/:assetId/describe', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const asset = project.brief.assets.find((a) => a.id === req.params.assetId);
+    if (!asset) { res.status(404).json({ error: 'Asset not found' }); return; }
+
+    const global = await getGlobalSettings();
+    const model = (global as any).defaultTextModel || 'openai/gpt-4o';
+
+    // Load image from disk
+    const filePath = path.join(getProjectDir(project.id), 'brief', 'images', asset.filename);
+    const buffer = await fs.readFile(filePath);
+    const ext = path.extname(asset.filename).toLowerCase();
+    const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    const base64 = buffer.toString('base64');
+
+    const label = await chatCompletion(model, [
+      {
+        role: 'system',
+        content: 'Ты описываешь изображения для видео-продакшн пайплайна. Описание должно быть коротким (1-2 предложения на русском): что изображено, ракурс камеры, время суток, настроение. Не используй markdown.',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
+          { type: 'text', text: `Опиши кратко что на этом изображении (файл: ${asset.filename})` },
+        ],
+      },
+    ], 0.3);
+
+    asset.label = label.trim();
+    await saveProject(project);
+
+    res.json({ id: asset.id, label: asset.label });
+  } catch (err) {
+    console.error('Failed to describe asset:', err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/projects/:id/assets/describe-all — auto-describe all assets without labels
+router.post('/describe-all', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const global = await getGlobalSettings();
+    const model = (global as any).defaultTextModel || 'openai/gpt-4o';
+    const toDescribe = project.brief.assets.filter((a) => !a.label?.trim());
+
+    if (toDescribe.length === 0) {
+      res.json({ described: 0 });
+      return;
+    }
+
+    console.log(`[describe-all] Describing ${toDescribe.length} assets with ${model}`);
+
+    let described = 0;
+    for (const asset of toDescribe) {
+      try {
+        const filePath = path.join(getProjectDir(project.id), 'brief', 'images', asset.filename);
+        const buffer = await fs.readFile(filePath);
+        const ext = path.extname(asset.filename).toLowerCase();
+        const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        const base64 = buffer.toString('base64');
+
+        const label = await chatCompletion(model, [
+          {
+            role: 'system',
+            content: 'Ты описываешь изображения для видео-продакшн пайплайна. Описание должно быть коротким (1-2 предложения на русском): что изображено, ракурс камеры, время суток, настроение. Не используй markdown.',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
+              { type: 'text', text: `Опиши кратко что на этом изображении (файл: ${asset.filename})` },
+            ],
+          },
+        ], 0.3);
+
+        asset.label = label.trim();
+        described++;
+        console.log(`[describe-all] ${described}/${toDescribe.length}: ${asset.filename} -> ${asset.label.slice(0, 60)}...`);
+
+        // Save after each to preserve progress
+        await saveProject(project);
+      } catch (err) {
+        console.error(`[describe-all] Failed for ${asset.filename}:`, err);
+      }
+    }
+
+    res.json({ described, total: toDescribe.length });
+  } catch (err) {
+    console.error('Failed to describe assets:', err);
+    res.status(500).json({ error: String(err) });
   }
 });
 

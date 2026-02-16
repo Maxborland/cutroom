@@ -26,14 +26,17 @@ export interface Shot {
   duration: number
   assetRefs: string[] // filenames from brief
   generatedImages: string[]
+  enhancedImages: string[]
   videoFile: string | null
 }
 
 export interface ProjectSettings {
   textModel: string
   imageModel: string
+  enhanceModel: string
   masterPromptScriptwriter: string
   masterPromptShotSplitter: string
+  masterPromptEnhance: string
 }
 
 export interface Project {

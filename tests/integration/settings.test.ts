@@ -36,8 +36,8 @@ describe('Settings API', () => {
         .get('/api/settings')
         .expect(200)
 
-      expect(res.body).toHaveProperty('openrouterApiKey')
-      const key = res.body.openrouterApiKey
+      expect(res.body).toHaveProperty('openRouterApiKey')
+      const key = res.body.openRouterApiKey
       expect(typeof key).toBe('string')
     })
   })
@@ -46,41 +46,41 @@ describe('Settings API', () => {
     it('should update settings and mask key in response', async () => {
       const res = await request(app)
         .put('/api/settings')
-        .send({ openrouterApiKey: 'sk-test-key-123456' })
+        .send({ openRouterApiKey: 'sk-test-key-123456' })
         .expect(200)
 
-      expect(res.body.openrouterApiKey).toBe('••••3456')
+      expect(res.body.openRouterApiKey).toBe('••••3456')
     })
 
     it('should preserve existing key when masked value is sent back', async () => {
       await request(app)
         .put('/api/settings')
-        .send({ openrouterApiKey: 'sk-real-secret-key-abcd' })
+        .send({ openRouterApiKey: 'sk-real-secret-key-abcd' })
 
       const res = await request(app)
         .put('/api/settings')
-        .send({ openrouterApiKey: '••••abcd' })
+        .send({ openRouterApiKey: '••••abcd' })
         .expect(200)
 
-      expect(res.body.openrouterApiKey).toBe('••••abcd')
+      expect(res.body.openRouterApiKey).toBe('••••abcd')
 
       const raw = await fs.readFile(SETTINGS_PATH, 'utf-8')
       const settings = JSON.parse(raw)
-      expect(settings.openrouterApiKey).toBe('sk-real-secret-key-abcd')
+      expect(settings.openRouterApiKey).toBe('sk-real-secret-key-abcd')
     })
 
     it('should allow updating other settings without affecting key', async () => {
       await request(app)
         .put('/api/settings')
-        .send({ openrouterApiKey: 'sk-another-key-9999' })
+        .send({ openRouterApiKey: 'sk-another-key-9999' })
 
       const res = await request(app)
         .put('/api/settings')
-        .send({ openrouterApiKey: '••••9999', customSetting: 'hello' })
+        .send({ openRouterApiKey: '••••9999', customSetting: 'hello' })
         .expect(200)
 
       expect(res.body.customSetting).toBe('hello')
-      expect(res.body.openrouterApiKey).toBe('••••9999')
+      expect(res.body.openRouterApiKey).toBe('••••9999')
     })
   })
 })

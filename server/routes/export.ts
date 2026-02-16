@@ -46,19 +46,46 @@ router.get('/export', async (req: Request, res: Response) => {
       const promptsContent = [
         `Shot: ${shot.id}`,
         `Order: ${shot.order}`,
-        `Duration: ${shot.durationSec}s`,
+        `Scene: ${shot.scene || ''}`,
+        `Duration: ${shot.duration}s`,
         `Status: ${shot.status}`,
         '',
-        'Prompt:',
-        shot.prompt,
+        'Image Prompt:',
+        shot.imagePrompt || '',
+        '',
+        'Video Prompt:',
+        shot.videoPrompt || '',
+        '',
+        'Audio Description:',
+        shot.audioDescription || '',
       ].join('\n');
       archive.append(promptsContent, { name: `${folderName}/prompts.txt` });
 
-      // Add images (generated)
+      // Determine best images: prefer enhanced, fallback to generated
+      const enhancedImages = Array.isArray((shot as any).enhancedImages) ? (shot as any).enhancedImages as string[] : [];
+      const generatedImages = Array.isArray(shot.generatedImages) ? shot.generatedImages : [];
+      const bestImages = enhancedImages.length > 0 ? enhancedImages : generatedImages;
+
+      // Add best images as final/
       const generatedDir = path.join(projectDir, 'shots', shot.id, 'generated');
+      if (bestImages.length > 0) {
+        for (const file of bestImages) {
+          const filePath = path.join(generatedDir, file);
+          try {
+            const stat = await fs.stat(filePath);
+            if (stat.isFile()) {
+              archive.file(filePath, { name: `${folderName}/final/${file}` });
+            }
+          } catch {
+            // File might be missing, skip
+          }
+        }
+      }
+
+      // Add all images (generated + enhanced) for reference
       try {
-        const generatedFiles = await fs.readdir(generatedDir);
-        for (const file of generatedFiles) {
+        const allFiles = await fs.readdir(generatedDir);
+        for (const file of allFiles) {
           const filePath = path.join(generatedDir, file);
           const stat = await fs.stat(filePath);
           if (stat.isFile()) {
@@ -128,9 +155,11 @@ router.get('/export/prompts', async (req: Request, res: Response) => {
 
     for (const shot of project.shots) {
       const shotIndex = String(shot.order + 1).padStart(2, '0');
-      lines.push(`[${shotIndex}] ${shot.id} (${shot.durationSec}s)`);
+      lines.push(`[${shotIndex}] ${shot.id} (${shot.duration}s) — ${shot.scene || ''}`);
       lines.push('─'.repeat(40));
-      lines.push(shot.prompt);
+      lines.push('Image: ' + (shot.imagePrompt || ''));
+      lines.push('Video: ' + (shot.videoPrompt || ''));
+      if (shot.audioDescription) lines.push('Audio: ' + shot.audioDescription);
       lines.push('');
     }
 
