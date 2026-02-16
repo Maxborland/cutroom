@@ -1,0 +1,82 @@
+const BASE = '/api'
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(err.error || res.statusText)
+  }
+  if (res.status === 204) return undefined as T
+  return res.json()
+}
+
+export const api = {
+  projects: {
+    list: () => request<any[]>('/projects'),
+    get: (id: string) => request<any>(`/projects/${id}`),
+    create: (name: string) =>
+      request<any>('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
+    update: (id: string, data: any) =>
+      request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+  },
+  assets: {
+    upload: async (projectId: string, files: File[]) => {
+      const form = new FormData()
+      files.forEach((f) => form.append('files', f))
+      const res = await fetch(`${BASE}/projects/${projectId}/assets`, {
+        method: 'POST',
+        body: form,
+      })
+      if (!res.ok) throw new Error('Upload failed')
+      return res.json()
+    },
+    delete: (projectId: string, assetId: string) =>
+      request<void>(`/projects/${projectId}/assets/${assetId}`, { method: 'DELETE' }),
+    url: (projectId: string, filename: string) =>
+      `${BASE}/projects/${projectId}/assets/file/${encodeURIComponent(filename)}`,
+  },
+  generate: {
+    script: (projectId: string) =>
+      request<{ script: string }>(`/projects/${projectId}/generate-script`, { method: 'POST' }),
+    splitShots: (projectId: string) =>
+      request<{ shots: any[] }>(`/projects/${projectId}/split-shots`, { method: 'POST' }),
+    image: (projectId: string, shotId: string) =>
+      request<any>(`/projects/${projectId}/shots/${shotId}/generate-image`, { method: 'POST' }),
+  },
+  shots: {
+    update: (projectId: string, shotId: string, data: any) =>
+      request<any>(`/projects/${projectId}/shots/${shotId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    setStatus: (projectId: string, shotId: string, status: string) =>
+      request<any>(`/projects/${projectId}/shots/${shotId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
+      }),
+    uploadVideo: async (projectId: string, shotId: string, file: File) => {
+      const form = new FormData()
+      form.append('video', file)
+      const res = await fetch(`${BASE}/projects/${projectId}/shots/${shotId}/video`, {
+        method: 'POST',
+        body: form,
+      })
+      if (!res.ok) throw new Error('Upload failed')
+      return res.json()
+    },
+    generatedImageUrl: (projectId: string, shotId: string, filename: string) =>
+      `${BASE}/projects/${projectId}/shots/${shotId}/generated/${encodeURIComponent(filename)}`,
+  },
+  settings: {
+    get: () => request<any>('/settings'),
+    update: (data: any) => request<any>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  },
+  export: {
+    zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,
+    promptsUrl: (projectId: string) => `${BASE}/projects/${projectId}/export/prompts`,
+  },
+}
