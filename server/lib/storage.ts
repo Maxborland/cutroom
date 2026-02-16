@@ -82,6 +82,26 @@ export function getProjectDir(projectId: string): string {
   return path.join(DATA_DIR, projectId);
 }
 
+// ── Data normalization ───────────────────────────────────────────────
+
+/** Ensure older project data files have all required fields */
+function normalizeProject(data: any): Project {
+  const project = data as Project;
+  if (!project.brief) {
+    project.brief = { text: '', assets: [] };
+  }
+  if (!Array.isArray(project.brief.assets)) {
+    project.brief.assets = [];
+  }
+  if (!Array.isArray(project.shots)) {
+    project.shots = [];
+  }
+  if (!project.script) {
+    project.script = '';
+  }
+  return project;
+}
+
 // ── CRUD ─────────────────────────────────────────────────────────────
 
 export async function listProjects(): Promise<Project[]> {
@@ -96,7 +116,7 @@ export async function listProjects(): Promise<Project[]> {
     const filePath = projectFilePath(entry.name);
     try {
       const raw = await fs.readFile(filePath, 'utf-8');
-      projects.push(JSON.parse(raw) as Project);
+      projects.push(normalizeProject(JSON.parse(raw)));
     } catch {
       // skip folders without a valid project.json
     }
@@ -110,7 +130,7 @@ export async function listProjects(): Promise<Project[]> {
 export async function getProject(id: string): Promise<Project | null> {
   try {
     const raw = await fs.readFile(projectFilePath(id), 'utf-8');
-    return JSON.parse(raw) as Project;
+    return normalizeProject(JSON.parse(raw));
   } catch {
     return null;
   }
