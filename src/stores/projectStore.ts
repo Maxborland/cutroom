@@ -45,6 +45,7 @@ interface ProjectState {
   updateShotStatus: (projectId: string, shotId: string, status: ShotStatus) => void
   updateProjectStage: (projectId: string, stage: PipelineStage) => void
   updateBriefText: (projectId: string, text: string) => void
+  updateTargetDuration: (projectId: string, duration: number) => void
   addBriefAsset: (projectId: string, asset: BriefAsset) => void
   removeBriefAsset: (projectId: string, assetId: string) => void
   updateAssetLabel: (projectId: string, assetId: string, label: string) => void
@@ -424,6 +425,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // Background save — debounced by the caller (BriefEditor)
     api.projects.update(projectId, { brief: { text } }).catch((e) => {
       console.error('Failed to save brief text:', e)
+    })
+  },
+
+  updateTargetDuration: (projectId, duration) => {
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId ? { ...p, brief: { ...p.brief, targetDuration: duration } } : p
+      ),
+    }))
+    api.projects.update(projectId, { brief: { targetDuration: duration } }).catch((e) => {
+      console.error('Failed to save target duration:', e)
     })
   },
 

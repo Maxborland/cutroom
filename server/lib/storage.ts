@@ -22,6 +22,7 @@ export interface BriefAsset {
 export interface Brief {
   text: string;
   assets: BriefAsset[];
+  targetDuration: number; // seconds
 }
 
 export interface Project {
@@ -61,6 +62,12 @@ const DEFAULT_SETTINGS: ProjectSettings = {
     'Ты — профессиональный сценарист рекламных роликов для элитной недвижимости.',
     'На основе брифа создай детальный сценарий видеоролика.',
     'Сценарий должен включать описание каждой сцены, камерных движений, настроения и текста для озвучки.',
+    '',
+    'ВАЖНО: Если в брифе есть прикреплённые файлы (рендеры, фотографии, ракурсы) — ты ОБЯЗАН ссылаться на них в сценарии по имени файла.',
+    'Формат ссылки: [filename.jpg] — в квадратных скобках.',
+    'Каждая сцена, для которой есть подходящий ракурс, должна содержать ссылку: "Используем ракурс [Blago_nizko_001_00000.jpg]".',
+    'Это критически важно — по этим ссылкам система автоматически привяжет reference-кадры к шотам.',
+    '',
     'Пиши на русском языке.',
   ].join('\n'),
   shotSplitterPrompt: [
@@ -98,6 +105,9 @@ function normalizeProject(data: any): Project {
   }
   if (!Array.isArray(project.brief.assets)) {
     project.brief.assets = [];
+  }
+  if (!project.brief.targetDuration) {
+    project.brief.targetDuration = 60;
   }
   for (const asset of project.brief.assets) {
     if (!(asset as any).label) (asset as any).label = '';
@@ -174,7 +184,7 @@ export async function createProject(name: string): Promise<Project> {
     updated: now,
     stage: 'brief',
     settings: { ...DEFAULT_SETTINGS },
-    brief: { text: '', assets: [] },
+    brief: { text: '', assets: [], targetDuration: 60 },
     script: '',
     shots: [],
   };

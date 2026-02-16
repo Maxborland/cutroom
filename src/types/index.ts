@@ -13,6 +13,7 @@ export interface BriefAsset {
 export interface Brief {
   text: string
   assets: BriefAsset[]
+  targetDuration: number // seconds, e.g. 30, 60, 90
 }
 
 export interface Shot {

@@ -17,6 +17,7 @@ export function BriefEditor() {
   const describeAllAssets = useProjectStore((s) => s.describeAllAssets)
   const describeOneAsset = useProjectStore((s) => s.describeOneAsset)
   const cancelDescribe = useProjectStore((s) => s.cancelDescribe)
+  const updateTargetDuration = useProjectStore((s) => s.updateTargetDuration)
   const describeProgress = useProjectStore((s) => s.describeProgress)
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -151,11 +152,39 @@ export function BriefEditor() {
           </p>
         </section>
 
-        {/* Image assets */}
+        {/* Target duration */}
         <section>
           <div className="flex items-center gap-2 mb-3">
             <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
               02
+            </span>
+            <h2 className="font-display font-semibold text-base">Хронометраж</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            {[15, 30, 60, 90, 120].map((sec) => (
+              <button
+                key={sec}
+                onClick={() => updateTargetDuration(project.id, sec)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-mono transition-all ${
+                  project.brief.targetDuration === sec
+                    ? 'bg-amber text-bg-primary font-semibold'
+                    : 'bg-surface-2 text-text-secondary hover:bg-surface-3 border border-border'
+                }`}
+              >
+                {sec}s
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-text-muted">
+            Целевая длительность ролика — LLM подберёт количество сцен
+          </p>
+        </section>
+
+        {/* Image assets */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
+              03
             </span>
             <h2 className="font-display font-semibold text-base">Ассеты</h2>
             <span className="ml-auto font-mono text-xs text-text-muted mr-2">
@@ -393,7 +422,7 @@ export function BriefEditor() {
         <section>
           <div className="flex items-center gap-2 mb-3">
             <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
-              03
+              04
             </span>
             <h2 className="font-display font-semibold text-base">Мастер-промпт сценариста</h2>
           </div>

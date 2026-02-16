@@ -62,13 +62,52 @@ router.post('/generate-script', async (req: Request, res: Response) => {
 
     const effective = await resolveSettings(project);
 
-    // Build asset manifest
-    const assetManifest = project.brief.assets.length > 0
-      ? '\n\nПрикреплённые файлы:\n' + project.brief.assets.map((a, i) => `${i + 1}. ${a.filename}${a.label ? ` — ${a.label}` : ''}`).join('\n')
-      : '';
+    // Build structured asset manifest grouped by camera angle
+    let assetManifest = '';
+    const assets = project.brief.assets;
+    if (assets.length > 0) {
+      const labelMap = new Map<string, string>();
+      for (const a of assets) {
+        if (a.label?.trim()) labelMap.set(a.filename, a.label.trim());
+      }
+
+      // Group into camera angles: Blago_nizko_001_00000.jpg + Blago_nizko_001_00001.jpg = one angle
+      const angleMap = new Map<string, string[]>();
+      for (const a of assets) {
+        const base = a.filename.replace(/_\d{5}\.\w+$/, '');
+        if (!angleMap.has(base)) angleMap.set(base, []);
+        angleMap.get(base)!.push(a.filename);
+      }
+
+      const angleList = [...angleMap.entries()]
+        .map(([base, files]) => {
+          const sorted = files.sort();
+          const desc = labelMap.get(sorted[0]) || labelMap.get(sorted[1]) || '';
+          const descPart = desc ? ` — ${desc}` : '';
+          const fileList = sorted.map(f => `[${f}]`).join(', ');
+          return `  - Ракурс "${base}": ${fileList}${descPart}`;
+        })
+        .join('\n');
+
+      assetManifest = [
+        '',
+        '',
+        '## ПРИКРЕПЛЁННЫЕ ФАЙЛЫ (ОБЯЗАТЕЛЬНО ИСПОЛЬЗОВАТЬ В СЦЕНАРИИ)',
+        'К брифу прикреплены рендеры камерных ракурсов. Каждый ракурс — пара кадров (начальный + конечный) для движения камеры.',
+        'Ты ДОЛЖЕН ссылаться на эти файлы в сценарии в формате [filename.jpg].',
+        '',
+        'Доступные ракурсы:',
+        angleList,
+        '',
+        'Для каждой сцены укажи, какой ракурс используется: "Используем ракурс [filename.jpg]".',
+      ].join('\n');
+    }
 
     const systemPrompt = effective.scriptwriterPrompt;
-    const userMessage = briefText + assetManifest;
+    const durationNote = project.brief.targetDuration
+      ? `\n\nЦелевая длительность ролика: ${project.brief.targetDuration} секунд. Рассчитай количество сцен и их длительности так, чтобы суммарный хронометраж составил примерно ${project.brief.targetDuration} секунд.`
+      : '';
+    const userMessage = briefText + durationNote + assetManifest;
 
     console.log(`[generate-script] model=${effective.model}, assets=${project.brief.assets.length}`);
 
