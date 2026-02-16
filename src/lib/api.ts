@@ -75,6 +75,9 @@ export const api = {
     get: () => request<any>('/settings'),
     update: (data: any) => request<any>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   },
+  models: {
+    list: () => request<{ textModels: { id: string; name: string }[]; imageModels: { id: string; name: string }[] }>('/models'),
+  },
   export: {
     zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,
     promptsUrl: (projectId: string) => `${BASE}/projects/${projectId}/export/prompts`,

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 import { Key, Brain, Wand2, Save, Loader2, CheckCircle2 } from 'lucide-react'
+import { ModelSelect } from './ModelSelect'
 
 export function SettingsView() {
   const [apiKey, setApiKey] = useState('')
@@ -12,6 +13,9 @@ export function SettingsView() {
   const [splitterPrompt, setSplitterPrompt] = useState(
     'Раздели сценарий на отдельные шоты. Каждый шот = один непрерывный кадр. Укажи файлы изображений через "Используем: filename".'
   )
+  const [textModels, setTextModels] = useState<{ id: string; name: string }[]>([])
+  const [imageModels, setImageModels] = useState<{ id: string; name: string }[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -32,6 +36,20 @@ export function SettingsView() {
         setError(e.message)
       })
       .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    setModelsLoading(true)
+    api.models
+      .list()
+      .then(({ textModels, imageModels }) => {
+        setTextModels(textModels)
+        setImageModels(imageModels)
+      })
+      .catch(() => {
+        // Silently fail — fallback to text input
+      })
+      .finally(() => setModelsLoading(false))
   }, [])
 
   const handleSave = async () => {
@@ -95,28 +113,22 @@ export function SettingsView() {
             <h2 className="font-display font-semibold text-base">Модели</h2>
           </div>
           <div className="space-y-4">
-            <div>
-              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                Текстовая модель (сценарий, описания)
-              </label>
-              <input
-                type="text"
-                value={textModel}
-                onChange={(e) => setTextModel(e.target.value)}
-                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2.5 text-sm font-mono text-text-primary focus:outline-none focus:border-amber/30 transition-all"
-              />
-            </div>
-            <div>
-              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                Модель генерации изображений
-              </label>
-              <input
-                type="text"
-                value={imageModel}
-                onChange={(e) => setImageModel(e.target.value)}
-                className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2.5 text-sm font-mono text-text-primary focus:outline-none focus:border-amber/30 transition-all"
-              />
-            </div>
+            <ModelSelect
+              label="Текстовая модель (сценарий, описания)"
+              value={textModel}
+              onChange={setTextModel}
+              models={textModels}
+              loading={modelsLoading}
+              placeholder="openai/gpt-4o"
+            />
+            <ModelSelect
+              label="Модель генерации изображений"
+              value={imageModel}
+              onChange={setImageModel}
+              models={imageModels}
+              loading={modelsLoading}
+              placeholder="openai/gpt-image-1"
+            />
           </div>
         </section>
 

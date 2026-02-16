@@ -2,6 +2,7 @@ import express, { type Express } from 'express'
 import cors from 'cors'
 import projectRoutes from '../../server/routes/projects.js'
 import settingsRoutes from '../../server/routes/settings.js'
+import modelRoutes from '../../server/routes/models.js'
 import assetRoutes from '../../server/routes/assets.js'
 import generateRoutes from '../../server/routes/generate.js'
 import shotRoutes from '../../server/routes/shots.js'
@@ -18,6 +19,7 @@ export function createApp(): Express {
 
   app.use('/api/projects', projectRoutes)
   app.use('/api/settings', settingsRoutes)
+  app.use('/api/models', modelRoutes)
   app.use('/api/projects/:id/assets', assetRoutes)
   app.use('/api/projects/:id', generateRoutes)
   app.use('/api/projects/:id/shots', shotRoutes)

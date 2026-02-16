@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import projectRoutes from './routes/projects.js';
 import settingsRoutes from './routes/settings.js';
+import modelRoutes from './routes/models.js';
 import assetRoutes from './routes/assets.js';
 import generateRoutes from './routes/generate.js';
 import shotRoutes from './routes/shots.js';
@@ -17,6 +18,7 @@ app.use(express.json({ limit: '50mb' }));
 // Routes
 app.use('/api/projects', projectRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/models', modelRoutes);
 app.use('/api/projects/:id/assets', assetRoutes);
 app.use('/api/projects/:id', generateRoutes);
 app.use('/api/projects/:id/shots', shotRoutes);
