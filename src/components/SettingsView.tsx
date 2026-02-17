@@ -26,7 +26,8 @@ const ASPECT_RATIO_OPTIONS = [
 
 export function SettingsView() {
   const [apiKey, setApiKey] = useState('')
-  const [higgsfieldCreds, setHiggsfieldCreds] = useState('')
+  const [hfKeyId, setHfKeyId] = useState('')
+  const [hfKeySecret, setHfKeySecret] = useState('')
   const [textModel, setTextModel] = useState('openai/gpt-4o')
   const [imageModel, setImageModel] = useState('openai/gpt-image-1')
   const [enhanceModel, setEnhanceModel] = useState('openai/gpt-image-1')
@@ -60,7 +61,8 @@ export function SettingsView() {
       .get()
       .then((settings) => {
         if (settings.openRouterApiKey) setApiKey(settings.openRouterApiKey)
-        if (settings.higgsfieldCredentials) setHiggsfieldCreds(settings.higgsfieldCredentials)
+        if (settings.higgsfieldKeyId) setHfKeyId(settings.higgsfieldKeyId)
+        if (settings.higgsfieldKeySecret) setHfKeySecret(settings.higgsfieldKeySecret)
         if (settings.defaultTextModel) setTextModel(settings.defaultTextModel)
         if (settings.defaultImageModel) setImageModel(settings.defaultImageModel)
         if (settings.defaultEnhanceModel) setEnhanceModel(settings.defaultEnhanceModel)
@@ -104,7 +106,8 @@ export function SettingsView() {
     try {
       await api.settings.update({
         openRouterApiKey: apiKey,
-        higgsfieldCredentials: higgsfieldCreds,
+        higgsfieldKeyId: hfKeyId,
+        higgsfieldKeySecret: hfKeySecret,
         defaultTextModel: textModel,
         defaultImageModel: imageModel,
         defaultEnhanceModel: enhanceModel,
@@ -188,15 +191,34 @@ export function SettingsView() {
             <Film size={14} className="text-violet" />
             <h2 className="font-display font-semibold text-base">Higgsfield API</h2>
           </div>
-          <input
-            type="password"
-            value={higgsfieldCreds}
-            onChange={(e) => setHiggsfieldCreds(e.target.value)}
-            placeholder="KEY_ID:KEY_SECRET"
-            className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:border-violet/30 focus:ring-1 focus:ring-violet/20 transition-all"
-          />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                Key ID
+              </label>
+              <input
+                type="text"
+                value={hfKeyId}
+                onChange={(e) => setHfKeyId(e.target.value)}
+                placeholder="KEY_ID"
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:border-violet/30 transition-all"
+              />
+            </div>
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                Key Secret
+              </label>
+              <input
+                type="password"
+                value={hfKeySecret}
+                onChange={(e) => setHfKeySecret(e.target.value)}
+                placeholder="KEY_SECRET"
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:border-violet/30 transition-all"
+              />
+            </div>
+          </div>
           <p className="text-[10px] text-text-muted mt-1">
-            Используется для генерации изображений и видео. Формат: KEY_ID:KEY_SECRET.
+            Используется для генерации изображений и видео.
           </p>
           <div className="space-y-4 mt-4">
             <ModelSelect

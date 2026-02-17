@@ -8,15 +8,18 @@ const SETTINGS_PATH = path.join(process.cwd(), 'data', 'settings.json');
 
 interface Settings {
   openRouterApiKey: string;
-  higgsfieldCredentials: string;
-  // Legacy field name — kept for migration
+  higgsfieldKeyId: string;
+  higgsfieldKeySecret: string;
+  // Legacy field names — kept for migration
   openrouterApiKey?: string;
+  higgsfieldCredentials?: string;
   [key: string]: unknown;
 }
 
 const DEFAULT_SETTINGS: Settings = {
   openRouterApiKey: '',
-  higgsfieldCredentials: '',
+  higgsfieldKeyId: '',
+  higgsfieldKeySecret: '',
 };
 
 async function ensureSettingsFile(): Promise<void> {
@@ -44,16 +47,6 @@ function maskApiKey(key: string): string {
   return '••••' + key.slice(-4);
 }
 
-function maskCredentials(creds: string): string {
-  if (!creds) return creds;
-  // Format: KEY_ID:KEY_SECRET — show KEY_ID, mask secret
-  const colonIdx = creds.indexOf(':');
-  if (colonIdx === -1) return maskApiKey(creds);
-  const keyId = creds.slice(0, colonIdx);
-  const secret = creds.slice(colonIdx + 1);
-  return `${keyId}:••••${secret.slice(-4)}`;
-}
-
 /** Returns the raw (unmasked) API key for internal use */
 export async function getApiKey(): Promise<string> {
   const settings = await readSettings();
@@ -64,7 +57,14 @@ export async function getApiKey(): Promise<string> {
 /** Returns the raw Higgsfield credentials (KEY_ID:KEY_SECRET) for internal use */
 export async function getHiggsfieldCredentials(): Promise<string> {
   const settings = await readSettings();
-  return settings.higgsfieldCredentials || '';
+  // Migrate from legacy single-field format
+  if (settings.higgsfieldCredentials && !settings.higgsfieldKeyId) {
+    return settings.higgsfieldCredentials;
+  }
+  const keyId = settings.higgsfieldKeyId || '';
+  const keySecret = settings.higgsfieldKeySecret || '';
+  if (!keyId || !keySecret) return '';
+  return `${keyId}:${keySecret}`;
 }
 
 /** Returns all global settings for internal use (e.g. default models, master prompts) */
@@ -77,13 +77,13 @@ router.get('/', async (_req: Request, res: Response) => {
   try {
     const settings = await readSettings();
     const apiKey = settings.openRouterApiKey || settings.openrouterApiKey || '';
-    const hfCreds = settings.higgsfieldCredentials || '';
-    // Always return canonical field name, remove legacy
-    const { openrouterApiKey: _legacy, ...rest } = settings;
+    // Always return canonical field names, remove legacy
+    const { openrouterApiKey: _legacy, higgsfieldCredentials: _legacyHf, ...rest } = settings;
     res.json({
       ...rest,
       openRouterApiKey: maskApiKey(apiKey),
-      higgsfieldCredentials: maskCredentials(hfCreds),
+      higgsfieldKeyId: settings.higgsfieldKeyId || '',
+      higgsfieldKeySecret: maskApiKey(settings.higgsfieldKeySecret || ''),
     });
   } catch (err) {
     console.error('Failed to read settings:', err);
@@ -108,16 +108,16 @@ router.put('/', async (req: Request, res: Response) => {
       updates.openRouterApiKey = existingKey;
     }
 
-    // Preserve masked Higgsfield credentials
+    // Preserve masked Higgsfield secret
     if (
-      typeof updates.higgsfieldCredentials === 'string' &&
-      updates.higgsfieldCredentials.includes('••••')
+      typeof updates.higgsfieldKeySecret === 'string' &&
+      updates.higgsfieldKeySecret.startsWith('••••')
     ) {
-      updates.higgsfieldCredentials = existing.higgsfieldCredentials || '';
+      updates.higgsfieldKeySecret = existing.higgsfieldKeySecret || '';
     }
 
-    // Remove legacy field name, always use canonical
-    const { openrouterApiKey: _legacy, ...existingClean } = existing;
+    // Remove legacy field names, always use canonical
+    const { openrouterApiKey: _legacy, higgsfieldCredentials: _legacyHf, ...existingClean } = existing;
 
     const merged: Settings = {
       ...existingClean,
@@ -130,7 +130,7 @@ router.put('/', async (req: Request, res: Response) => {
     res.json({
       ...merged,
       openRouterApiKey: maskApiKey(merged.openRouterApiKey),
-      higgsfieldCredentials: maskCredentials(merged.higgsfieldCredentials || ''),
+      higgsfieldKeySecret: maskApiKey(merged.higgsfieldKeySecret || ''),
     });
   } catch (err) {
     console.error('Failed to update settings:', err);
