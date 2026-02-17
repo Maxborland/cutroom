@@ -57,4 +57,8 @@ export interface AppSettings {
   openRouterApiKey: string
   defaultTextModel: string
   defaultImageModel: string
+  higgsfieldCredentials: string
+  defaultHiggsfieldImageModel: string
+  defaultHiggsfieldVideoModel: string
+  imageAspectRatio: string
 }

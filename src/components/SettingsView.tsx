@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
-import { Key, Brain, Wand2, Save, Loader2, CheckCircle2, Sparkles, Maximize2 } from 'lucide-react'
+import { Key, Wand2, Save, Loader2, CheckCircle2, Sparkles, Maximize2, Film } from 'lucide-react'
 import { ModelSelect } from './ModelSelect'
 
 const SIZE_OPTIONS = [
@@ -16,11 +16,23 @@ const QUALITY_OPTIONS = [
   { value: 'high', label: 'High (4K)' },
 ]
 
+const ASPECT_RATIO_OPTIONS = [
+  { value: '16:9', label: '16:9 (ландшафт)' },
+  { value: '9:16', label: '9:16 (портрет)' },
+  { value: '1:1', label: '1:1 (квадрат)' },
+  { value: '4:3', label: '4:3' },
+  { value: '3:4', label: '3:4' },
+]
+
 export function SettingsView() {
   const [apiKey, setApiKey] = useState('')
+  const [higgsfieldCreds, setHiggsfieldCreds] = useState('')
   const [textModel, setTextModel] = useState('openai/gpt-4o')
   const [imageModel, setImageModel] = useState('openai/gpt-image-1')
   const [enhanceModel, setEnhanceModel] = useState('openai/gpt-image-1')
+  const [hfImageModel, setHfImageModel] = useState('flux-pro/kontext/max/text-to-image')
+  const [hfVideoModel, setHfVideoModel] = useState('/v1/image2video/dop')
+  const [imageAspectRatio, setImageAspectRatio] = useState('16:9')
   const [imageSize, setImageSize] = useState('auto')
   const [imageQuality, setImageQuality] = useState('high')
   const [enhanceSize, setEnhanceSize] = useState('auto')
@@ -34,6 +46,8 @@ export function SettingsView() {
   const [enhancePrompt, setEnhancePrompt] = useState('')
   const [textModels, setTextModels] = useState<{ id: string; name: string }[]>([])
   const [imageModels, setImageModels] = useState<{ id: string; name: string }[]>([])
+  const [hfImageModels, setHfImageModels] = useState<{ id: string; name: string }[]>([])
+  const [hfVideoModels, setHfVideoModels] = useState<{ id: string; name: string }[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -46,9 +60,13 @@ export function SettingsView() {
       .get()
       .then((settings) => {
         if (settings.openRouterApiKey) setApiKey(settings.openRouterApiKey)
+        if (settings.higgsfieldCredentials) setHiggsfieldCreds(settings.higgsfieldCredentials)
         if (settings.defaultTextModel) setTextModel(settings.defaultTextModel)
         if (settings.defaultImageModel) setImageModel(settings.defaultImageModel)
         if (settings.defaultEnhanceModel) setEnhanceModel(settings.defaultEnhanceModel)
+        if (settings.defaultHiggsfieldImageModel) setHfImageModel(settings.defaultHiggsfieldImageModel)
+        if (settings.defaultHiggsfieldVideoModel) setHfVideoModel(settings.defaultHiggsfieldVideoModel)
+        if (settings.imageAspectRatio) setImageAspectRatio(settings.imageAspectRatio)
         if (settings.imageSize) setImageSize(settings.imageSize)
         if (settings.imageQuality) setImageQuality(settings.imageQuality)
         if (settings.enhanceSize) setEnhanceSize(settings.enhanceSize)
@@ -67,9 +85,11 @@ export function SettingsView() {
     setModelsLoading(true)
     api.models
       .list()
-      .then(({ textModels, imageModels }) => {
+      .then(({ textModels, imageModels, higgsfieldImageModels, higgsfieldVideoModels }) => {
         setTextModels(textModels)
         setImageModels(imageModels)
+        setHfImageModels(higgsfieldImageModels || [])
+        setHfVideoModels(higgsfieldVideoModels || [])
       })
       .catch(() => {
         // Silently fail — fallback to text input
@@ -84,9 +104,13 @@ export function SettingsView() {
     try {
       await api.settings.update({
         openRouterApiKey: apiKey,
+        higgsfieldCredentials: higgsfieldCreds,
         defaultTextModel: textModel,
         defaultImageModel: imageModel,
         defaultEnhanceModel: enhanceModel,
+        defaultHiggsfieldImageModel: hfImageModel,
+        defaultHiggsfieldVideoModel: hfVideoModel,
+        imageAspectRatio,
         imageSize,
         imageQuality,
         enhanceSize,
@@ -122,7 +146,7 @@ export function SettingsView() {
           </div>
         )}
 
-        {/* API Key */}
+        {/* OpenRouter API */}
         <section>
           <div className="flex items-center gap-2 mb-3">
             <Key size={14} className="text-amber" />
@@ -135,15 +159,10 @@ export function SettingsView() {
             placeholder="sk-or-..."
             className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:border-amber/30 focus:ring-1 focus:ring-amber/20 transition-all"
           />
-        </section>
-
-        {/* Models */}
-        <section>
-          <div className="flex items-center gap-2 mb-3">
-            <Brain size={14} className="text-amber" />
-            <h2 className="font-display font-semibold text-base">Модели</h2>
-          </div>
-          <div className="space-y-4">
+          <p className="text-[10px] text-text-muted mt-1">
+            Используется для текстовых LLM (сценарий, описания, шоты) и Enhance.
+          </p>
+          <div className="space-y-4 mt-4">
             <ModelSelect
               label="Текстовая модель (сценарий, описания)"
               value={textModel}
@@ -153,14 +172,6 @@ export function SettingsView() {
               placeholder="openai/gpt-4o"
             />
             <ModelSelect
-              label="Модель генерации изображений"
-              value={imageModel}
-              onChange={setImageModel}
-              models={imageModels}
-              loading={modelsLoading}
-              placeholder="openai/gpt-image-1"
-            />
-            <ModelSelect
               label="Модель постобработки (Enhance)"
               value={enhanceModel}
               onChange={setEnhanceModel}
@@ -168,6 +179,56 @@ export function SettingsView() {
               loading={modelsLoading}
               placeholder="openai/gpt-image-1"
             />
+          </div>
+        </section>
+
+        {/* Higgsfield API */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <Film size={14} className="text-violet" />
+            <h2 className="font-display font-semibold text-base">Higgsfield API</h2>
+          </div>
+          <input
+            type="password"
+            value={higgsfieldCreds}
+            onChange={(e) => setHiggsfieldCreds(e.target.value)}
+            placeholder="KEY_ID:KEY_SECRET"
+            className="w-full bg-surface-2 border border-border rounded-lg px-4 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-muted focus:outline-none focus:border-violet/30 focus:ring-1 focus:ring-violet/20 transition-all"
+          />
+          <p className="text-[10px] text-text-muted mt-1">
+            Используется для генерации изображений и видео. Формат: KEY_ID:KEY_SECRET.
+          </p>
+          <div className="space-y-4 mt-4">
+            <ModelSelect
+              label="Модель генерации изображений"
+              value={hfImageModel}
+              onChange={setHfImageModel}
+              models={hfImageModels}
+              loading={modelsLoading}
+              placeholder="flux-pro/kontext/max/text-to-image"
+            />
+            <ModelSelect
+              label="Модель генерации видео"
+              value={hfVideoModel}
+              onChange={setHfVideoModel}
+              models={hfVideoModels}
+              loading={modelsLoading}
+              placeholder="/v1/image2video/dop"
+            />
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                Соотношение сторон изображения
+              </label>
+              <select
+                value={imageAspectRatio}
+                onChange={(e) => setImageAspectRatio(e.target.value)}
+                className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-violet/30 transition-all"
+              >
+                {ASPECT_RATIO_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </section>
 

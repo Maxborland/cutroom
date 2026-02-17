@@ -65,6 +65,10 @@ export const api = {
       }),
     enhanceAll: (projectId: string) =>
       request<{ enhanced: number; total: number }>(`/projects/${projectId}/enhance-all`, { method: 'POST' }),
+    video: (projectId: string, shotId: string) =>
+      request<{ filename: string; url: string }>(`/projects/${projectId}/shots/${shotId}/generate-video`, { method: 'POST' }),
+    allVideos: (projectId: string) =>
+      request<{ generated: number; total: number }>(`/projects/${projectId}/generate-all-videos`, { method: 'POST' }),
   },
   shots: {
     update: (projectId: string, shotId: string, data: any) =>
@@ -89,13 +93,20 @@ export const api = {
     },
     generatedImageUrl: (projectId: string, shotId: string, filename: string) =>
       `${BASE}/projects/${projectId}/shots/${shotId}/generated/${encodeURIComponent(filename)}`,
+    videoUrl: (projectId: string, shotId: string, filename: string) =>
+      `${BASE}/projects/${projectId}/shots/${shotId}/video/${encodeURIComponent(filename)}`,
   },
   settings: {
     get: () => request<any>('/settings'),
     update: (data: any) => request<any>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   },
   models: {
-    list: () => request<{ textModels: { id: string; name: string }[]; imageModels: { id: string; name: string }[] }>('/models'),
+    list: () => request<{
+      textModels: { id: string; name: string }[];
+      imageModels: { id: string; name: string }[];
+      higgsfieldImageModels: { id: string; name: string }[];
+      higgsfieldVideoModels: { id: string; name: string }[];
+    }>('/models'),
   },
   export: {
     zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,

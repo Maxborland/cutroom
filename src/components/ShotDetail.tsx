@@ -38,11 +38,13 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   const updateShot = useProjectStore((s) => s.updateShot)
   const updateShotStatus = useProjectStore((s) => s.updateShotStatus)
   const generateImage = useProjectStore((s) => s.generateImage)
+  const generateVideoAction = useProjectStore((s) => s.generateVideo)
   const enhanceImage = useProjectStore((s) => s.enhanceImage)
   const cancelGeneration = useProjectStore((s) => s.cancelGeneration)
   const loadProject = useProjectStore((s) => s.loadProject)
   const generatingShotIds = useProjectStore((s) => s.generatingShotIds)
   const enhancingShotIds = useProjectStore((s) => s.enhancingShotIds)
+  const generatingVideoShotIds = useProjectStore((s) => s.generatingVideoShotIds)
   const [uploadingVideo, setUploadingVideo] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
@@ -60,6 +62,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
 
   const generating = shot ? generatingShotIds.has(shot.id) : false
   const enhancing = shot ? enhancingShotIds.has(shot.id) : false
+  const generatingVideo = shot ? generatingVideoShotIds.has(shot.id) : false
 
   const handleGenerate = () => {
     generateImage(shot.id)
@@ -263,6 +266,18 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           />
           <div className="flex gap-2 mt-2">
             <button
+              onClick={() => generateVideoAction(shot.id)}
+              disabled={generatingVideo || shot.generatedImages.length === 0}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet text-white text-[11px] font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+            >
+              {generatingVideo ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <Film size={11} />
+              )}
+              {generatingVideo ? 'Генерация...' : 'Сгенерировать видео'}
+            </button>
+            <button
               onClick={() => handleCopy(shot.videoPrompt, 'videoPrompt')}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border text-[11px] text-text-secondary hover:text-text-primary transition-colors"
             >
@@ -271,7 +286,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
               ) : (
                 <Copy size={11} />
               )}
-              {copied === 'videoPrompt' ? 'Скопировано' : 'Копировать для Higgsfield'}
+              {copied === 'videoPrompt' ? 'Скопировано' : 'Копировать'}
             </button>
           </div>
         </Field>
@@ -354,29 +369,50 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
         {/* Video */}
         <Field icon={<Play size={13} />} label="Видео">
           {shot.videoFile ? (
-            <div className="aspect-video bg-surface-3 rounded-lg border border-emerald/20 flex items-center justify-center">
-              <div className="text-center">
-                <Film size={24} className="text-emerald mx-auto mb-2" />
-                <span className="font-mono text-xs text-emerald">{shot.videoFile}</span>
-              </div>
+            <div className="space-y-2">
+              <video
+                src={api.shots.videoUrl(project.id, shot.id, shot.videoFile)}
+                controls
+                className="w-full rounded-lg border border-emerald/20"
+              />
+              <p className="font-mono text-[10px] text-text-muted">{shot.videoFile}</p>
             </div>
           ) : (
-            <div className="border border-dashed border-border rounded-lg p-6 text-center">
-              <p className="text-xs text-text-muted">Видео не загружено</p>
-              <button
-                onClick={() => videoInputRef.current?.click()}
-                disabled={uploadingVideo}
-                className="mt-2 text-xs text-amber hover:text-amber-light transition-colors disabled:opacity-50"
-              >
-                {uploadingVideo ? (
-                  <span className="flex items-center gap-1.5 justify-center">
-                    <Loader2 size={11} className="animate-spin" />
-                    Загрузка...
-                  </span>
-                ) : (
-                  'Загрузить из Higgsfield'
-                )}
-              </button>
+            <div className="border border-dashed border-border rounded-lg p-6 text-center space-y-2">
+              {generatingVideo ? (
+                <div className="flex items-center gap-2 justify-center text-violet text-xs">
+                  <Loader2 size={14} className="animate-spin" />
+                  Генерация видео...
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-text-muted">Видео не загружено</p>
+                  <div className="flex gap-2 justify-center">
+                    <button
+                      onClick={() => generateVideoAction(shot.id)}
+                      disabled={shot.generatedImages.length === 0}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet text-white text-xs font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+                    >
+                      <Film size={12} />
+                      Сгенерировать видео
+                    </button>
+                    <button
+                      onClick={() => videoInputRef.current?.click()}
+                      disabled={uploadingVideo}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                    >
+                      {uploadingVideo ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" />
+                          Загрузка...
+                        </>
+                      ) : (
+                        'Загрузить вручную'
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </Field>

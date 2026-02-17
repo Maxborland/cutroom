@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getProject, saveProject, getProjectDir, ensureDir, type ShotMeta, type Project } from '../lib/storage.js';
 import { chatCompletion, generateImage, type ReferenceImage, type ImageGenOptions } from '../lib/openrouter.js';
+import { generateImageHiggsfield, generateVideo } from '../lib/higgsfield.js';
+import { findImageModel, findVideoModel, HIGGSFIELD_IMAGE_MODELS, HIGGSFIELD_VIDEO_MODELS } from '../lib/higgsfield-models.js';
 import { getGlobalSettings } from './settings.js';
 
 const router = Router({ mergeParams: true });
@@ -42,6 +44,10 @@ async function resolveSettings(project: Project) {
     scriptwriterPrompt: (global as any).masterPromptScriptwriter || project.settings.scriptwriterPrompt,
     shotSplitterPrompt: (global as any).masterPromptShotSplitter || project.settings.shotSplitterPrompt,
     enhancePrompt: (global as any).masterPromptEnhance || DEFAULT_ENHANCE_PROMPT,
+    // Higgsfield
+    higgsfieldImageModel: ((global as any).defaultHiggsfieldImageModel as string) || HIGGSFIELD_IMAGE_MODELS[0].id,
+    higgsfieldVideoModel: ((global as any).defaultHiggsfieldVideoModel as string) || HIGGSFIELD_VIDEO_MODELS[0].id,
+    imageAspectRatio: ((global as any).imageAspectRatio as string) || '16:9',
   };
 }
 
@@ -404,16 +410,17 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
       return;
     }
 
-    // Get image model from request body, global settings, or default
+    // Get Higgsfield image model from settings
     const effective = await resolveSettings(project);
-    const imageModel = req.body.model || effective.imageModel;
+    const modelId = req.body.model || effective.higgsfieldImageModel;
+    const hfModel = findImageModel(modelId);
     const rawPrompt = req.body.prompt || shot.imagePrompt;
 
     // Boost prompt with photorealism instructions; preserve building geometry exactly
     const prompt = `Ultra-photorealistic professional photograph, NOT a 3D render or CGI. CRITICAL: preserve the exact building geometry, shape, proportions, facade, and all architectural features from the reference — this is a real estate product being sold. ${rawPrompt}. The scene must feel alive — include real people where appropriate (pedestrians, residents, visitors). All people must be real humans with natural skin, clothing and poses. Shot on Sony A7R V, natural lighting, real materials, film grain.`;
 
-    // Load reference images from shot's assetRefs
-    const referenceImages: ReferenceImage[] = [];
+    // Load reference images from shot's assetRefs as base64 data URLs
+    const refDataUrls: string[] = [];
     if (shot.assetRefs?.length) {
       const imagesDir = path.join(getProjectDir(project.id), 'brief', 'images');
       for (const filename of shot.assetRefs) {
@@ -424,12 +431,12 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
           const mimeType = ext === '.png' ? 'image/png'
             : ext === '.webp' ? 'image/webp'
             : 'image/jpeg';
-          referenceImages.push({ base64: buffer.toString('base64'), mimeType });
+          refDataUrls.push(`data:${mimeType};base64,${buffer.toString('base64')}`);
         } catch {
           console.warn(`[generate-image] Could not load reference: ${filename}`);
         }
       }
-      console.log(`[generate-image] Loaded ${referenceImages.length}/${shot.assetRefs.length} reference images`);
+      console.log(`[generate-image] Loaded ${refDataUrls.length}/${shot.assetRefs.length} reference images`);
     }
 
     // Set status to generating
@@ -442,13 +449,38 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     activeGenerations.set(key, abortController);
 
     try {
-      const imageOptions: ImageGenOptions = {
-        size: effective.imageSize,
-        quality: effective.imageQuality,
-      };
-      const result = await generateImage(imageModel, prompt, referenceImages, abortController.signal, imageOptions);
+      let resultUrl: string;
 
-      // Determine if result is base64 or URL
+      if (hfModel) {
+        // Use Higgsfield for image generation
+        resultUrl = await generateImageHiggsfield(
+          {
+            model: hfModel,
+            prompt,
+            referenceImages: refDataUrls.length > 0 ? refDataUrls : undefined,
+            aspectRatio: effective.imageAspectRatio,
+          },
+          abortController.signal,
+        );
+      } else {
+        // Fallback: try OpenRouter if model not found in Higgsfield registry
+        console.log(`[generate-image] Model ${modelId} not in Higgsfield registry, falling back to OpenRouter`);
+        const referenceImages: ReferenceImage[] = [];
+        if (refDataUrls.length > 0) {
+          for (const dataUrl of refDataUrls) {
+            const [header, b64] = dataUrl.split(',');
+            const mimeType = header.match(/data:([^;]+)/)?.[1] || 'image/jpeg';
+            referenceImages.push({ base64: b64, mimeType });
+          }
+        }
+        const imageOptions: ImageGenOptions = {
+          size: effective.imageSize,
+          quality: effective.imageQuality,
+        };
+        resultUrl = await generateImage(modelId, prompt, referenceImages, abortController.signal, imageOptions);
+      }
+
+      // Save result to disk
       const shotDir = path.join(getProjectDir(project.id), 'shots', shotId, 'generated');
       await ensureDir(shotDir);
 
@@ -456,24 +488,21 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
       const filename = `gen_${timestamp}.png`;
       const filePath = path.join(shotDir, filename);
 
-      if (result.startsWith('data:') || result.match(/^[A-Za-z0-9+/=\s]+$/)) {
-        // Base64 data
-        let base64Data = result;
+      if (resultUrl.startsWith('data:') || resultUrl.match(/^[A-Za-z0-9+/=\s]+$/)) {
+        let base64Data = resultUrl;
         if (base64Data.startsWith('data:')) {
           base64Data = base64Data.split(',')[1];
         }
         await fs.writeFile(filePath, Buffer.from(base64Data, 'base64'));
-      } else if (result.startsWith('http')) {
-        // URL — download the image
-        const imageResponse = await fetch(result);
+      } else if (resultUrl.startsWith('http')) {
+        const imageResponse = await fetch(resultUrl);
         if (!imageResponse.ok) {
           throw new Error(`Failed to download image: ${imageResponse.status}`);
         }
         const buffer = Buffer.from(await imageResponse.arrayBuffer());
         await fs.writeFile(filePath, buffer);
       } else {
-        // Try treating as base64 anyway
-        await fs.writeFile(filePath, Buffer.from(result, 'base64'));
+        await fs.writeFile(filePath, Buffer.from(resultUrl, 'base64'));
       }
 
       // Reload project in case of concurrent changes
@@ -738,6 +767,242 @@ router.post('/enhance-all', async (req: Request, res: Response) => {
     res.json({ enhanced, total: shotsToEnhance.length });
   } catch (err) {
     console.error('Failed to enhance all:', err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/projects/:id/shots/:shotId/generate-video — generate video from image
+router.post('/shots/:shotId/generate-video', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    const shotId = req.params.shotId;
+    const shot = project.shots.find((s) => s.id === shotId);
+    if (!shot) {
+      res.status(404).json({ error: 'Shot not found' });
+      return;
+    }
+
+    // Pick best source image: last enhanced > last generated
+    const enhanced = Array.isArray(shot.enhancedImages) ? shot.enhancedImages : [];
+    const sourceFile = enhanced.length > 0
+      ? enhanced[enhanced.length - 1]
+      : shot.generatedImages.length > 0
+        ? shot.generatedImages[shot.generatedImages.length - 1]
+        : null;
+
+    if (!sourceFile) {
+      res.status(400).json({ error: 'No source image available. Generate an image first.' });
+      return;
+    }
+
+    const effective = await resolveSettings(project);
+    const videoModelId = req.body.model || effective.higgsfieldVideoModel;
+    const videoModel = findVideoModel(videoModelId);
+    if (!videoModel) {
+      res.status(400).json({ error: `Video model not found: ${videoModelId}` });
+      return;
+    }
+
+    // Read source image as data URL
+    const sourcePath = path.join(getProjectDir(project.id), 'shots', shotId, 'generated', sourceFile);
+    let sourceBuffer: Buffer;
+    try {
+      sourceBuffer = await fs.readFile(sourcePath);
+    } catch {
+      res.status(404).json({ error: `Source image file not found: ${sourceFile}` });
+      return;
+    }
+    const ext = path.extname(sourceFile).toLowerCase();
+    const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    const sourceDataUrl = `data:${mimeType};base64,${sourceBuffer.toString('base64')}`;
+
+    const videoPrompt = req.body.prompt || shot.videoPrompt;
+
+    // Track for cancellation
+    const abortController = new AbortController();
+    const key = genKey(project.id, shotId);
+    activeGenerations.set(key, abortController);
+
+    try {
+      const videoUrl = await generateVideo(
+        {
+          model: videoModel,
+          prompt: videoPrompt,
+          sourceImageDataUrl: sourceDataUrl,
+          duration: shot.duration,
+        },
+        abortController.signal,
+      );
+
+      // Download the video
+      const videoDir = path.join(getProjectDir(project.id), 'shots', shotId, 'video');
+      await ensureDir(videoDir);
+
+      const timestamp = Date.now();
+      const videoFilename = `vid_${timestamp}.mp4`;
+      const videoPath = path.join(videoDir, videoFilename);
+
+      const videoResponse = await fetch(videoUrl);
+      if (!videoResponse.ok) {
+        throw new Error(`Failed to download video: ${videoResponse.status}`);
+      }
+      const videoBuffer = Buffer.from(await videoResponse.arrayBuffer());
+      await fs.writeFile(videoPath, videoBuffer);
+
+      // Update project
+      const refreshed = await getProject(req.params.id);
+      if (refreshed) {
+        const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
+        if (refreshedShot) {
+          refreshedShot.videoFile = videoFilename;
+          refreshedShot.status = 'review';
+          await saveProject(refreshed);
+        }
+      }
+
+      activeGenerations.delete(key);
+
+      res.json({
+        filename: videoFilename,
+        url: `/api/projects/${req.params.id}/shots/${shotId}/video/${videoFilename}`,
+      });
+    } catch (genErr) {
+      activeGenerations.delete(key);
+      throw genErr;
+    }
+  } catch (err) {
+    console.error('Failed to generate video:', err);
+    const isCancelled = err instanceof Error && err.message === 'Generation cancelled';
+    res.status(isCancelled ? 499 : 500).json({ error: String(err) });
+  }
+});
+
+// GET /api/projects/:id/shots/:shotId/video/:filename — serve video file
+router.get('/shots/:shotId/video/:filename', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    const { shotId, filename } = req.params;
+    const filePath = path.resolve(
+      getProjectDir(project.id),
+      'shots',
+      shotId,
+      'video',
+      filename
+    );
+
+    // Security check
+    const projectDir = path.resolve(getProjectDir(project.id));
+    if (!filePath.startsWith(projectDir)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+
+    res.sendFile(filePath);
+  } catch (err) {
+    console.error('Failed to serve video:', err);
+    res.status(500).json({ error: 'Failed to serve video' });
+  }
+});
+
+// POST /api/projects/:id/generate-all-videos — generate videos for all shots with images but no video
+router.post('/generate-all-videos', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    const effective = await resolveSettings(project);
+    const videoModelId = effective.higgsfieldVideoModel;
+    const videoModel = findVideoModel(videoModelId);
+    if (!videoModel) {
+      res.status(400).json({ error: `Video model not found: ${videoModelId}` });
+      return;
+    }
+
+    const shotsToGenerate = project.shots.filter(
+      (s) => (s.generatedImages.length > 0 || (Array.isArray(s.enhancedImages) && s.enhancedImages.length > 0)) && !s.videoFile
+    );
+
+    console.log(`[generate-all-videos] ${shotsToGenerate.length} shots to process`);
+
+    let generated = 0;
+
+    for (const shot of shotsToGenerate) {
+      const enhanced = Array.isArray(shot.enhancedImages) ? shot.enhancedImages : [];
+      const sourceFile = enhanced.length > 0
+        ? enhanced[enhanced.length - 1]
+        : shot.generatedImages[shot.generatedImages.length - 1];
+
+      const sourcePath = path.join(getProjectDir(project.id), 'shots', shot.id, 'generated', sourceFile);
+      let sourceBuffer: Buffer;
+      try {
+        sourceBuffer = await fs.readFile(sourcePath);
+      } catch {
+        console.warn(`[generate-all-videos] Skipping ${shot.id}: source not found`);
+        continue;
+      }
+
+      const ext = path.extname(sourceFile).toLowerCase();
+      const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      const sourceDataUrl = `data:${mimeType};base64,${sourceBuffer.toString('base64')}`;
+
+      try {
+        const videoUrl = await generateVideo({
+          model: videoModel,
+          prompt: shot.videoPrompt,
+          sourceImageDataUrl: sourceDataUrl,
+          duration: shot.duration,
+        });
+
+        const videoDir = path.join(getProjectDir(project.id), 'shots', shot.id, 'video');
+        await ensureDir(videoDir);
+
+        const timestamp = Date.now();
+        const videoFilename = `vid_${timestamp}.mp4`;
+        const videoPath = path.join(videoDir, videoFilename);
+
+        const videoResponse = await fetch(videoUrl);
+        if (!videoResponse.ok) throw new Error(`Failed to download: ${videoResponse.status}`);
+        await fs.writeFile(videoPath, Buffer.from(await videoResponse.arrayBuffer()));
+
+        const refreshed = await getProject(project.id);
+        if (refreshed) {
+          const refreshedShot = refreshed.shots.find((s) => s.id === shot.id);
+          if (refreshedShot) {
+            refreshedShot.videoFile = videoFilename;
+            refreshedShot.status = 'review';
+            await saveProject(refreshed);
+          }
+        }
+
+        generated++;
+      } catch (err) {
+        console.error(`[generate-all-videos] Failed for ${shot.id}:`, err);
+      }
+    }
+
+    res.json({ generated, total: shotsToGenerate.length });
+  } catch (err) {
+    console.error('Failed to generate all videos:', err);
     res.status(500).json({ error: String(err) });
   }
 });

@@ -16,6 +16,7 @@ interface ProjectState {
   // Track in-flight async operations (survives page navigation)
   generatingShotIds: Set<string>
   enhancingShotIds: Set<string>
+  generatingVideoShotIds: Set<string>
   describeProgress: { active: boolean; currentId: string | null; done: number; total: number }
 
   activeProject: () => Project | null
@@ -28,6 +29,8 @@ interface ProjectState {
   generateScript: () => Promise<void>
   splitShots: () => Promise<void>
   generateImage: (shotId: string) => Promise<void>
+  generateVideo: (shotId: string) => Promise<void>
+  generateAllVideos: () => Promise<void>
   enhanceImage: (shotId: string, sourceImage: string) => Promise<void>
   enhanceAll: () => Promise<void>
   cancelGeneration: (shotId: string) => Promise<void>
@@ -60,6 +63,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   error: null,
   generatingShotIds: new Set<string>(),
   enhancingShotIds: new Set<string>(),
+  generatingVideoShotIds: new Set<string>(),
   describeProgress: { active: false, currentId: null, done: 0, total: 0 },
 
   activeProject: () => {
@@ -243,6 +247,49 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       toast('success', 'Пакетный enhance', `Обработано ${result.enhanced} из ${result.total} шотов`)
     } catch (e: any) {
       toast('error', 'Ошибка пакетной обработки', e.message)
+    }
+  },
+
+  generateVideo: async (shotId: string) => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set((state) => ({
+      generatingVideoShotIds: new Set([...state.generatingVideoShotIds, shotId]),
+    }))
+    try {
+      await api.generate.video(projectId, shotId)
+      const project = await api.projects.get(projectId)
+      set((state) => {
+        const next = new Set(state.generatingVideoShotIds)
+        next.delete(shotId)
+        return {
+          generatingVideoShotIds: next,
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }
+      })
+      toast('success', 'Видео готово', `Видео для шота сгенерировано`)
+    } catch (e: any) {
+      set((state) => {
+        const next = new Set(state.generatingVideoShotIds)
+        next.delete(shotId)
+        return { generatingVideoShotIds: next }
+      })
+      toast('error', 'Ошибка генерации видео', e.message)
+    }
+  },
+
+  generateAllVideos: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    try {
+      const result = await api.generate.allVideos(projectId)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+      }))
+      toast('success', 'Пакетная генерация видео', `Сгенерировано ${result.generated} из ${result.total} видео`)
+    } catch (e: any) {
+      toast('error', 'Ошибка пакетной генерации видео', e.message)
     }
   },
 

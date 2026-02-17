@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getApiKey } from './settings.js';
+import { HIGGSFIELD_IMAGE_MODELS, HIGGSFIELD_VIDEO_MODELS } from '../lib/higgsfield-models.js';
 
 const router = Router();
 
@@ -82,7 +83,11 @@ async function fetchModels(): Promise<CachedModels> {
 
 router.get('/', async (_req: Request, res: Response) => {
   const { textModels, imageModels } = await fetchModels();
-  res.json({ textModels, imageModels });
+
+  const higgsfieldImageModels = HIGGSFIELD_IMAGE_MODELS.map((m) => ({ id: m.id, name: m.name }));
+  const higgsfieldVideoModels = HIGGSFIELD_VIDEO_MODELS.map((m) => ({ id: m.id, name: m.name }));
+
+  res.json({ textModels, imageModels, higgsfieldImageModels, higgsfieldVideoModels });
 });
 
 /** Reset the model cache (used in tests) */

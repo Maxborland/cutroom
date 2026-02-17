@@ -23,6 +23,12 @@ vi.mock('../../src/lib/api', () => ({
         imageModels: [
           { id: 'openai/gpt-image-1', name: 'GPT Image 1' },
         ],
+        higgsfieldImageModels: [
+          { id: 'flux-pro/kontext/max/text-to-image', name: 'Flux Kontext Max' },
+        ],
+        higgsfieldVideoModels: [
+          { id: '/v1/image2video/dop', name: 'DOP Turbo' },
+        ],
       }),
     },
   },
@@ -53,7 +59,7 @@ describe('SettingsView', () => {
       expect(screen.getByText('OpenRouter API')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('Модели')).toBeInTheDocument()
+    expect(screen.getByText('Higgsfield API')).toBeInTheDocument()
     expect(screen.getByText('Мастер-промпты')).toBeInTheDocument()
   })
 

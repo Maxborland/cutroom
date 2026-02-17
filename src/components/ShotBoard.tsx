@@ -3,7 +3,7 @@ import { useProjectStore } from '../stores/projectStore'
 import { ShotCard } from './ShotCard'
 import { ShotDetail } from './ShotDetail'
 import { AnimatePresence, motion } from 'framer-motion'
-import { XCircle, Sparkles, CheckCircle2, ArrowRight, ArrowLeft, Wand2 } from 'lucide-react'
+import { XCircle, Sparkles, CheckCircle2, ArrowRight, ArrowLeft, Wand2, Film } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
@@ -108,8 +108,9 @@ export function ShotBoard() {
   const cancelAllGeneration = useProjectStore((s) => s.cancelAllGeneration)
   const enhanceAll = useProjectStore((s) => s.enhanceAll)
   const updateShotStatus = useProjectStore((s) => s.updateShotStatus)
-  const enhancingShotIds = useProjectStore((s) => s.enhancingShotIds)
+  const generateAllVideosAction = useProjectStore((s) => s.generateAllVideos)
   const [enhancingAll, setEnhancingAll] = useState(false)
+  const [generatingAllVideos, setGeneratingAllVideos] = useState(false)
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overColumn, setOverColumn] = useState<ShotStatus | null>(null)
@@ -137,6 +138,15 @@ export function ShotBoard() {
   const handleBulkApprove = () => {
     const reviewShots = project.shots.filter((s) => s.status === 'review')
     for (const shot of reviewShots) updateShotStatus(project.id, shot.id, 'approved')
+  }
+
+  const handleGenerateAllVideos = async () => {
+    setGeneratingAllVideos(true)
+    try {
+      await generateAllVideosAction()
+    } finally {
+      setGeneratingAllVideos(false)
+    }
   }
 
   const handleBulkToReview = () => {
@@ -293,13 +303,27 @@ export function ShotBoard() {
                       </div>
                     )}
                     {col.status === 'approved' && shots.length > 0 && (
-                      <button
-                        onClick={() => handleBulkMove('approved', 'review')}
-                        title="Все в ревью"
-                        className="p-0.5 rounded hover:bg-sky/10 text-sky transition-colors"
-                      >
-                        <ArrowLeft size={12} />
-                      </button>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => handleBulkMove('approved', 'review')}
+                          title="Все в ревью"
+                          className="p-0.5 rounded hover:bg-sky/10 text-sky transition-colors"
+                        >
+                          <ArrowLeft size={12} />
+                        </button>
+                        <button
+                          onClick={handleGenerateAllVideos}
+                          disabled={generatingAllVideos}
+                          title="Генерировать все видео"
+                          className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors disabled:opacity-50"
+                        >
+                          {generatingAllVideos ? (
+                            <div className="w-3 h-3 rounded-full border-2 border-violet border-t-transparent animate-spin" />
+                          ) : (
+                            <Film size={12} />
+                          )}
+                        </button>
+                      </div>
                     )}
                   </div>
 
