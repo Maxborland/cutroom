@@ -357,8 +357,8 @@ router.post('/shots/:shotId/cancel-generation', async (req: Request, res: Respon
     const project = await getProject(req.params.id);
     if (project) {
       const shot = project.shots.find((s) => s.id === req.params.shotId);
-      if (shot && shot.status === 'generating') {
-        shot.status = 'draft';
+      if (shot && (shot.status === 'img_gen' || shot.status === 'vid_gen')) {
+        shot.status = shot.status === 'img_gen' ? 'draft' : 'img_review';
         await saveProject(project);
       }
     }
@@ -380,11 +380,12 @@ router.post('/cancel-all-generation', async (req: Request, res: Response) => {
         cancelled++;
       }
     }
-    // Reset all generating shots to draft
+    // Reset all generating shots
     const project = await getProject(projectId);
     if (project) {
       for (const shot of project.shots) {
-        if (shot.status === 'generating') shot.status = 'draft';
+        if (shot.status === 'img_gen') shot.status = 'draft';
+        if (shot.status === 'vid_gen') shot.status = 'img_review';
       }
       await saveProject(project);
     }
@@ -440,7 +441,7 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     }
 
     // Set status to generating
-    shot.status = 'generating';
+    shot.status = 'img_gen';
     await saveProject(project);
 
     // Track for cancellation
@@ -511,7 +512,7 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
         const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
         if (refreshedShot) {
           refreshedShot.generatedImages.push(filename);
-          refreshedShot.status = 'review';
+          refreshedShot.status = 'img_review';
           await saveProject(refreshed);
         }
       }
@@ -823,6 +824,10 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
 
     const videoPrompt = req.body.prompt || shot.videoPrompt;
 
+    // Set status to vid_gen
+    shot.status = 'vid_gen';
+    await saveProject(project);
+
     // Track for cancellation
     const abortController = new AbortController();
     const key = genKey(project.id, shotId);
@@ -860,7 +865,7 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
         const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
         if (refreshedShot) {
           refreshedShot.videoFile = videoFilename;
-          refreshedShot.status = 'review';
+          refreshedShot.status = 'vid_review';
           await saveProject(refreshed);
         }
       }
@@ -873,6 +878,15 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
       });
     } catch (genErr) {
       activeGenerations.delete(key);
+      // Revert status on error
+      const refreshed = await getProject(req.params.id);
+      if (refreshed) {
+        const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
+        if (refreshedShot) {
+          refreshedShot.status = 'img_review';
+          await saveProject(refreshed);
+        }
+      }
       throw genErr;
     }
   } catch (err) {
@@ -989,7 +1003,7 @@ router.post('/generate-all-videos', async (req: Request, res: Response) => {
           const refreshedShot = refreshed.shots.find((s) => s.id === shot.id);
           if (refreshedShot) {
             refreshedShot.videoFile = videoFilename;
-            refreshedShot.status = 'review';
+            refreshedShot.status = 'vid_review';
             await saveProject(refreshed);
           }
         }

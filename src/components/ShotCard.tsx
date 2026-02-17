@@ -17,20 +17,30 @@ interface ShotCardProps {
   onClick: () => void
 }
 
-const STATUS_STYLES = {
+const STATUS_STYLES: Record<string, { border: string; badge: string; icon: React.ReactNode }> = {
   draft: {
     border: 'border-border hover:border-border-hover',
     badge: 'bg-surface-3 text-text-muted',
     icon: <FileImage size={12} />,
   },
-  generating: {
+  img_gen: {
     border: 'border-violet/20 hover:border-violet/40',
     badge: 'bg-violet-dim text-violet',
     icon: <Loader2 size={12} className="animate-spin" />,
   },
-  review: {
+  img_review: {
     border: 'border-sky/20 hover:border-sky/40',
     badge: 'bg-sky-dim text-sky',
+    icon: <Eye size={12} />,
+  },
+  vid_gen: {
+    border: 'border-violet/20 hover:border-violet/40',
+    badge: 'bg-violet-dim text-violet',
+    icon: <Loader2 size={12} className="animate-spin" />,
+  },
+  vid_review: {
+    border: 'border-amber/20 hover:border-amber/40',
+    badge: 'bg-amber-dim text-amber',
     icon: <Eye size={12} />,
   },
   approved: {
@@ -41,7 +51,7 @@ const STATUS_STYLES = {
 }
 
 export function ShotCard({ shot, isActive, briefAssets, onClick }: ShotCardProps) {
-  const style = STATUS_STYLES[shot.status]
+  const style = STATUS_STYLES[shot.status] || STATUS_STYLES.draft
   const linkedAssets = briefAssets.filter((a) => shot.assetRefs.includes(a.filename))
 
   return (

@@ -132,6 +132,9 @@ function normalizeProject(data: any): Project {
     if (!Array.isArray(s.assetRefs)) s.assetRefs = [];
     if (!Array.isArray(s.enhancedImages)) s.enhancedImages = [];
     delete s.description;
+    // Migrate old 4-status flow to 6-status flow
+    if (s.status === 'generating') s.status = 'img_gen';
+    if (s.status === 'review') s.status = s.videoFile ? 'vid_review' : 'img_review';
   }
   if (!project.script) {
     project.script = '';

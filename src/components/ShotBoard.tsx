@@ -30,8 +30,10 @@ const COLUMN_PREFIX = 'column:'
 
 const COLUMNS: { status: ShotStatus; label: string; color: string }[] = [
   { status: 'draft', label: 'Черновик', color: 'text-text-muted' },
-  { status: 'generating', label: 'Генерация', color: 'text-violet' },
-  { status: 'review', label: 'Ревью', color: 'text-sky' },
+  { status: 'img_gen', label: 'Изображение', color: 'text-violet' },
+  { status: 'img_review', label: 'Ревью IMG', color: 'text-sky' },
+  { status: 'vid_gen', label: 'Видео', color: 'text-violet' },
+  { status: 'vid_review', label: 'Ревью VID', color: 'text-amber' },
   { status: 'approved', label: 'Готово', color: 'text-emerald' },
 ]
 
@@ -105,6 +107,7 @@ export function ShotBoard() {
   const activeShotId = useProjectStore((s) => s.activeShotId)
   const setActiveShotId = useProjectStore((s) => s.setActiveShotId)
   const generateImage = useProjectStore((s) => s.generateImage)
+  const generateVideoAction = useProjectStore((s) => s.generateVideo)
   const cancelAllGeneration = useProjectStore((s) => s.cancelAllGeneration)
   const enhanceAll = useProjectStore((s) => s.enhanceAll)
   const updateShotStatus = useProjectStore((s) => s.updateShotStatus)
@@ -121,9 +124,14 @@ export function ShotBoard() {
 
   if (!project) return null
 
-  const handleBulkGenerate = () => {
+  const handleBulkGenerateImages = () => {
     const drafts = project.shots.filter((s) => s.status === 'draft')
     for (const shot of drafts) generateImage(shot.id)
+  }
+
+  const handleBulkGenerateVideos = () => {
+    const imgReviewShots = project.shots.filter((s) => s.status === 'img_review' && s.generatedImages.length > 0)
+    for (const shot of imgReviewShots) generateVideoAction(shot.id)
   }
 
   const handleEnhanceAll = async () => {
@@ -135,9 +143,9 @@ export function ShotBoard() {
     }
   }
 
-  const handleBulkApprove = () => {
-    const reviewShots = project.shots.filter((s) => s.status === 'review')
-    for (const shot of reviewShots) updateShotStatus(project.id, shot.id, 'approved')
+  const handleBulkApproveVideos = () => {
+    const vidReviewShots = project.shots.filter((s) => s.status === 'vid_review')
+    for (const shot of vidReviewShots) updateShotStatus(project.id, shot.id, 'approved')
   }
 
   const handleGenerateAllVideos = async () => {
@@ -147,11 +155,6 @@ export function ShotBoard() {
     } finally {
       setGeneratingAllVideos(false)
     }
-  }
-
-  const handleBulkToReview = () => {
-    const draftShots = project.shots.filter((s) => s.status === 'draft')
-    for (const shot of draftShots) updateShotStatus(project.id, shot.id, 'review')
   }
 
   const handleBulkMove = (from: ShotStatus, to: ShotStatus) => {
@@ -223,18 +226,20 @@ export function ShotBoard() {
               const isOverThis = overColumn === col.status && activeId !== null
 
               return (
-                <div key={col.status} className="w-72 flex flex-col shrink-0">
+                <div key={col.status} className="w-60 flex flex-col shrink-0">
                   {/* Column header */}
                   <div className="flex items-center gap-2 mb-3 px-1">
                     <div
                       className={`w-2 h-2 rounded-full ${
                         col.status === 'draft'
                           ? 'bg-text-muted'
-                          : col.status === 'generating'
+                          : col.status === 'img_gen' || col.status === 'vid_gen'
                             ? 'bg-violet animate-pulse'
-                            : col.status === 'review'
+                            : col.status === 'img_review'
                               ? 'bg-sky'
-                              : 'bg-emerald'
+                              : col.status === 'vid_review'
+                                ? 'bg-amber'
+                                : 'bg-emerald'
                       }`}
                     />
                     <span className={`font-mono text-xs uppercase tracking-wider ${col.color}`}>
@@ -246,24 +251,15 @@ export function ShotBoard() {
 
                     {/* Bulk actions per column */}
                     {col.status === 'draft' && shots.length > 0 && (
-                      <div className="flex gap-1">
-                        <button
-                          onClick={handleBulkGenerate}
-                          title="Генерировать все"
-                          className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors"
-                        >
-                          <Sparkles size={12} />
-                        </button>
-                        <button
-                          onClick={handleBulkToReview}
-                          title="Все в ревью"
-                          className="p-0.5 rounded hover:bg-sky/10 text-sky transition-colors"
-                        >
-                          <ArrowRight size={12} />
-                        </button>
-                      </div>
+                      <button
+                        onClick={handleBulkGenerateImages}
+                        title="Генерировать все изображения"
+                        className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors"
+                      >
+                        <Sparkles size={12} />
+                      </button>
                     )}
-                    {col.status === 'generating' && shots.length > 0 && (
+                    {col.status === 'img_gen' && shots.length > 0 && (
                       <button
                         onClick={cancelAllGeneration}
                         title="Отменить все"
@@ -272,10 +268,10 @@ export function ShotBoard() {
                         <XCircle size={12} />
                       </button>
                     )}
-                    {col.status === 'review' && shots.length > 0 && (
+                    {col.status === 'img_review' && shots.length > 0 && (
                       <div className="flex gap-1">
                         <button
-                          onClick={() => handleBulkMove('review', 'draft')}
+                          onClick={() => handleBulkMove('img_review', 'draft')}
                           title="Все в черновик"
                           className="p-0.5 rounded hover:bg-text-muted/10 text-text-muted transition-colors"
                         >
@@ -294,7 +290,34 @@ export function ShotBoard() {
                           )}
                         </button>
                         <button
-                          onClick={handleBulkApprove}
+                          onClick={handleBulkGenerateVideos}
+                          title="Генерировать все видео"
+                          className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors"
+                        >
+                          <Film size={12} />
+                        </button>
+                      </div>
+                    )}
+                    {col.status === 'vid_gen' && shots.length > 0 && (
+                      <button
+                        onClick={cancelAllGeneration}
+                        title="Отменить все"
+                        className="p-0.5 rounded hover:bg-red-500/10 text-red-400 transition-colors"
+                      >
+                        <XCircle size={12} />
+                      </button>
+                    )}
+                    {col.status === 'vid_review' && shots.length > 0 && (
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => handleBulkMove('vid_review', 'img_review')}
+                          title="Все на ревью изображений"
+                          className="p-0.5 rounded hover:bg-sky/10 text-sky transition-colors"
+                        >
+                          <ArrowLeft size={12} />
+                        </button>
+                        <button
+                          onClick={handleBulkApproveVideos}
                           title="Утвердить все"
                           className="p-0.5 rounded hover:bg-emerald/10 text-emerald transition-colors"
                         >
@@ -303,27 +326,13 @@ export function ShotBoard() {
                       </div>
                     )}
                     {col.status === 'approved' && shots.length > 0 && (
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => handleBulkMove('approved', 'review')}
-                          title="Все в ревью"
-                          className="p-0.5 rounded hover:bg-sky/10 text-sky transition-colors"
-                        >
-                          <ArrowLeft size={12} />
-                        </button>
-                        <button
-                          onClick={handleGenerateAllVideos}
-                          disabled={generatingAllVideos}
-                          title="Генерировать все видео"
-                          className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors disabled:opacity-50"
-                        >
-                          {generatingAllVideos ? (
-                            <div className="w-3 h-3 rounded-full border-2 border-violet border-t-transparent animate-spin" />
-                          ) : (
-                            <Film size={12} />
-                          )}
-                        </button>
-                      </div>
+                      <button
+                        onClick={() => handleBulkMove('approved', 'vid_review')}
+                        title="Все на ревью видео"
+                        className="p-0.5 rounded hover:bg-amber/10 text-amber transition-colors"
+                      >
+                        <ArrowLeft size={12} />
+                      </button>
                     )}
                   </div>
 

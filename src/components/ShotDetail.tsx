@@ -26,8 +26,10 @@ interface ShotDetailProps {
 
 const STATUS_LABELS: Record<ShotStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Черновик', color: 'text-text-muted', bg: 'bg-surface-3' },
-  generating: { label: 'Генерация...', color: 'text-violet', bg: 'bg-violet-dim' },
-  review: { label: 'На ревью', color: 'text-sky', bg: 'bg-sky-dim' },
+  img_gen: { label: 'Генерация изображения...', color: 'text-violet', bg: 'bg-violet-dim' },
+  img_review: { label: 'Ревью изображения', color: 'text-sky', bg: 'bg-sky-dim' },
+  vid_gen: { label: 'Генерация видео...', color: 'text-violet', bg: 'bg-violet-dim' },
+  vid_review: { label: 'Ревью видео', color: 'text-amber', bg: 'bg-amber-dim' },
   approved: { label: 'Утверждён', color: 'text-emerald', bg: 'bg-emerald-dim' },
 }
 
@@ -431,14 +433,14 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             ) : (
               <Sparkles size={12} />
             )}
-            {generating ? 'Генерация...' : 'Запустить генерацию'}
+            {generating ? 'Генерация...' : 'Генерировать изображение'}
           </button>
         )}
-        {shot.status === 'generating' && (
+        {shot.status === 'img_gen' && (
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 text-violet text-xs">
               <div className="w-3 h-3 rounded-full border-2 border-violet border-t-transparent animate-spin" />
-              Генерация в процессе...
+              Генерация изображения...
             </div>
             <button
               onClick={() => cancelGeneration(shot.id)}
@@ -449,7 +451,42 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             </button>
           </div>
         )}
-        {shot.status === 'review' && (
+        {shot.status === 'img_review' && (
+          <>
+            <button
+              onClick={() => {
+                generateVideoAction(shot.id)
+              }}
+              disabled={generatingVideo || shot.generatedImages.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet text-white text-xs font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+            >
+              <Film size={12} />
+              Генерировать видео
+            </button>
+            <button
+              onClick={() => updateShotStatus(project.id, shot.id, 'draft')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Вернуть в черновик
+            </button>
+          </>
+        )}
+        {shot.status === 'vid_gen' && (
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-violet text-xs">
+              <div className="w-3 h-3 rounded-full border-2 border-violet border-t-transparent animate-spin" />
+              Генерация видео...
+            </div>
+            <button
+              onClick={() => cancelGeneration(shot.id)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <X size={12} />
+              Отменить
+            </button>
+          </div>
+        )}
+        {shot.status === 'vid_review' && (
           <>
             <button
               onClick={() => updateShotStatus(project.id, shot.id, 'approved')}
@@ -459,10 +496,10 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
               Утвердить
             </button>
             <button
-              onClick={() => updateShotStatus(project.id, shot.id, 'draft')}
+              onClick={() => updateShotStatus(project.id, shot.id, 'img_review')}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary transition-colors"
             >
-              Вернуть в черновик
+              Вернуть на ревью изображения
             </button>
           </>
         )}

@@ -168,7 +168,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       generatingShotIds: new Set([...state.generatingShotIds, shotId]),
       projects: state.projects.map((p) =>
         p.id === projectId
-          ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status: 'generating' as ShotStatus } : s)) }
+          ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status: 'img_gen' as ShotStatus } : s)) }
           : p
       ),
     }))
@@ -385,11 +385,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!projectId) return
     try {
       await api.generate.cancelImage(projectId, shotId)
-      // Optimistic update
+      // Optimistic update — img_gen→draft, vid_gen→img_review
       set((state) => ({
         projects: state.projects.map((p) =>
           p.id === projectId
-            ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status: 'draft' as ShotStatus } : s)) }
+            ? {
+                ...p,
+                shots: p.shots.map((s) => {
+                  if (s.id !== shotId) return s
+                  if (s.status === 'vid_gen') return { ...s, status: 'img_review' as ShotStatus }
+                  return { ...s, status: 'draft' as ShotStatus }
+                }),
+              }
             : p
         ),
       }))
@@ -403,11 +410,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!projectId) return
     try {
       await api.generate.cancelAll(projectId)
-      // Optimistic update — reset all generating to draft
+      // Optimistic update — img_gen→draft, vid_gen→img_review
       set((state) => ({
         projects: state.projects.map((p) =>
           p.id === projectId
-            ? { ...p, shots: p.shots.map((s) => (s.status === 'generating' ? { ...s, status: 'draft' as ShotStatus } : s)) }
+            ? {
+                ...p,
+                shots: p.shots.map((s) => {
+                  if (s.status === 'img_gen') return { ...s, status: 'draft' as ShotStatus }
+                  if (s.status === 'vid_gen') return { ...s, status: 'img_review' as ShotStatus }
+                  return s
+                }),
+              }
             : p
         ),
       }))

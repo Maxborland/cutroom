@@ -1,4 +1,4 @@
-export type ShotStatus = 'draft' | 'generating' | 'review' | 'approved'
+export type ShotStatus = 'draft' | 'img_gen' | 'img_review' | 'vid_gen' | 'vid_review' | 'approved'
 export type PipelineStage = 'brief' | 'script' | 'shots' | 'review' | 'export'
 export type BriefType = 'text' | 'visual' | 'mixed'
 
