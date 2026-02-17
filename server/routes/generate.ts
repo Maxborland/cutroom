@@ -414,7 +414,8 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     // Get Higgsfield image model from settings
     const effective = await resolveSettings(project);
     const modelId = req.body.model || effective.higgsfieldImageModel;
-    const hfModel = findImageModel(modelId);
+    // Use registry model or create generic one for custom model IDs
+    const hfModel = findImageModel(modelId) || { id: modelId, name: modelId, category: 'image' as const };
     const rawPrompt = req.body.prompt || shot.imagePrompt;
 
     // Boost prompt with photorealism instructions; preserve building geometry exactly
@@ -452,7 +453,7 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     try {
       let resultUrl: string;
 
-      if (hfModel) {
+      try {
         // Use Higgsfield for image generation
         resultUrl = await generateImageHiggsfield(
           {
@@ -463,22 +464,26 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
           },
           abortController.signal,
         );
-      } else {
-        // Fallback: try OpenRouter if model not found in Higgsfield registry
-        console.log(`[generate-image] Model ${modelId} not in Higgsfield registry, falling back to OpenRouter`);
-        const referenceImages: ReferenceImage[] = [];
-        if (refDataUrls.length > 0) {
-          for (const dataUrl of refDataUrls) {
-            const [header, b64] = dataUrl.split(',');
-            const mimeType = header.match(/data:([^;]+)/)?.[1] || 'image/jpeg';
-            referenceImages.push({ base64: b64, mimeType });
+      } catch (hfErr: any) {
+        // If Higgsfield credentials not configured, fall back to OpenRouter
+        if (hfErr.message?.includes('credentials are not configured')) {
+          console.log(`[generate-image] No Higgsfield credentials, falling back to OpenRouter`);
+          const referenceImages: ReferenceImage[] = [];
+          if (refDataUrls.length > 0) {
+            for (const dataUrl of refDataUrls) {
+              const [header, b64] = dataUrl.split(',');
+              const mimeType = header.match(/data:([^;]+)/)?.[1] || 'image/jpeg';
+              referenceImages.push({ base64: b64, mimeType });
+            }
           }
+          const imageOptions: ImageGenOptions = {
+            size: effective.imageSize,
+            quality: effective.imageQuality,
+          };
+          resultUrl = await generateImage(modelId, prompt, referenceImages, abortController.signal, imageOptions);
+        } else {
+          throw hfErr;
         }
-        const imageOptions: ImageGenOptions = {
-          size: effective.imageSize,
-          quality: effective.imageQuality,
-        };
-        resultUrl = await generateImage(modelId, prompt, referenceImages, abortController.signal, imageOptions);
       }
 
       // Save result to disk
@@ -838,7 +843,7 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
         {
           model: videoModel,
           prompt: videoPrompt,
-          sourceImageDataUrl: sourceDataUrl,
+          sourceImageUrl: sourceDataUrl,
           duration: shot.duration,
         },
         abortController.signal,
@@ -983,7 +988,7 @@ router.post('/generate-all-videos', async (req: Request, res: Response) => {
         const videoUrl = await generateVideo({
           model: videoModel,
           prompt: shot.videoPrompt,
-          sourceImageDataUrl: sourceDataUrl,
+          sourceImageUrl: sourceDataUrl,
           duration: shot.duration,
         });
 

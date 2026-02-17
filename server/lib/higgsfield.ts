@@ -108,8 +108,8 @@ export async function generateImageHiggsfield(
 export interface HiggsfieldVideoOptions {
   model: HiggsfieldVideoModel;
   prompt: string;
-  sourceImageDataUrl: string; // "data:image/...;base64,..."
-  duration?: number;          // seconds
+  sourceImageUrl: string; // URL or data URL of source image
+  duration?: number;      // seconds
 }
 
 /**
@@ -120,22 +120,19 @@ export async function generateVideo(
   options: HiggsfieldVideoOptions,
   signal?: AbortSignal,
 ): Promise<string> {
-  const { model, prompt, sourceImageDataUrl, duration } = options;
+  const { model, prompt, sourceImageUrl, duration } = options;
   const client = await getClient();
 
   if (signal?.aborted) throw new Error('Generation cancelled');
 
   const input: Record<string, unknown> = {
     prompt,
-    input_images: [
-      { type: 'image_url', image_url: sourceImageDataUrl },
-    ],
+    image_url: sourceImageUrl,
   };
 
-  if (model.subModel) input.model = model.subModel;
   if (duration) input.duration = duration;
 
-  console.log(`[higgsfield] video endpoint=${model.id}, subModel=${model.subModel ?? '-'}, duration=${duration ?? '-'}`);
+  console.log(`[higgsfield] video endpoint=${model.id}, duration=${duration ?? '-'}`);
 
   if (signal?.aborted) throw new Error('Generation cancelled');
 

@@ -1,5 +1,5 @@
-// Higgsfield model registry — hardcoded endpoints per SDK / AIML API docs.
-// Each model has its own endpoint pattern and reference-image parameter format.
+// Higgsfield model registry — endpoints from official docs (docs.higgsfield.ai).
+// Users can enter custom model IDs via ModelSelect if a model is not listed here.
 
 export interface HiggsfieldImageModel {
   id: string;              // text-to-image endpoint
@@ -19,66 +19,46 @@ export interface HiggsfieldVideoModel {
 
 export const HIGGSFIELD_IMAGE_MODELS: HiggsfieldImageModel[] = [
   {
-    id: 'flux-pro/kontext/max/text-to-image',
-    name: 'Flux Kontext Max',
-    category: 'image',
-    i2iEndpoint: 'flux-pro/kontext/max/image-to-image',
-    refParam: 'image_url',
-  },
-  {
-    id: 'flux-pro/kontext/text-to-image',
-    name: 'Flux Kontext',
-    category: 'image',
-    i2iEndpoint: 'flux-pro/kontext/image-to-image',
-    refParam: 'image_url',
-  },
-  {
-    id: '/v1/text2image/soul',
-    name: 'Higgsfield Soul',
-    category: 'image',
-    i2iEndpoint: '/v1/img2img/soul',
-    refParam: 'reference_image',
-    extraParams: { strength: 0.7 },
-  },
-  {
-    id: 'gpt-image/1.5/text-to-image',
-    name: 'GPT Image 1.5',
-    category: 'image',
-    i2iEndpoint: 'gpt-image/1.5/image-to-image',
-    refParam: 'input_images',
-  },
-  {
     id: 'bytedance/seedream/v4/text-to-image',
     name: 'Seedream V4',
     category: 'image',
   },
   {
-    id: 'nano-banana/pro/text-to-image',
-    name: 'Nano Banana Pro',
+    id: 'higgsfield-ai/soul/standard',
+    name: 'Higgsfield Soul',
+    category: 'image',
+  },
+  {
+    id: 'reve/text-to-image',
+    name: 'Reve',
+    category: 'image',
+  },
+  {
+    id: 'bytedance/seedream/v4/edit',
+    name: 'Seedream V4 Edit',
     category: 'image',
   },
 ];
 
 export const HIGGSFIELD_VIDEO_MODELS: HiggsfieldVideoModel[] = [
   {
-    id: '/v1/image2video/dop',
-    name: 'DOP Turbo',
-    category: 'video',
-    subModel: 'dop-turbo',
-  },
-  {
-    id: 'kling/3.0/image-to-video',
-    name: 'Kling 3.0',
+    id: 'higgsfield-ai/dop/standard',
+    name: 'DOP Standard',
     category: 'video',
   },
   {
-    id: 'wan/2.5/image-to-video',
-    name: 'WAN 2.5',
+    id: 'higgsfield-ai/dop/preview',
+    name: 'DOP Preview',
     category: 'video',
   },
   {
-    id: 'minimax/hailuo-02/image-to-video',
-    name: 'MiniMax Hailuo',
+    id: 'kling-video/v2.1/pro/image-to-video',
+    name: 'Kling 2.1 Pro',
+    category: 'video',
+  },
+  {
+    id: 'bytedance/seedance/v1/pro/image-to-video',
+    name: 'Seedance V1 Pro',
     category: 'video',
   },
 ];

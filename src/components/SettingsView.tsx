@@ -31,8 +31,8 @@ export function SettingsView() {
   const [textModel, setTextModel] = useState('openai/gpt-4o')
   const [imageModel, setImageModel] = useState('openai/gpt-image-1')
   const [enhanceModel, setEnhanceModel] = useState('openai/gpt-image-1')
-  const [hfImageModel, setHfImageModel] = useState('flux-pro/kontext/max/text-to-image')
-  const [hfVideoModel, setHfVideoModel] = useState('/v1/image2video/dop')
+  const [hfImageModel, setHfImageModel] = useState('bytedance/seedream/v4/text-to-image')
+  const [hfVideoModel, setHfVideoModel] = useState('higgsfield-ai/dop/standard')
   const [imageAspectRatio, setImageAspectRatio] = useState('16:9')
   const [imageSize, setImageSize] = useState('auto')
   const [imageQuality, setImageQuality] = useState('high')
@@ -227,7 +227,7 @@ export function SettingsView() {
               onChange={setHfImageModel}
               models={hfImageModels}
               loading={modelsLoading}
-              placeholder="flux-pro/kontext/max/text-to-image"
+              placeholder="bytedance/seedream/v4/text-to-image"
             />
             <ModelSelect
               label="Модель генерации видео"
@@ -235,7 +235,7 @@ export function SettingsView() {
               onChange={setHfVideoModel}
               models={hfVideoModels}
               loading={modelsLoading}
-              placeholder="/v1/image2video/dop"
+              placeholder="higgsfield-ai/dop/standard"
             />
             <div>
               <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
