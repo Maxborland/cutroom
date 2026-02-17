@@ -396,7 +396,10 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     // Get image model from request body, global settings, or default
     const effective = await resolveSettings(project);
     const imageModel = req.body.model || effective.imageModel;
-    const prompt = req.body.prompt || shot.imagePrompt;
+    const rawPrompt = req.body.prompt || shot.imagePrompt;
+
+    // Boost prompt with photorealism instructions so the model never generates 3D-looking output
+    const prompt = `Ultra-photorealistic professional photograph, NOT a 3D render or CGI. ${rawPrompt}. All people must look like real humans with natural skin, real clothing and natural poses — never 3D models or mannequins. Shot on Sony A7R V, natural lighting, real materials, film grain.`;
 
     // Load reference images from shot's assetRefs
     const referenceImages: ReferenceImage[] = [];

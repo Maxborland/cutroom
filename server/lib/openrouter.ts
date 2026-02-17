@@ -158,10 +158,23 @@ export async function generateImage(
         image_url: { url: `data:${ref.mimeType};base64,${ref.base64}` },
       });
     }
-    // Text prompt instructs to use the reference as the base
+    // Text prompt instructs to use the reference for composition only, output must be photorealistic
     contentParts.push({
       type: 'text',
-      text: `Use the provided reference image(s) as the visual base. Generate a new image that preserves the composition, architecture, and perspective of the reference but applies the following creative direction:\n\n${prompt}`,
+      text: `The provided reference image(s) are 3D architectural renders. Use them ONLY as composition, perspective, and layout reference. Do NOT replicate the 3D render style or aesthetic.
+
+Generate an ULTRA-PHOTOREALISTIC PHOTOGRAPH that looks like it was shot by a professional architectural photographer with a Sony A7R V camera. Critical requirements:
+- All people MUST be real humans photographed in natural settings — NOT 3D models, mannequins, or CGI characters. Realistic skin, clothing, hair, natural poses.
+- Real-world materials: weathered concrete, reflective glass, natural wood grain, aged metal
+- Natural lighting: realistic sun position, atmospheric haze, volumetric light, real shadows
+- Photographic qualities: depth of field with bokeh, film grain, subtle vignette, chromatic aberration
+- Environmental realism: real sky with clouds, authentic vegetation, ground textures and debris
+
+Creative direction for this shot:
+
+${prompt}
+
+The final image must be indistinguishable from a real photograph. Never produce anything that looks like a 3D render, CGI, or computer-generated image.`,
     });
   } else {
     contentParts.push({ type: 'text', text: prompt });
