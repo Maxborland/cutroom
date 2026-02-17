@@ -161,20 +161,27 @@ export async function generateImage(
     // Text prompt instructs to use the reference for composition only, output must be photorealistic
     contentParts.push({
       type: 'text',
-      text: `The provided reference image(s) are 3D architectural renders. Use them ONLY as composition, perspective, and layout reference. Do NOT replicate the 3D render style or aesthetic.
+      text: `The provided reference image(s) are 3D architectural renders of a REAL building project that is being sold to buyers.
 
-Generate an ULTRA-PHOTOREALISTIC PHOTOGRAPH that looks like it was shot by a professional architectural photographer with a Sony A7R V camera. Critical requirements:
-- All people MUST be real humans photographed in natural settings — NOT 3D models, mannequins, or CGI characters. Realistic skin, clothing, hair, natural poses.
-- Real-world materials: weathered concrete, reflective glass, natural wood grain, aged metal
-- Natural lighting: realistic sun position, atmospheric haze, volumetric light, real shadows
-- Photographic qualities: depth of field with bokeh, film grain, subtle vignette, chromatic aberration
-- Environmental realism: real sky with clouds, authentic vegetation, ground textures and debris
+ABSOLUTE RULE — PRESERVE BUILDING GEOMETRY EXACTLY:
+- The building shape, proportions, number of floors, facade pattern, window layout, balcony positions, roof silhouette, and all architectural features MUST match the reference PIXEL-PERFECTLY.
+- Do NOT add, remove, or modify any architectural elements: no extra floors, no changed facade, no altered proportions, no invented details.
+- The building in the output must be IDENTICAL to the reference in geometry — only the rendering style changes from 3D to photographic.
+- This is a real estate product — any deviation from the actual design is misleading to buyers.
+
+STYLE TRANSFORMATION — change ONLY these aspects:
+- Rendering style: from 3D/CGI to ultra-photorealistic photograph (Sony A7R V camera)
+- People: add real humans (NOT 3D models) — pedestrians, residents, visitors with natural skin, clothing, hair
+- Materials: apply real-world textures — weathered concrete, reflective glass, natural wood grain, aged metal
+- Lighting: natural sun position, atmospheric haze, volumetric light, real shadows
+- Environment: real sky with clouds, authentic vegetation, ground textures
+- Photographic qualities: depth of field with bokeh, film grain, subtle vignette
 
 Creative direction for this shot:
 
 ${prompt}
 
-The final image must be indistinguishable from a real photograph. Never produce anything that looks like a 3D render, CGI, or computer-generated image.`,
+REMEMBER: The building geometry is SACRED — preserve it exactly. Only transform the visual style to photorealistic. The result must look like a real photograph of THIS EXACT building.`,
     });
   } else {
     contentParts.push({ type: 'text', text: prompt });

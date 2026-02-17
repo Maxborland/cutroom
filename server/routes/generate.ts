@@ -25,7 +25,7 @@ const DEFAULT_ENHANCE_PROMPT = `Transform this architectural render into an ultr
 - Lens characteristics: subtle vignette, chromatic aberration, natural lens flare
 - Post-processing: film grain, realistic shadows with ambient occlusion
 
-Preserve the exact composition, perspective, and architectural design. The result must be indistinguishable from a real photograph.`;
+ABSOLUTE RULE: Preserve the EXACT building geometry — shape, proportions, number of floors, facade pattern, window layout, balcony positions, roof silhouette. This is a real estate product being sold — any architectural deviation is unacceptable. Only change the rendering style to photographic, never the building itself. The result must be indistinguishable from a real photograph of this exact building.`;
 
 /** Resolve the effective model and prompts by merging project + global settings */
 async function resolveSettings(project: Project) {
@@ -409,8 +409,8 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     const imageModel = req.body.model || effective.imageModel;
     const rawPrompt = req.body.prompt || shot.imagePrompt;
 
-    // Boost prompt with photorealism instructions so the model never generates 3D-looking output
-    const prompt = `Ultra-photorealistic professional photograph, NOT a 3D render or CGI. ${rawPrompt}. The scene must feel alive and lived-in — include real people where contextually appropriate (pedestrians, residents, visitors). All people must look like real humans with natural skin, real clothing and natural poses — never 3D models or mannequins. Shot on Sony A7R V, natural lighting, real materials, film grain.`;
+    // Boost prompt with photorealism instructions; preserve building geometry exactly
+    const prompt = `Ultra-photorealistic professional photograph, NOT a 3D render or CGI. CRITICAL: preserve the exact building geometry, shape, proportions, facade, and all architectural features from the reference — this is a real estate product being sold. ${rawPrompt}. The scene must feel alive — include real people where appropriate (pedestrians, residents, visitors). All people must be real humans with natural skin, clothing and poses. Shot on Sony A7R V, natural lighting, real materials, film grain.`;
 
     // Load reference images from shot's assetRefs
     const referenceImages: ReferenceImage[] = [];
