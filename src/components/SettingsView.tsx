@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
-import { Key, Wand2, Save, Loader2, CheckCircle2, Sparkles, Maximize2, Film } from 'lucide-react'
+import { Key, Wand2, Save, Loader2, CheckCircle2, Sparkles, Maximize2, Film, Zap } from 'lucide-react'
 import { ModelSelect } from './ModelSelect'
 
 const SIZE_OPTIONS = [
@@ -23,6 +23,50 @@ const ASPECT_RATIO_OPTIONS = [
   { value: '4:3', label: '4:3' },
   { value: '3:4', label: '3:4' },
 ]
+
+function TestModelButton({ modelId }: { modelId: string }) {
+  const [status, setStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
+  const [error, setError] = useState('')
+
+  const handleTest = async () => {
+    if (!modelId.trim()) return
+    setStatus('testing')
+    setError('')
+    try {
+      const result = await api.models.testModel(modelId)
+      setStatus(result.valid ? 'ok' : 'fail')
+      if (!result.valid) setError(result.error || 'Invalid model')
+    } catch (e: any) {
+      setStatus('fail')
+      setError(e.message)
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={handleTest}
+        disabled={!modelId.trim() || status === 'testing'}
+        title={status === 'ok' ? 'Модель доступна' : status === 'fail' ? error : 'Проверить доступность модели'}
+        className={`px-2.5 py-2 rounded-lg border text-xs font-mono transition-all disabled:opacity-50 ${
+          status === 'ok'
+            ? 'border-emerald/30 text-emerald bg-emerald-dim'
+            : status === 'fail'
+              ? 'border-red-500/30 text-red-400 bg-red-500/5'
+              : 'border-border text-text-secondary hover:text-text-primary hover:border-violet/30'
+        }`}
+      >
+        {status === 'testing' ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : status === 'ok' ? (
+          <CheckCircle2 size={14} />
+        ) : (
+          <Zap size={14} />
+        )}
+      </button>
+    </div>
+  )
+}
 
 export function SettingsView() {
   const [apiKey, setApiKey] = useState('')
@@ -221,22 +265,32 @@ export function SettingsView() {
             Используется для генерации изображений и видео.
           </p>
           <div className="space-y-4 mt-4">
-            <ModelSelect
-              label="Модель генерации изображений"
-              value={hfImageModel}
-              onChange={setHfImageModel}
-              models={hfImageModels}
-              loading={modelsLoading}
-              placeholder="bytedance/seedream/v4/text-to-image"
-            />
-            <ModelSelect
-              label="Модель генерации видео"
-              value={hfVideoModel}
-              onChange={setHfVideoModel}
-              models={hfVideoModels}
-              loading={modelsLoading}
-              placeholder="higgsfield-ai/dop/standard"
-            />
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <ModelSelect
+                  label="Модель генерации изображений"
+                  value={hfImageModel}
+                  onChange={setHfImageModel}
+                  models={hfImageModels}
+                  loading={modelsLoading}
+                  placeholder="bytedance/seedream/v4/text-to-image"
+                />
+              </div>
+              <TestModelButton modelId={hfImageModel} />
+            </div>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <ModelSelect
+                  label="Модель генерации видео"
+                  value={hfVideoModel}
+                  onChange={setHfVideoModel}
+                  models={hfVideoModels}
+                  loading={modelsLoading}
+                  placeholder="higgsfield-ai/dop/standard"
+                />
+              </div>
+              <TestModelButton modelId={hfVideoModel} />
+            </div>
             <div>
               <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
                 Соотношение сторон изображения

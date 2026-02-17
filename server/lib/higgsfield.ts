@@ -22,6 +22,39 @@ async function getClient(): Promise<HiggsfieldClient> {
   return _client;
 }
 
+// ── Model validation ─────────────────────────────────────────────────
+
+/**
+ * Test if a model endpoint is valid by sending a minimal request.
+ * Returns { valid: true } or { valid: false, error: string }.
+ */
+export async function testModelEndpoint(modelId: string): Promise<{ valid: boolean; error?: string }> {
+  const client = await getClient();
+  try {
+    // Send a minimal request — the model should reject it with 422 (validation)
+    // rather than 404 (model not found).
+    await client.subscribe(modelId, {
+      input: { prompt: '__test__' },
+      withPolling: false,
+    });
+    return { valid: true };
+  } catch (err: any) {
+    // 404 = model not found, definitely invalid
+    if (err.statusCode === 404) {
+      return { valid: false, error: `Model not found: ${modelId}` };
+    }
+    // 422/400 = model exists but input invalid → model is valid
+    if (err.statusCode === 422 || err.statusCode === 400) {
+      return { valid: true };
+    }
+    // Any other response means the model endpoint exists
+    if (err.statusCode && err.statusCode < 500) {
+      return { valid: true };
+    }
+    return { valid: false, error: err.message };
+  }
+}
+
 // ── Image generation ─────────────────────────────────────────────────
 
 export interface HiggsfieldImageOptions {

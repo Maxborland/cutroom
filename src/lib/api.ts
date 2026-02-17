@@ -107,6 +107,11 @@ export const api = {
       higgsfieldImageModels: { id: string; name: string }[];
       higgsfieldVideoModels: { id: string; name: string }[];
     }>('/models'),
+    testModel: (modelId: string) =>
+      request<{ valid: boolean; error?: string }>('/models/test', {
+        method: 'POST',
+        body: JSON.stringify({ modelId }),
+      }),
   },
   export: {
     zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,

@@ -18,6 +18,7 @@ export interface HiggsfieldVideoModel {
 }
 
 export const HIGGSFIELD_IMAGE_MODELS: HiggsfieldImageModel[] = [
+  // Confirmed in official docs (docs.higgsfield.ai)
   {
     id: 'bytedance/seedream/v4/text-to-image',
     name: 'Seedream V4',
@@ -36,6 +37,17 @@ export const HIGGSFIELD_IMAGE_MODELS: HiggsfieldImageModel[] = [
   {
     id: 'bytedance/seedream/v4/edit',
     name: 'Seedream V4 Edit',
+    category: 'image',
+  },
+  // Available on platform but exact model_id may need verification
+  {
+    id: 'higgsfield-ai/nano-banana/pro',
+    name: 'Nano Banana Pro',
+    category: 'image',
+  },
+  {
+    id: 'flux-pro/kontext/max/text-to-image',
+    name: 'Flux Kontext Max',
     category: 'image',
   },
 ];

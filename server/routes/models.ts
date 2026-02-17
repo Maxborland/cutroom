@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getApiKey } from './settings.js';
 import { HIGGSFIELD_IMAGE_MODELS, HIGGSFIELD_VIDEO_MODELS } from '../lib/higgsfield-models.js';
+import { testModelEndpoint } from '../lib/higgsfield.js';
 
 const router = Router();
 
@@ -88,6 +89,21 @@ router.get('/', async (_req: Request, res: Response) => {
   const higgsfieldVideoModels = HIGGSFIELD_VIDEO_MODELS.map((m) => ({ id: m.id, name: m.name }));
 
   res.json({ textModels, imageModels, higgsfieldImageModels, higgsfieldVideoModels });
+});
+
+// POST /api/models/test — test if a Higgsfield model ID is valid
+router.post('/test', async (req: Request, res: Response) => {
+  try {
+    const { modelId } = req.body;
+    if (!modelId || typeof modelId !== 'string') {
+      res.status(400).json({ error: 'modelId is required' });
+      return;
+    }
+    const result = await testModelEndpoint(modelId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ valid: false, error: err.message });
+  }
 });
 
 /** Reset the model cache (used in tests) */
