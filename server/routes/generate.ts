@@ -201,11 +201,22 @@ router.post('/split-shots', async (req: Request, res: Response) => {
       userPrompt,
       assetSection,
       '',
+      '## HUMAN PRESENCE REQUIREMENT',
+      'Every imagePrompt MUST include real people appropriate to the scene context unless the shot is a pure aerial/drone overview or an abstract detail close-up.',
+      'Examples of appropriate people:',
+      '- Exterior building shots: pedestrians walking, residents chatting, children playing, people at café terraces',
+      '- Interior shots: residents relaxing, families, couples, people cooking or reading',
+      '- Pool/gym/amenity areas: people swimming, exercising, lounging',
+      '- Entrance/lobby: doorman, residents entering, guests arriving',
+      '- Park/garden areas: joggers, dog walkers, families on benches, cyclists',
+      'People must be described as REAL HUMANS with natural clothing, skin, and poses — never 3D models or mannequins.',
+      'This is critical for making the project feel alive and lived-in.',
+      '',
       '## CRITICAL OUTPUT FORMAT REQUIREMENT',
       'You MUST return ONLY a valid JSON array. No markdown, no tables, no explanations.',
       'Each element must have these fields:',
       '- "scene": string — brief Russian description of what happens in this shot',
-      '- "imagePrompt": string — AI-ready image generation prompt in English (photorealistic, cinematic)',
+      '- "imagePrompt": string — AI-ready image generation prompt in English (photorealistic, cinematic, MUST include people where appropriate)',
       '- "videoPrompt": string — AI-ready video generation prompt in English (include camera movement)',
       '- "duration": number — shot duration in seconds (2-5)',
       '- "assetRefs": string[] — filenames of reference frames for this shot (MUST include relevant assets!)',
@@ -216,7 +227,7 @@ router.post('/split-shots', async (req: Request, res: Response) => {
       '[',
       '  {',
       '    "scene": "Рассвет над жилым комплексом, вид с дрона",',
-      '    "imagePrompt": "Cinematic aerial drone shot of luxury residential complex at golden hour...",',
+      '    "imagePrompt": "Cinematic aerial drone shot of luxury residential complex at golden hour, real people walking along tree-lined paths, a couple sitting on a bench near the fountain, warm natural lighting...",',
       '    "videoPrompt": "Slow ascending drone reveal of modern residential towers at sunrise, camera tilts down...",',
       '    "duration": 4,',
       '    "assetRefs": ["Blago_nizko_001_00000.jpg", "Blago_nizko_001_00001.jpg"],',
@@ -399,7 +410,7 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
     const rawPrompt = req.body.prompt || shot.imagePrompt;
 
     // Boost prompt with photorealism instructions so the model never generates 3D-looking output
-    const prompt = `Ultra-photorealistic professional photograph, NOT a 3D render or CGI. ${rawPrompt}. All people must look like real humans with natural skin, real clothing and natural poses — never 3D models or mannequins. Shot on Sony A7R V, natural lighting, real materials, film grain.`;
+    const prompt = `Ultra-photorealistic professional photograph, NOT a 3D render or CGI. ${rawPrompt}. The scene must feel alive and lived-in — include real people where contextually appropriate (pedestrians, residents, visitors). All people must look like real humans with natural skin, real clothing and natural poses — never 3D models or mannequins. Shot on Sony A7R V, natural lighting, real materials, film grain.`;
 
     // Load reference images from shot's assetRefs
     const referenceImages: ReferenceImage[] = [];
