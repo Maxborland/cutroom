@@ -39,15 +39,21 @@ export const HIGGSFIELD_IMAGE_MODELS: HiggsfieldImageModel[] = [
     name: 'Seedream V4 Edit',
     category: 'image',
   },
-  // Available on platform but exact model_id may need verification
+  // Web UI uses fnf.higgsfield.ai/jobs/{name}; Cloud API model_id may differ.
+  // Use test button in Settings to verify which IDs work with your API key.
   {
-    id: 'higgsfield-ai/nano-banana/pro',
+    id: 'nano-banana-2',
     name: 'Nano Banana Pro',
     category: 'image',
   },
   {
-    id: 'flux-pro/kontext/max/text-to-image',
+    id: 'flux-kontext-max',
     name: 'Flux Kontext Max',
+    category: 'image',
+  },
+  {
+    id: 'flux-pro/kontext/max/text-to-image',
+    name: 'Flux Kontext Max (alt)',
     category: 'image',
   },
 ];
