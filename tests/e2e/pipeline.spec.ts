@@ -1,52 +1,40 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
+
+async function createProject(request: APIRequestContext, namePrefix: string) {
+  const res = await request.post('http://localhost:3001/api/projects', {
+    data: { name: `${namePrefix}-${Date.now()}` },
+  })
+  expect(res.ok()).toBe(true)
+  const body = await res.json()
+  return body.id as string
+}
+
+async function openProjectView(page: Page, request: APIRequestContext, view: 'brief' | 'settings', namePrefix: string) {
+  const id = await createProject(request, namePrefix)
+  await page.goto(`/projects/${id}/${view}`)
+  return id
+}
 
 test.describe('Pipeline Flow', () => {
-  test('should load the app and show brief editor', async ({ page }) => {
-    await page.goto('/')
-    await page.waitForTimeout(3000)
-
-    const nameInput = page.locator('input[placeholder="Название проекта..."]')
-    if (await nameInput.isVisible().catch(() => false)) {
-      await nameInput.fill('Pipeline Test')
-      await page.locator('text=Создать проект').click()
-      await page.waitForTimeout(1000)
-    }
-
+  test('should load the app and show brief editor', async ({ page, request }) => {
+    await openProjectView(page, request, 'brief', 'Pipeline Test')
     await expect(page.locator('textarea').first()).toBeVisible({ timeout: 10000 })
   })
 
-  test('should write brief text', async ({ page }) => {
-    await page.goto('/')
-    await page.waitForTimeout(3000)
-
-    const nameInput = page.locator('input[placeholder="Название проекта..."]')
-    if (await nameInput.isVisible().catch(() => false)) {
-      await nameInput.fill('Brief Text Test')
-      await page.locator('text=Создать проект').click()
-      await page.waitForTimeout(1000)
-    }
+  test('should write brief text', async ({ page, request }) => {
+    await openProjectView(page, request, 'brief', 'Brief Text Test')
 
     const textarea = page.locator('textarea').first()
     await textarea.fill('This is a test brief')
-    await page.waitForTimeout(1000)
     await expect(textarea).toHaveValue('This is a test brief')
   })
 
-  test('should open settings and show model configuration', async ({ page }) => {
-    await page.goto('/')
-    await page.waitForTimeout(3000)
+  test('should open settings and show model configuration', async ({ page, request }) => {
+    await openProjectView(page, request, 'settings', 'Settings Test')
 
-    const nameInput = page.locator('input[placeholder="Название проекта..."]')
-    if (await nameInput.isVisible().catch(() => false)) {
-      await nameInput.fill('Settings Test')
-      await page.locator('text=Создать проект').click()
-      await page.waitForTimeout(1000)
-    }
-
-    await page.getByRole('button', { name: 'Настройки' }).click()
-    await expect(page.locator('text=OpenRouter API')).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('text=Модели')).toBeVisible()
-    await expect(page.locator('text=Мастер-промпты')).toBeVisible()
+    await expect(page.getByLabel(/OpenRouter API Key/i)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'Ключи и текстовые модели' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Мастер-промпты' })).toBeVisible()
   })
 
   test('health check endpoint should work', async ({ request }) => {

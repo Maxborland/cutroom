@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SettingsView } from '../../src/components/SettingsView'
 
 vi.mock('../../src/lib/api', () => ({
@@ -7,10 +7,27 @@ vi.mock('../../src/lib/api', () => ({
     settings: {
       get: vi.fn().mockResolvedValue({
         openRouterApiKey: '••••1234',
+        falApiKey: '••••fal',
+        replicateApiToken: '••••rep',
         defaultTextModel: 'openai/gpt-4o',
+        defaultDescribeModel: 'openai/gpt-4o',
+        defaultScriptModel: 'openai/gpt-4o',
+        defaultShotSplitModel: 'openai/gpt-4o',
+        defaultReviewModel: 'openai/gpt-4o',
         defaultImageModel: 'openai/gpt-image-1',
+        defaultEnhanceModel: 'openai/gpt-image-1',
+        defaultImageGenModel: 'fal/flux-kontext-max',
+        defaultVideoGenModel: 'fal/minimax-hailuo',
+        defaultAudioGenModel: 'fal/minimax/speech-02-hd',
+        imageAspectRatio: '16:9',
+        imageSize: 'auto',
+        imageQuality: 'high',
+        videoQuality: '1080P',
+        enhanceSize: 'auto',
+        enhanceQuality: 'high',
         masterPromptScriptwriter: 'System prompt',
         masterPromptShotSplitter: 'Splitter prompt',
+        masterPromptEnhance: '',
       }),
       update: vi.fn().mockResolvedValue({}),
     },
@@ -20,15 +37,18 @@ vi.mock('../../src/lib/api', () => ({
           { id: 'openai/gpt-4o', name: 'GPT-4o' },
           { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
         ],
-        imageModels: [
-          { id: 'openai/gpt-image-1', name: 'GPT Image 1' },
+        imageModels: [{ id: 'openai/gpt-image-1', name: 'GPT Image 1' }],
+        imageGenModels: [{ id: 'fal/flux-kontext-max', name: 'Flux Kontext Max' }],
+        videoGenModels: [
+          { id: 'fal/kling-2.1-pro', name: 'Kling 2.1 Pro', videoQualitySupport: 'none' },
+          {
+            id: 'fal/minimax-hailuo',
+            name: 'MiniMax Hailuo 02',
+            videoQualitySupport: 'explicit',
+            videoQualityOptions: ['768P', '1080P'],
+          },
         ],
-        higgsfieldImageModels: [
-          { id: 'bytedance/seedream/v4/text-to-image', name: 'Seedream V4' },
-        ],
-        higgsfieldVideoModels: [
-          { id: 'higgsfield-ai/dop/standard', name: 'DOP Standard' },
-        ],
+        audioGenModels: [{ id: 'fal/minimax/speech-02-hd', name: 'MiniMax Speech 02 HD' }],
       }),
     },
   },
@@ -39,51 +59,37 @@ describe('SettingsView', () => {
     vi.clearAllMocks()
   })
 
-  it('renders loading spinner initially, then shows content', async () => {
+  it('renders loading spinner initially, then shows settings sections', async () => {
     const { container } = render(<SettingsView />)
 
-    // Initially should show a spinner (Loader2 renders an svg with animate-spin class)
     const spinner = container.querySelector('.animate-spin')
     expect(spinner).toBeTruthy()
 
-    // After loading completes, the spinner should disappear and content should show
     await waitFor(() => {
-      expect(screen.getByText('OpenRouter API')).toBeInTheDocument()
+      expect(screen.getByText('Настройки пайплайна')).toBeInTheDocument()
     })
+
+    expect(screen.getByText('Ключи и текстовые модели')).toBeInTheDocument()
+    expect(screen.getByText('Генерация изображений и видео')).toBeInTheDocument()
   })
 
-  it('displays section headers', async () => {
+  it('associates API key inputs with labels', async () => {
     render(<SettingsView />)
 
     await waitFor(() => {
-      expect(screen.getByText('OpenRouter API')).toBeInTheDocument()
+      expect(screen.getByLabelText(/openrouter api key/i)).toBeInTheDocument()
     })
 
-    expect(screen.getByText('Higgsfield API')).toBeInTheDocument()
-    expect(screen.getByText('Мастер-промпты')).toBeInTheDocument()
+    expect(screen.getByLabelText(/fal\.ai api key/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/replicate api token/i)).toBeInTheDocument()
   })
 
-  it('shows save button', async () => {
+  it('shows model dropdown values when models are loaded', async () => {
     render(<SettingsView />)
 
     await waitFor(() => {
-      expect(screen.getByText('Сохранить настройки')).toBeInTheDocument()
-    })
-  })
-
-  it('displays model dropdowns when models are loaded', async () => {
-    render(<SettingsView />)
-
-    // Wait for both settings and models to load
-    await waitFor(() => {
-      expect(screen.getByText('OpenRouter API')).toBeInTheDocument()
-    })
-
-    // The ModelSelect component displays the selected model name
-    // GPT-4o is the selected text model, GPT Image 1 is the selected image model
-    await waitFor(() => {
-      expect(screen.getByText('GPT-4o')).toBeInTheDocument()
-      expect(screen.getByText('GPT Image 1')).toBeInTheDocument()
+      expect(screen.getAllByText('GPT-4o').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getAllByText('GPT Image 1').length).toBeGreaterThanOrEqual(1)
     })
   })
 
@@ -95,5 +101,52 @@ describe('SettingsView', () => {
     await waitFor(() => {
       expect(api.settings.get).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('reloads models after saving settings', async () => {
+    const { api } = await import('../../src/lib/api')
+    const { container } = render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(api.models.list).toHaveBeenCalledTimes(1)
+    })
+
+    const saveButtons = container.querySelectorAll('button.brutal-btn')
+    expect(saveButtons.length).toBeGreaterThan(0)
+    fireEvent.click(saveButtons[0]!)
+
+    await waitFor(() => {
+      expect(api.settings.update).toHaveBeenCalledTimes(1)
+      expect(api.models.list).toHaveBeenCalledTimes(2)
+    })
+
+    expect(api.settings.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        videoQuality: expect.any(String),
+      }),
+    )
+  })
+
+  it('saves videoQuality as auto when model has no explicit quality support', async () => {
+    const { api } = await import('../../src/lib/api')
+    ;(api.settings.get as any).mockResolvedValueOnce({
+      defaultVideoGenModel: 'fal/kling-2.1-pro',
+      videoQuality: 'high',
+    })
+
+    const { container } = render(<SettingsView />)
+    await waitFor(() => {
+      expect(api.models.list).toHaveBeenCalled()
+    })
+
+    const saveButtons = container.querySelectorAll('button.brutal-btn')
+    fireEvent.click(saveButtons[0]!)
+
+    await waitFor(() => {
+      expect(api.settings.update).toHaveBeenCalled()
+    })
+
+    const lastCall = (api.settings.update as any).mock.calls.at(-1)?.[0]
+    expect(lastCall.videoQuality).toBe('auto')
   })
 })
