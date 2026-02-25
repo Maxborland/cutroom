@@ -347,16 +347,17 @@ Rules:
 });
 
 // POST /api/projects/:id/montage/upload-music
-router.post('/montage/upload-music', (req: Request, res: Response) => {
+// Check project existence BEFORE multer parses body (avoid buffering 50MB for 404)
+router.post('/montage/upload-music', async (req: Request, res: Response) => {
+  const project = await loadProject(req, res);
+  if (!project) return;
+
   musicUpload.single('music')(req, res, async (multerErr) => {
     try {
       if (multerErr) {
         sendApiError(res, 400, multerErr.message);
         return;
       }
-
-      const project = await loadProject(req, res);
-      if (!project) return;
 
       if (!req.file) {
         sendApiError(res, 400, 'No music file provided');
