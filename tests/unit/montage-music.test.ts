@@ -12,9 +12,13 @@ import {
   ensureDir,
 } from '../../server/lib/storage.js'
 
-// Mock global fetch for Suno API
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+// Mock chatCompletion for LLM calls
+vi.mock('../../server/lib/openrouter.js', () => ({
+  chatCompletion: vi.fn().mockResolvedValue('Cinematic piano with gentle strings, 120 BPM, building from soft to grand. Suitable for luxury real estate.'),
+}))
+
+import { chatCompletion } from '../../server/lib/openrouter.js'
+const mockChatCompletion = vi.mocked(chatCompletion)
 
 const app = createApp()
 
@@ -30,7 +34,6 @@ describe('Montage Music Pipeline', () => {
     await fs.writeFile(settingsPath, JSON.stringify({
       ...existingSettings,
       openRouterApiKey: 'test-openrouter-key',
-      sunoApiKey: 'test-suno-key',
       defaultMusicStyle: 'elegant piano with subtle strings',
     }, null, 2))
 
@@ -51,204 +54,56 @@ describe('Montage Music Pipeline', () => {
     }
   })
 
-  // ─── POST /montage/generate-music ─────────────────────────────────
+  // ─── POST /montage/generate-music-prompt ────────────────────────────
 
-  describe('POST /montage/generate-music', () => {
-    it('should generate music via Suno API and save file', async () => {
-      await withProject(projectId, (proj) => {
-        proj.musicPrompt = 'Epic cinematic music for real estate'
-      })
-
-      // Mock Suno generate call - returns clip data with audio_url
-      const fakeAudioData = Buffer.from('fake-suno-audio-data')
-      mockFetch
-        // First call: Suno generate
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            id: 'suno-gen-123',
-            clips: {
-              'clip-abc': {
-                id: 'clip-abc',
-                audio_url: 'https://cdn.suno.ai/clip-abc.mp3',
-                status: 'complete',
-              },
-            },
-          }),
-        })
-        // Second call: download the audio URL
-        .mockResolvedValueOnce({
-          ok: true,
-          arrayBuffer: async () => fakeAudioData.buffer.slice(
-            fakeAudioData.byteOffset,
-            fakeAudioData.byteOffset + fakeAudioData.byteLength,
-          ),
-        })
-
+  describe('POST /montage/generate-music-prompt', () => {
+    it('should generate a music prompt via LLM and save to project', async () => {
       const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/generate-music`)
+        .post(`/api/projects/${projectId}/montage/generate-music-prompt`)
         .expect(200)
 
-      expect(res.body).toHaveProperty('musicFile', 'montage/music.mp3')
-      expect(res.body).toHaveProperty('provider', 'suno')
+      expect(res.body).toHaveProperty('musicPrompt')
+      expect(typeof res.body.musicPrompt).toBe('string')
+      expect(res.body.musicPrompt.length).toBeGreaterThan(0)
 
-      // Verify Suno API was called with correct params
-      expect(mockFetch).toHaveBeenCalledTimes(2)
-      const [sunoUrl, sunoOpts] = mockFetch.mock.calls[0]
-      expect(sunoUrl).toBe('https://studio-api.suno.ai/api/external/generate/')
-      expect(sunoOpts.method).toBe('POST')
-      expect(sunoOpts.headers['Authorization']).toBe('Bearer test-suno-key')
-      const sunoBody = JSON.parse(sunoOpts.body)
-      expect(sunoBody.topic).toBe('Epic cinematic music for real estate')
-      expect(sunoBody.make_instrumental).toBe(true)
-      expect(sunoBody.mv).toBe('chirp-v4')
-
-      // Verify audio file download
-      const [downloadUrl] = mockFetch.mock.calls[1]
-      expect(downloadUrl).toBe('https://cdn.suno.ai/clip-abc.mp3')
-
-      // Verify file was saved
-      const filePath = resolveProjectPath(projectId, 'montage', 'music.mp3')
-      const stat = await fs.stat(filePath)
-      expect(stat.isFile()).toBe(true)
-      const content = await fs.readFile(filePath)
-      expect(content.toString()).toBe('fake-suno-audio-data')
+      // Verify LLM was called
+      expect(mockChatCompletion).toHaveBeenCalledTimes(1)
 
       // Verify project updated
       const updated = await getProject(projectId)
-      expect(updated!.musicFile).toBe('montage/music.mp3')
-      expect(updated!.musicProvider).toBe('suno')
+      expect(updated!.musicPrompt).toBe(res.body.musicPrompt)
     })
 
-    it('should use default music prompt when project has no musicPrompt', async () => {
-      // No musicPrompt set, so default should be used
-      const fakeAudioData = Buffer.from('fake-audio')
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            id: 'suno-gen-456',
-            clips: {
-              'clip-xyz': {
-                id: 'clip-xyz',
-                audio_url: 'https://cdn.suno.ai/clip-xyz.mp3',
-                status: 'complete',
-              },
-            },
-          }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          arrayBuffer: async () => fakeAudioData.buffer.slice(
-            fakeAudioData.byteOffset,
-            fakeAudioData.byteOffset + fakeAudioData.byteLength,
-          ),
-        })
-
-      const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/generate-music`)
+    it('should use project script as context for prompt generation', async () => {
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-music-prompt`)
         .expect(200)
 
-      expect(res.body.musicFile).toBe('montage/music.mp3')
-
-      // Verify default prompt was used (should contain duration and style)
-      const [, sunoOpts] = mockFetch.mock.calls[0]
-      const sunoBody = JSON.parse(sunoOpts.body)
-      expect(sunoBody.topic).toContain('60')
-      expect(sunoBody.topic).toContain('elegant piano with subtle strings')
+      // Check that the user message sent to LLM contains the script
+      const [, messages] = mockChatCompletion.mock.calls[0]
+      const userMsg = messages.find((m: any) => m.role === 'user')
+      expect(userMsg?.content).toContain('Дрон поднимается')
     })
 
-    it('should poll Suno API when clips are not immediately complete', async () => {
-      await withProject(projectId, (proj) => {
-        proj.musicPrompt = 'Background music'
-      })
-
-      const fakeAudioData = Buffer.from('fake-audio')
-      mockFetch
-        // First call: Suno generate - status streaming (not ready)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            id: 'suno-gen-789',
-            clips: {
-              'clip-poll': {
-                id: 'clip-poll',
-                audio_url: '',
-                status: 'submitted',
-              },
-            },
-          }),
-        })
-        // Second call: poll - still not ready
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            id: 'clip-poll',
-            audio_url: '',
-            status: 'streaming',
-          }),
-        })
-        // Third call: poll - complete
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            id: 'clip-poll',
-            audio_url: 'https://cdn.suno.ai/clip-poll.mp3',
-            status: 'complete',
-          }),
-        })
-        // Fourth call: download
-        .mockResolvedValueOnce({
-          ok: true,
-          arrayBuffer: async () => fakeAudioData.buffer.slice(
-            fakeAudioData.byteOffset,
-            fakeAudioData.byteOffset + fakeAudioData.byteLength,
-          ),
-        })
-
-      const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/generate-music`)
-        .expect(200)
-
-      expect(res.body.musicFile).toBe('montage/music.mp3')
-      // Should have been: generate + 2 polls + 1 download = 4 fetch calls
-      expect(mockFetch).toHaveBeenCalledTimes(4)
-    })
-
-    it('should return 400 if no Suno API key is configured', async () => {
+    it('should return 400 if no OpenRouter API key', async () => {
       const settingsPath = path.join(process.cwd(), 'data', 'settings.json')
       const existingSettings = JSON.parse(await fs.readFile(settingsPath, 'utf-8').catch(() => '{}'))
       await fs.writeFile(settingsPath, JSON.stringify({
         ...existingSettings,
-        sunoApiKey: '',
+        openRouterApiKey: '',
       }, null, 2))
 
       const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/generate-music`)
+        .post(`/api/projects/${projectId}/montage/generate-music-prompt`)
         .expect(400)
 
-      expect(res.body.error).toContain('Suno')
-      expect(res.body.error).toContain('upload')
+      expect(res.body.error).toContain('OpenRouter')
     })
 
     it('should return 404 for non-existent project', async () => {
       await request(app)
-        .post('/api/projects/non-existent-project-id/montage/generate-music')
+        .post('/api/projects/non-existent-project-id/montage/generate-music-prompt')
         .expect(404)
-    })
-
-    it('should return 500 if Suno API returns an error', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        text: async () => 'Invalid API key',
-      })
-
-      const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/generate-music`)
-        .expect(500)
-
-      expect(res.body.error).toBeTruthy()
     })
   })
 

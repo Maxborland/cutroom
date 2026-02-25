@@ -286,114 +286,59 @@ const musicUpload = multer({
 });
 
 // Suno polling helper
-async function pollSunoClip(clipId: string, sunoApiKey: string, maxWaitMs = 120_000, intervalMs = 5_000): Promise<{ audio_url: string }> {
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    const pollRes = await fetch(`https://studio-api.suno.ai/api/external/clips/?ids=${clipId}`, {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${sunoApiKey}` },
-    });
-    if (!pollRes.ok) {
-      throw new Error(`Suno poll error (${pollRes.status}): ${await pollRes.text().catch(() => 'Unknown')}`);
-    }
-    const clipData = await pollRes.json() as { id: string; audio_url: string; status: string };
-    if (clipData.status === 'complete' && clipData.audio_url) {
-      return { audio_url: clipData.audio_url };
-    }
-    if (clipData.status === 'error') {
-      throw new Error('Suno music generation failed');
-    }
-  }
-  throw new Error('Suno music generation timed out');
-}
-
-// POST /api/projects/:id/montage/generate-music
-router.post('/montage/generate-music', async (req: Request, res: Response) => {
+// POST /api/projects/:id/montage/generate-music-prompt
+// Generates a music prompt via LLM that the user can copy into Suno UI
+router.post('/montage/generate-music-prompt', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
 
-    const settings = await getGlobalSettings();
-    const sunoApiKey = settings.sunoApiKey;
-    if (!sunoApiKey) {
-      sendApiError(res, 400, 'Suno API key is not configured. Please set it in Settings or upload music manually.');
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 400, 'OpenRouter API key is not configured. Please set it in Settings.');
       return;
     }
 
-    // Build music prompt
+    const settings = await getGlobalSettings();
+    const model = settings.defaultTextModel || 'openai/gpt-4o';
     const targetDuration = project.brief?.targetDuration || 60;
     const style = settings.defaultMusicStyle || 'cinematic instrumental';
-    const musicPrompt = project.musicPrompt
-      || `Cinematic instrumental background music for premium real estate. Duration: ${targetDuration}s. Style: ${style}. No vocals.`;
 
-    // Call Suno API
-    const sunoRes = await fetch('https://studio-api.suno.ai/api/external/generate/', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${sunoApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        topic: musicPrompt,
-        tags: 'instrumental, cinematic',
-        make_instrumental: true,
-        mv: 'chirp-v4',
-      }),
-    });
+    const systemPrompt = `You are a music director for premium real estate video ads.
+Generate a detailed music prompt for Suno AI that will produce the perfect background track.
 
-    if (!sunoRes.ok) {
-      const errorText = await sunoRes.text().catch(() => 'Unknown error');
-      sendApiError(res, 500, `Suno API error (${sunoRes.status}): ${errorText}`);
-      return;
-    }
+Rules:
+- Output ONLY the prompt text, nothing else
+- Instrumental only, no vocals
+- Style: ${style}
+- Target duration: approximately ${targetDuration} seconds
+- The music must work as background for voiceover narration
+- Premium, sophisticated tone matching luxury real estate
+- Include specific mood, instruments, tempo, and energy arc
+- Write in English (Suno works best with English prompts)`;
 
-    const sunoData = await sunoRes.json() as {
-      id: string;
-      clips: Record<string, { id: string; audio_url: string; status: string }>;
-    };
+    const userContent = project.script
+      ? `Based on this video script, generate a music prompt:\n\n${project.script}`
+      : `Generate a music prompt for a ${targetDuration}-second premium real estate video ad.`;
 
-    // Get first clip from response
-    const clips = Object.values(sunoData.clips);
-    if (clips.length === 0) {
-      sendApiError(res, 500, 'Suno API returned no clips');
-      return;
-    }
+    const musicPrompt = await chatCompletion(
+      model,
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      0.7,
+    );
 
-    let clip = clips[0];
-    let audioUrl = clip.audio_url;
-
-    // If clip is not complete, poll for completion
-    if (clip.status !== 'complete' || !audioUrl) {
-      const completed = await pollSunoClip(clip.id, sunoApiKey);
-      audioUrl = completed.audio_url;
-    }
-
-    // Download the audio file
-    const downloadRes = await fetch(audioUrl);
-    if (!downloadRes.ok) {
-      sendApiError(res, 500, 'Failed to download generated music from Suno');
-      return;
-    }
-
-    const audioBuffer = Buffer.from(await downloadRes.arrayBuffer());
-
-    // Save to disk
-    const montageDir = resolveProjectPath(project.id, 'montage');
-    await ensureDir(montageDir);
-    const musicPath = path.join(montageDir, 'music.mp3');
-    await fs.writeFile(musicPath, audioBuffer);
-
-    // Update project
+    // Save the generated prompt to the project
     await withProject(project.id, (proj) => {
-      proj.musicFile = 'montage/music.mp3';
-      proj.musicProvider = 'suno';
+      proj.musicPrompt = musicPrompt;
     });
 
-    res.json({ musicFile: 'montage/music.mp3', provider: 'suno' });
+    res.json({ musicPrompt });
   } catch (err) {
-    console.error('Failed to generate music:', err);
-    sendApiError(res, 500, 'Failed to generate music');
+    console.error('Failed to generate music prompt:', err);
+    sendApiError(res, 500, 'Failed to generate music prompt');
   }
 });
 
