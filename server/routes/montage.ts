@@ -178,11 +178,12 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
 
     const audioBuffer = Buffer.from(await response.arrayBuffer());
 
-    // Save to montage directory
+    // Write to unique temp file first, promote only after validation passes
     const montageDir = resolveProjectPath(project.id, 'montage');
     await ensureDir(montageDir);
-    const voiceoverPath = path.join(montageDir, 'voiceover.mp3');
-    await fs.writeFile(voiceoverPath, audioBuffer);
+    const tmpName = `voiceover_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.tmp.mp3`;
+    const tmpPath = path.join(montageDir, tmpName);
+    await fs.writeFile(tmpPath, audioBuffer);
 
     // Re-check approval AND script content inside withProject to prevent TOCTOU race
     // (user may have edited script during the long TTS request, resetting approval or changing text)
@@ -199,11 +200,15 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     });
 
     if ('error' in updateResult) {
-      // Clean up the audio file since we won't use it
-      await fs.unlink(voiceoverPath).catch(() => {});
+      // Clean up temp file since validation failed
+      await fs.unlink(tmpPath).catch(() => {});
       sendApiError(res, 409, updateResult.error);
       return;
     }
+
+    // Promote temp file to final path (atomic on same filesystem)
+    const voiceoverPath = path.join(montageDir, 'voiceover.mp3');
+    await fs.rename(tmpPath, voiceoverPath);
 
     res.json({ voiceoverFile: 'montage/voiceover.mp3', provider: 'elevenlabs' });
   } catch (err) {
