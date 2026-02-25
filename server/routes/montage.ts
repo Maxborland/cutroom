@@ -106,14 +106,19 @@ router.post('/montage/approve-vo-script', async (req: Request, res: Response) =>
     const project = await loadProject(req, res);
     if (!project) return;
 
-    if (!project.voiceoverScript || !project.voiceoverScript.trim()) {
-      sendApiError(res, 400, 'Cannot approve: voiceover script is empty or missing');
+    // Validation inside withProject to avoid race with concurrent PUT /vo-script
+    const result = await withProject(project.id, (proj) => {
+      if (!proj.voiceoverScript || !proj.voiceoverScript.trim()) {
+        return { error: 'Cannot approve: voiceover script is empty or missing' } as const;
+      }
+      proj.voiceoverScriptApproved = true;
+      return { approved: true } as const;
+    });
+
+    if ('error' in result) {
+      sendApiError(res, 400, result.error);
       return;
     }
-
-    await withProject(project.id, (proj) => {
-      proj.voiceoverScriptApproved = true;
-    });
 
     res.json({ approved: true });
   } catch (err) {
@@ -176,11 +181,23 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const voiceoverPath = path.join(montageDir, 'voiceover.mp3');
     await fs.writeFile(voiceoverPath, audioBuffer);
 
-    // Update project
-    await withProject(project.id, (proj) => {
+    // Re-check approval inside withProject to prevent TOCTOU race
+    // (user may have edited script during the long TTS request, resetting approval)
+    const updateResult = await withProject(project.id, (proj) => {
+      if (!proj.voiceoverScriptApproved) {
+        return { error: 'Voiceover script was modified during generation. Please re-approve and try again.' } as const;
+      }
       proj.voiceoverFile = 'montage/voiceover.mp3';
       proj.voiceoverProvider = 'elevenlabs';
+      return { ok: true } as const;
     });
+
+    if ('error' in updateResult) {
+      // Clean up the audio file since we won't use it
+      await fs.unlink(voiceoverPath).catch(() => {});
+      sendApiError(res, 409, updateResult.error);
+      return;
+    }
 
     res.json({ voiceoverFile: 'montage/voiceover.mp3', provider: 'elevenlabs' });
   } catch (err) {
@@ -211,6 +228,12 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
 
     res.setHeader('Content-Type', 'audio/mpeg');
     const stream = fsCb.createReadStream(filePath);
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      if (!res.headersSent) {
+        sendApiError(res, 500, 'Failed to stream voiceover');
+      }
+    });
     stream.pipe(res);
   } catch (err) {
     console.error('Failed to stream voiceover:', err);
