@@ -138,6 +138,9 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
       return;
     }
 
+    // Capture the script text at generation time for TOCTOU comparison
+    const scriptAtGeneration = project.voiceoverScript || '';
+
     const settings = await getGlobalSettings();
     const elevenLabsApiKey = settings.elevenLabsApiKey;
     if (!elevenLabsApiKey) {
@@ -158,7 +161,7 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
         'Accept': 'audio/mpeg',
       },
       body: JSON.stringify({
-        text: project.voiceoverScript,
+        text: scriptAtGeneration,
         model_id: 'eleven_multilingual_v2',
         voice_settings: {
           stability: 0.5,
@@ -181,11 +184,14 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const voiceoverPath = path.join(montageDir, 'voiceover.mp3');
     await fs.writeFile(voiceoverPath, audioBuffer);
 
-    // Re-check approval inside withProject to prevent TOCTOU race
-    // (user may have edited script during the long TTS request, resetting approval)
+    // Re-check approval AND script content inside withProject to prevent TOCTOU race
+    // (user may have edited script during the long TTS request, resetting approval or changing text)
     const updateResult = await withProject(project.id, (proj) => {
       if (!proj.voiceoverScriptApproved) {
-        return { error: 'Voiceover script was modified during generation. Please re-approve and try again.' } as const;
+        return { error: 'Voiceover script approval was reset during generation. Please re-approve and try again.' } as const;
+      }
+      if (proj.voiceoverScript !== scriptAtGeneration) {
+        return { error: 'Voiceover script was modified during generation. Please re-approve and regenerate.' } as const;
       }
       proj.voiceoverFile = 'montage/voiceover.mp3';
       proj.voiceoverProvider = 'elevenlabs';
@@ -232,6 +238,8 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
       console.error('Stream error:', err);
       if (!res.headersSent) {
         sendApiError(res, 500, 'Failed to stream voiceover');
+      } else {
+        res.end();
       }
     });
     stream.pipe(res);
