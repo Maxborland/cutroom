@@ -70,6 +70,8 @@ router.get('/', async (_req: Request, res: Response) => {
       openRouterApiKey: maskApiKey(apiKey),
       falApiKey: maskApiKey(settings.falApiKey || ''),
       replicateApiToken: maskApiKey(settings.replicateApiToken || ''),
+      elevenLabsApiKey: maskApiKey((settings as any).elevenLabsApiKey || ''),
+      sunoApiKey: maskApiKey((settings as any).sunoApiKey || ''),
     });
   } catch (err) {
     console.error('Failed to read settings:', err);
@@ -97,6 +99,14 @@ router.put('/', async (req: Request, res: Response) => {
       updates.replicateApiToken = existing.replicateApiToken || '';
     }
 
+    if (isMaskedKey((updates as any).elevenLabsApiKey)) {
+      (updates as any).elevenLabsApiKey = (existing as any).elevenLabsApiKey || '';
+    }
+
+    if (isMaskedKey((updates as any).sunoApiKey)) {
+      (updates as any).sunoApiKey = (existing as any).sunoApiKey || '';
+    }
+
     const {
       openrouterApiKey: _legacy,
       higgsfieldCredentials: _legacyHf,
@@ -117,6 +127,8 @@ router.put('/', async (req: Request, res: Response) => {
       openRouterApiKey: maskApiKey(merged.openRouterApiKey || ''),
       falApiKey: maskApiKey(merged.falApiKey || ''),
       replicateApiToken: maskApiKey(merged.replicateApiToken || ''),
+      elevenLabsApiKey: maskApiKey((merged as any).elevenLabsApiKey || ''),
+      sunoApiKey: maskApiKey((merged as any).sunoApiKey || ''),
     });
   } catch (err) {
     console.error('Failed to update settings:', err);
