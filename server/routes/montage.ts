@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
 import fsCb from 'node:fs';
 import path from 'node:path';
+import multer from 'multer';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
@@ -254,15 +255,246 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Music helpers ──────────────────────────────────────────────────
+
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.aac': 'audio/aac',
+};
+
+const ALLOWED_AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
+
+function getMimeForExt(ext: string): string {
+  return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
+}
+
+// Multer for music upload
+const musicUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_AUDIO_EXTENSIONS.has(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Allowed: mp3, wav, m4a, ogg, aac'));
+    }
+  },
+});
+
+// Suno polling helper
+async function pollSunoClip(clipId: string, sunoApiKey: string, maxWaitMs = 120_000, intervalMs = 5_000): Promise<{ audio_url: string }> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const pollRes = await fetch(`https://studio-api.suno.ai/api/external/clips/?ids=${clipId}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${sunoApiKey}` },
+    });
+    if (!pollRes.ok) {
+      throw new Error(`Suno poll error (${pollRes.status}): ${await pollRes.text().catch(() => 'Unknown')}`);
+    }
+    const clipData = await pollRes.json() as { id: string; audio_url: string; status: string };
+    if (clipData.status === 'complete' && clipData.audio_url) {
+      return { audio_url: clipData.audio_url };
+    }
+    if (clipData.status === 'error') {
+      throw new Error('Suno music generation failed');
+    }
+  }
+  throw new Error('Suno music generation timed out');
+}
+
 // POST /api/projects/:id/montage/generate-music
 router.post('/montage/generate-music', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    const settings = await getGlobalSettings();
+    const sunoApiKey = settings.sunoApiKey;
+    if (!sunoApiKey) {
+      sendApiError(res, 400, 'Suno API key is not configured. Please set it in Settings or upload music manually.');
+      return;
+    }
+
+    // Build music prompt
+    const targetDuration = project.brief?.targetDuration || 60;
+    const style = settings.defaultMusicStyle || 'cinematic instrumental';
+    const musicPrompt = project.musicPrompt
+      || `Cinematic instrumental background music for premium real estate. Duration: ${targetDuration}s. Style: ${style}. No vocals.`;
+
+    // Call Suno API
+    const sunoRes = await fetch('https://studio-api.suno.ai/api/external/generate/', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${sunoApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        topic: musicPrompt,
+        tags: 'instrumental, cinematic',
+        make_instrumental: true,
+        mv: 'chirp-v4',
+      }),
+    });
+
+    if (!sunoRes.ok) {
+      const errorText = await sunoRes.text().catch(() => 'Unknown error');
+      sendApiError(res, 500, `Suno API error (${sunoRes.status}): ${errorText}`);
+      return;
+    }
+
+    const sunoData = await sunoRes.json() as {
+      id: string;
+      clips: Record<string, { id: string; audio_url: string; status: string }>;
+    };
+
+    // Get first clip from response
+    const clips = Object.values(sunoData.clips);
+    if (clips.length === 0) {
+      sendApiError(res, 500, 'Suno API returned no clips');
+      return;
+    }
+
+    let clip = clips[0];
+    let audioUrl = clip.audio_url;
+
+    // If clip is not complete, poll for completion
+    if (clip.status !== 'complete' || !audioUrl) {
+      const completed = await pollSunoClip(clip.id, sunoApiKey);
+      audioUrl = completed.audio_url;
+    }
+
+    // Download the audio file
+    const downloadRes = await fetch(audioUrl);
+    if (!downloadRes.ok) {
+      sendApiError(res, 500, 'Failed to download generated music from Suno');
+      return;
+    }
+
+    const audioBuffer = Buffer.from(await downloadRes.arrayBuffer());
+
+    // Save to disk
+    const montageDir = resolveProjectPath(project.id, 'montage');
+    await ensureDir(montageDir);
+    const musicPath = path.join(montageDir, 'music.mp3');
+    await fs.writeFile(musicPath, audioBuffer);
+
+    // Update project
+    await withProject(project.id, (proj) => {
+      proj.musicFile = 'montage/music.mp3';
+      proj.musicProvider = 'suno';
+    });
+
+    res.json({ musicFile: 'montage/music.mp3', provider: 'suno' });
   } catch (err) {
     console.error('Failed to generate music:', err);
     sendApiError(res, 500, 'Failed to generate music');
+  }
+});
+
+// POST /api/projects/:id/montage/upload-music
+router.post('/montage/upload-music', (req: Request, res: Response) => {
+  musicUpload.single('music')(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        sendApiError(res, 400, multerErr.message);
+        return;
+      }
+
+      const project = await loadProject(req, res);
+      if (!project) return;
+
+      if (!req.file) {
+        sendApiError(res, 400, 'No music file provided');
+        return;
+      }
+
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const montageDir = resolveProjectPath(project.id, 'montage');
+      await ensureDir(montageDir);
+
+      const filename = `music${ext}`;
+      const filePath = path.join(montageDir, filename);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      const musicFile = `montage/${filename}`;
+      await withProject(project.id, (proj) => {
+        proj.musicFile = musicFile;
+        proj.musicProvider = 'manual';
+      });
+
+      res.json({ musicFile, provider: 'manual' });
+    } catch (err) {
+      console.error('Failed to upload music:', err);
+      sendApiError(res, 500, 'Failed to upload music');
+    }
+  });
+});
+
+// GET /api/projects/:id/montage/music
+router.get('/montage/music', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.musicFile) {
+      sendApiError(res, 404, 'Music file not found');
+      return;
+    }
+
+    const filePath = resolveProjectPath(project.id, project.musicFile);
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      sendApiError(res, 404, 'Music file not found on disk');
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    res.setHeader('Content-Type', getMimeForExt(ext));
+    const stream = fsCb.createReadStream(filePath);
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      if (!res.headersSent) {
+        sendApiError(res, 500, 'Failed to stream music');
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
+  } catch (err) {
+    console.error('Failed to stream music:', err);
+    sendApiError(res, 500, 'Failed to stream music');
+  }
+});
+
+// PUT /api/projects/:id/montage/music-prompt
+router.put('/montage/music-prompt', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { musicPrompt } = req.body;
+    if (typeof musicPrompt !== 'string') {
+      sendApiError(res, 400, 'musicPrompt is required and must be a string');
+      return;
+    }
+
+    const updated = await withProject(project.id, (proj) => {
+      proj.musicPrompt = musicPrompt;
+      return proj;
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error('Failed to update music prompt:', err);
+    sendApiError(res, 500, 'Failed to update music prompt');
   }
 });
 
