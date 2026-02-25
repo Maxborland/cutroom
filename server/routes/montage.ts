@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
 import fsCb from 'node:fs';
 import path from 'node:path';
+import multer from 'multer';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
@@ -254,15 +255,196 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/projects/:id/montage/generate-music
-router.post('/montage/generate-music', async (req: Request, res: Response) => {
+// ─── Music helpers ──────────────────────────────────────────────────
+
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.aac': 'audio/aac',
+};
+
+const ALLOWED_AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
+
+function getMimeForExt(ext: string): string {
+  return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
+}
+
+// Allowed MIME types for audio upload validation
+const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
+
+// Multer for music upload — validates by both extension and MIME type
+const musicUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const extValid = ALLOWED_AUDIO_EXTENSIONS.has(ext);
+    const mimeValid = ALLOWED_AUDIO_MIMES.has(file.mimetype);
+    if (extValid && mimeValid) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Allowed audio formats: mp3, wav, m4a, ogg, aac'));
+    }
+  },
+});
+
+// POST /api/projects/:id/montage/generate-music-prompt
+// Generates a music prompt via LLM that the user can copy into Suno UI
+router.post('/montage/generate-music-prompt', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 400, 'OpenRouter API key is not configured. Please set it in Settings.');
+      return;
+    }
+
+    const settings = await getGlobalSettings();
+    const model = settings.defaultTextModel || 'openai/gpt-4o';
+    const targetDuration = project.brief?.targetDuration || 60;
+    const style = settings.defaultMusicStyle || 'cinematic instrumental';
+
+    const systemPrompt = `You are a music director for premium real estate video ads.
+Generate a detailed music prompt for Suno AI that will produce the perfect background track.
+
+Rules:
+- Output ONLY the prompt text, nothing else
+- Instrumental only, no vocals
+- Style: ${style}
+- Target duration: approximately ${targetDuration} seconds
+- The music must work as background for voiceover narration
+- Premium, sophisticated tone matching luxury real estate
+- Include specific mood, instruments, tempo, and energy arc
+- Write in English (Suno works best with English prompts)`;
+
+    const userContent = project.script
+      ? `Based on this video script, generate a music prompt:\n\n${project.script}`
+      : `Generate a music prompt for a ${targetDuration}-second premium real estate video ad.`;
+
+    const musicPrompt = await chatCompletion(
+      model,
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      0.7,
+    );
+
+    // Save the generated prompt to the project
+    await withProject(project.id, (proj) => {
+      proj.musicPrompt = musicPrompt;
+    });
+
+    res.json({ musicPrompt });
   } catch (err) {
-    console.error('Failed to generate music:', err);
-    sendApiError(res, 500, 'Failed to generate music');
+    console.error('Failed to generate music prompt:', err);
+    sendApiError(res, 500, 'Failed to generate music prompt');
+  }
+});
+
+// POST /api/projects/:id/montage/upload-music
+// Check project existence BEFORE multer parses body (avoid buffering 50MB for 404)
+router.post('/montage/upload-music', async (req: Request, res: Response) => {
+  const project = await loadProject(req, res);
+  if (!project) return;
+
+  musicUpload.single('music')(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        sendApiError(res, 400, multerErr.message);
+        return;
+      }
+
+      if (!req.file) {
+        sendApiError(res, 400, 'No music file provided');
+        return;
+      }
+
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const montageDir = resolveProjectPath(project.id, 'montage');
+      await ensureDir(montageDir);
+
+      const filename = `music${ext}`;
+      const filePath = path.join(montageDir, filename);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      const musicFile = `montage/${filename}`;
+      await withProject(project.id, (proj) => {
+        proj.musicFile = musicFile;
+        proj.musicProvider = 'manual';
+      });
+
+      res.json({ musicFile, provider: 'manual' });
+    } catch (err) {
+      console.error('Failed to upload music:', err);
+      sendApiError(res, 500, 'Failed to upload music');
+    }
+  });
+});
+
+// GET /api/projects/:id/montage/music
+router.get('/montage/music', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.musicFile) {
+      sendApiError(res, 404, 'Music file not found');
+      return;
+    }
+
+    const filePath = resolveProjectPath(project.id, project.musicFile);
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      sendApiError(res, 404, 'Music file not found on disk');
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    res.setHeader('Content-Type', getMimeForExt(ext));
+    const stream = fsCb.createReadStream(filePath);
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      if (!res.headersSent) {
+        sendApiError(res, 500, 'Failed to stream music');
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
+  } catch (err) {
+    console.error('Failed to stream music:', err);
+    sendApiError(res, 500, 'Failed to stream music');
+  }
+});
+
+// PUT /api/projects/:id/montage/music-prompt
+router.put('/montage/music-prompt', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { musicPrompt } = req.body;
+    if (typeof musicPrompt !== 'string') {
+      sendApiError(res, 400, 'musicPrompt is required and must be a string');
+      return;
+    }
+
+    const updated = await withProject(project.id, (proj) => {
+      proj.musicPrompt = musicPrompt;
+      return proj;
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error('Failed to update music prompt:', err);
+    sendApiError(res, 500, 'Failed to update music prompt');
   }
 });
 

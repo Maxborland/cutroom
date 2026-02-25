@@ -253,11 +253,22 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(options ?? {}),
       }),
-    generateMusic: (projectId: string, options?: { prompt?: string; provider?: string }) =>
-      request<{ musicFile: string }>(`/projects/${projectId}/montage/generate-music`, {
-        method: 'POST',
-        body: JSON.stringify(options ?? {}),
+    generateMusicPrompt: (projectId: string) =>
+      request<{ musicPrompt: string }>(`/projects/${projectId}/montage/generate-music-prompt`, { method: 'POST' }),
+    updateMusicPrompt: (projectId: string, musicPrompt: string) =>
+      request<Project>(`/projects/${projectId}/montage/music-prompt`, {
+        method: 'PUT',
+        body: JSON.stringify({ musicPrompt }),
       }),
+    uploadMusic: async (projectId: string, file: File) => {
+      const form = new FormData()
+      form.append('music', file)
+      const path = `/projects/${projectId}/montage/upload-music`
+      const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form })
+      if (!res.ok) await throwRequestError(res, path)
+      return res.json() as Promise<{ musicFile: string; provider: string }>
+    },
+    musicUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/music`,
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
     updatePlan: (projectId: string, plan: MontagePlan) =>
