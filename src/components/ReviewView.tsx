@@ -15,6 +15,8 @@ import {
   Volume2,
   Clock,
   ListChecks,
+  Bot,
+  X,
 } from 'lucide-react'
 import type { Shot } from '../types'
 
@@ -43,15 +45,15 @@ export function ReviewView() {
   const [showOriginal, setShowOriginal] = useState(false)
   const [direction, setDirection] = useState(0)
   const [approveAnim, setApproveAnim] = useState(false)
+  const [aiReview, setAiReview] = useState<string | null>(null)
+  const [aiReviewing, setAiReviewing] = useState(false)
 
-  if (!project) return null
-
-  const allShots = [...project.shots].sort((a, b) => a.order - b.order)
+  const allShots = project ? [...project.shots].sort((a, b) => a.order - b.order) : []
   const filteredShots = showAll
     ? allShots
     : allShots.filter(
         (s) =>
-          (s.status === 'review' || s.status === 'approved') &&
+          (s.status === 'img_review' || s.status === 'vid_review' || s.status === 'approved') &&
           (s.generatedImages.length > 0 || s.enhancedImages.length > 0)
       )
 
@@ -73,6 +75,7 @@ export function ReviewView() {
       setDirection(1)
       setCurrentIndex((i) => i + 1)
       setShowOriginal(false)
+      setAiReview(null)
     }
   }, [currentIndex, filteredShots.length])
 
@@ -81,6 +84,7 @@ export function ReviewView() {
       setDirection(-1)
       setCurrentIndex((i) => i - 1)
       setShowOriginal(false)
+      setAiReview(null)
     }
   }, [currentIndex])
 
@@ -106,6 +110,20 @@ export function ReviewView() {
     enhanceImage(currentShot.id, source)
   }, [currentShot, project, enhanceImage])
 
+  const handleAiReview = useCallback(async () => {
+    if (!currentShot || !project) return
+    setAiReviewing(true)
+    setAiReview(null)
+    try {
+      const { review } = await api.generate.aiReview(project.id, currentShot.id)
+      setAiReview(review)
+    } catch (e: any) {
+      setAiReview(`Ошибка: ${e.message}`)
+    } finally {
+      setAiReviewing(false)
+    }
+  }, [currentShot, project])
+
   // Keyboard navigation
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -124,15 +142,17 @@ export function ReviewView() {
     }
   }, [filteredShots.length, currentIndex])
 
+  if (!project) return null
+
   // Empty state
   if (filteredShots.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6">
-        <div className="w-16 h-16 rounded-2xl bg-surface-2 border border-border flex items-center justify-center">
+        <div className="w-16 h-16 rounded-[5px] bg-surface-2 border-2 border-border flex items-center justify-center shadow-brutal-sm">
           <Film size={28} className="text-text-muted" />
         </div>
         <div className="text-center max-w-sm">
-          <h2 className="font-display font-bold text-lg mb-1">Нет шотов для ревью</h2>
+          <h2 className="font-heading font-bold text-lg mb-1">Нет шотов для ревью</h2>
           <p className="text-sm text-text-muted">
             {showAll
               ? 'В проекте пока нет шотов. Сгенерируйте их на этапе "Шоты".'
@@ -142,7 +162,7 @@ export function ReviewView() {
         {!showAll && (
           <button
             onClick={() => setShowAll(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-border text-sm text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+            className="flex items-center gap-2 px-4 py-2 rounded-[5px] border-2 border-border text-sm text-text-secondary hover:text-text-primary hover:border-border-hover shadow-brutal-sm hover:shadow-brutal transition-shadow"
           >
             <ListChecks size={14} />
             Показать все шоты
@@ -166,12 +186,13 @@ export function ReviewView() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-6 py-3 border-b-2 border-border shrink-0">
         <div className="flex items-center gap-3">
           <button
             onClick={goPrev}
             disabled={currentIndex === 0}
-            className="p-1 rounded hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20 transition-colors"
+            aria-label="Previous shot"
+            className="p-1 rounded-[3px] hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20"
           >
             <ChevronLeft size={16} />
           </button>
@@ -183,7 +204,8 @@ export function ReviewView() {
           <button
             onClick={goNext}
             disabled={currentIndex === filteredShots.length - 1}
-            className="p-1 rounded hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20 transition-colors"
+            aria-label="Next shot"
+            className="p-1 rounded-[3px] hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20"
           >
             <ChevronRight size={16} />
           </button>
@@ -198,11 +220,12 @@ export function ReviewView() {
                   setCurrentIndex(i)
                   setShowOriginal(false)
                 }}
-                className={`w-2 h-2 rounded-full transition-all ${
+                aria-label={`Shot ${i + 1} of ${filteredShots.length}`}
+                className={`w-2.5 h-2.5 rounded-[2px] border border-border transition-all ${
                   i === currentIndex
                     ? 'bg-amber scale-125'
                     : s.status === 'approved'
-                      ? 'bg-emerald/60 hover:bg-emerald'
+                      ? 'bg-emerald hover:bg-emerald'
                       : 'bg-surface-3 hover:bg-text-muted'
                 }`}
               />
@@ -212,10 +235,10 @@ export function ReviewView() {
 
         <button
           onClick={() => setShowAll(!showAll)}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-[5px] text-xs font-mono border-2 transition-colors ${
             showAll
-              ? 'bg-amber/10 text-amber border border-amber/20'
-              : 'border border-border text-text-secondary hover:text-text-primary hover:border-border-hover'
+              ? 'bg-amber-dim text-amber border-amber'
+              : 'border-border text-text-secondary hover:text-text-primary hover:border-border-hover'
           }`}
         >
           <ListChecks size={13} />
@@ -229,14 +252,16 @@ export function ReviewView() {
         <button
           onClick={goPrev}
           disabled={currentIndex === 0}
-          className="absolute left-3 top-1/2 -translate-y-1/2 z-10 p-2 rounded-full bg-surface-2/80 backdrop-blur-sm border border-border hover:border-border-hover text-text-muted hover:text-text-primary disabled:opacity-0 transition-all"
+          aria-label="Previous shot"
+          className="absolute left-3 top-1/2 -translate-y-1/2 z-10 p-2 rounded-[5px] bg-surface-2 border-2 border-border text-text-muted hover:text-text-primary disabled:opacity-0 shadow-brutal-sm transition-all"
         >
           <ChevronLeft size={24} />
         </button>
         <button
           onClick={goNext}
           disabled={currentIndex === filteredShots.length - 1}
-          className="absolute right-3 top-1/2 -translate-y-1/2 z-10 p-2 rounded-full bg-surface-2/80 backdrop-blur-sm border border-border hover:border-border-hover text-text-muted hover:text-text-primary disabled:opacity-0 transition-all"
+          aria-label="Next shot"
+          className="absolute right-3 top-1/2 -translate-y-1/2 z-10 p-2 rounded-[5px] bg-surface-2 border-2 border-border text-text-muted hover:text-text-primary disabled:opacity-0 shadow-brutal-sm transition-all"
         >
           <ChevronRight size={24} />
         </button>
@@ -261,7 +286,7 @@ export function ReviewView() {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ duration: 0.3 }}
-                  className="w-full h-full object-contain rounded-xl border border-border cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                  className="w-full h-full object-contain rounded-[5px] border-2 border-border cursor-pointer hover:border-amber transition-colors"
                   onClick={() => {
                     if (!currentShot) return
                     const allImages = [
@@ -282,31 +307,35 @@ export function ReviewView() {
                 {canToggle && (
                   <button
                     onClick={() => setShowOriginal(!showOriginal)}
-                    className="absolute top-5 right-5 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-bg/80 backdrop-blur-sm border border-border text-xs font-mono text-text-secondary hover:text-text-primary transition-colors"
+                    className="absolute top-5 right-5 flex items-center gap-1.5 px-2.5 py-1 rounded-[5px] bg-bg border-2 border-border text-xs font-mono text-text-secondary hover:text-text-primary shadow-brutal-sm transition-all"
                   >
                     <Eye size={12} />
-                    {showOriginal ? 'Оригинал' : 'Enhanced'}
+                    {showOriginal ? 'Оригинал' : 'Улучшенное'}
                   </button>
                 )}
 
                 {/* Status badge */}
                 {currentShot && (
                   <div
-                    className={`absolute top-5 left-5 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono backdrop-blur-sm ${
+                    className={`absolute top-5 left-5 flex items-center gap-1.5 px-2.5 py-1 rounded-[5px] text-xs font-mono border-2 ${
                       currentShot.status === 'approved'
-                        ? 'bg-emerald/20 text-emerald border border-emerald/20'
-                        : currentShot.status === 'review'
-                          ? 'bg-sky/20 text-sky border border-sky/20'
+                        ? 'bg-emerald-dim text-emerald border-emerald'
+                        : currentShot.status === 'img_review'
+                          ? 'bg-sky-dim text-sky border-sky'
+                          : currentShot.status === 'vid_review'
+                            ? 'bg-amber-dim text-amber border-amber'
                           : currentShot.status === 'draft'
-                            ? 'bg-surface-2/80 text-text-muted border border-border'
-                            : 'bg-violet/20 text-violet border border-violet/20'
+                            ? 'bg-surface-2 text-text-muted border-border'
+                            : 'bg-violet-dim text-violet border-violet'
                     }`}
                   >
                     {currentShot.status === 'approved' && <CheckCircle2 size={11} />}
                     {currentShot.status === 'approved'
                       ? 'Утверждён'
-                      : currentShot.status === 'review'
-                        ? 'На ревью'
+                      : currentShot.status === 'img_review'
+                        ? 'На ревью IMG'
+                        : currentShot.status === 'vid_review'
+                          ? 'На ревью VID'
                         : currentShot.status === 'draft'
                           ? 'Черновик'
                           : 'Генерация...'}
@@ -315,7 +344,7 @@ export function ReviewView() {
               </div>
             ) : (
               <div className="flex-1 flex items-center justify-center p-3">
-                <div className="w-full max-w-2xl aspect-video bg-surface-2 border border-dashed border-border rounded-xl flex items-center justify-center">
+                <div className="w-full max-w-2xl aspect-video bg-surface-2 border-2 border-dashed border-border rounded-[5px] flex items-center justify-center">
                   <p className="text-sm text-text-muted">Нет изображения</p>
                 </div>
               </div>
@@ -323,9 +352,23 @@ export function ReviewView() {
           </motion.div>
         </AnimatePresence>
 
+        {/* AI Review panel */}
+        {aiReview && (
+          <div className="shrink-0 mx-4 mb-2 bg-surface-2 border-2 border-amber rounded-[5px] px-4 py-3 flex items-start gap-3">
+            <Bot size={14} className="text-amber shrink-0 mt-0.5" />
+            <p className="text-xs text-text-secondary leading-relaxed flex-1">{aiReview}</p>
+            <button
+              onClick={() => setAiReview(null)}
+              className="p-0.5 rounded-[3px] hover:bg-surface-3 text-text-muted transition-colors"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
         {/* Bottom overlay bar — shot info + actions */}
         {currentShot && (
-          <div className="shrink-0 border-t border-border bg-surface-1/80 backdrop-blur-sm px-6 py-2.5 flex items-center justify-between gap-4">
+          <div className="shrink-0 border-t-2 border-border bg-surface-1 px-6 py-2.5 flex items-center justify-between gap-4">
             {/* Shot info */}
             <div className="flex items-center gap-3 min-w-0 flex-1">
               <span className="font-mono text-sm font-bold text-amber shrink-0">
@@ -347,21 +390,29 @@ export function ReviewView() {
             {/* Actions */}
             <div className="flex items-center gap-2 shrink-0">
               <button
+                onClick={handleAiReview}
+                disabled={aiReviewing || !bestImage}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border text-xs text-text-secondary hover:text-text-primary hover:border-border-hover shadow-brutal-sm hover:shadow-brutal transition-shadow disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {aiReviewing ? <Loader2 size={12} className="animate-spin" /> : <Bot size={12} />}
+                {aiReviewing ? 'Анализ...' : 'AI ревью'}
+              </button>
+              <button
                 onClick={handleEnhance}
                 disabled={enhancing || currentShot.generatedImages.length === 0}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet/20 to-amber/20 border border-violet/20 text-xs font-semibold text-amber hover:from-violet/30 hover:to-amber/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-amber-dim text-amber border-2 border-amber text-xs font-bold hover:bg-amber/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {enhancing ? (
                   <Loader2 size={12} className="animate-spin" />
                 ) : (
                   <Sparkles size={12} />
                 )}
-                {enhancing ? 'Обработка...' : 'Enhance'}
+                {enhancing ? 'Обработка...' : 'Улучшить'}
               </button>
 
               <button
                 onClick={handleReject}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border text-xs text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow"
               >
                 <RotateCcw size={12} />
                 В черновик
@@ -372,10 +423,10 @@ export function ReviewView() {
                 animate={approveAnim ? { scale: [1, 1.15, 1] } : {}}
                 transition={{ duration: 0.3 }}
                 disabled={currentShot.status === 'approved'}
-                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-[5px] text-xs font-bold uppercase border-2 transition-all ${
                   currentShot.status === 'approved'
-                    ? 'bg-emerald/20 text-emerald border border-emerald/20 cursor-default'
-                    : 'bg-emerald text-white hover:bg-emerald/80 glow-emerald-sm'
+                    ? 'bg-emerald-dim text-emerald border-emerald cursor-default'
+                    : 'bg-emerald text-black border-border shadow-brutal-sm brutal-btn'
                 }`}
               >
                 <CheckCircle2 size={12} />

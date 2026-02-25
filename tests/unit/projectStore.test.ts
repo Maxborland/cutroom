@@ -40,7 +40,7 @@ function makeProject(overrides: Partial<any> = {}): any {
     updated: '2025-01-01T00:00:00.000Z',
     stage: 'brief' as const,
     briefType: 'text' as const,
-    brief: { text: '', assets: [] },
+    brief: { text: '', assets: [], targetDuration: 60 },
     script: '',
     shots: [],
     settings: {
@@ -125,6 +125,31 @@ describe('projectStore', () => {
       })
 
       expect(mockedApi.projects.create).toHaveBeenCalledWith('My Video')
+    })
+  })
+
+  describe('loadProject', () => {
+    it('loads project by id and clears activeShotId', async () => {
+      const existing = makeProject({ id: 'proj-1' })
+      const loaded = makeProject({ id: 'proj-2', name: 'Loaded' })
+      mockedApi.projects.get.mockResolvedValue(loaded)
+      useProjectStore.setState({
+        projects: [existing],
+        activeProjectId: 'proj-1',
+        activeShotId: 'shot-123',
+        loading: false,
+        error: null,
+      })
+
+      await act(async () => {
+        await useProjectStore.getState().loadProject('proj-2')
+      })
+
+      const state = useProjectStore.getState()
+      expect(state.activeProjectId).toBe('proj-2')
+      expect(state.activeShotId).toBeNull()
+      expect(state.projects.find((p) => p.id === 'proj-2')?.name).toBe('Loaded')
+      expect(state.loading).toBe(false)
     })
   })
 
@@ -216,9 +241,12 @@ describe('projectStore', () => {
           useProjectStore.getState().updateBriefText('proj-1', 'Updated text')
         })
 
-        expect(mockedApi.projects.update).toHaveBeenCalledWith('proj-1', {
-          brief: { text: 'Updated text' },
-        })
+        expect(mockedApi.projects.update).toHaveBeenCalledWith(
+          'proj-1',
+          expect.objectContaining({
+            brief: expect.objectContaining({ text: 'Updated text' }),
+          }),
+        )
       })
 
       it('does not modify other projects', () => {

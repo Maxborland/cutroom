@@ -1,34 +1,48 @@
-import express from 'express';
-import cors from 'cors';
-import projectRoutes from './routes/projects.js';
-import settingsRoutes from './routes/settings.js';
-import modelRoutes from './routes/models.js';
-import assetRoutes from './routes/assets.js';
-import generateRoutes from './routes/generate.js';
-import shotRoutes from './routes/shots.js';
-import exportRoutes from './routes/export.js';
+import { createApp } from './app.js';
+import { recoverExternalImageReferencesOnStartup } from './lib/external-image-cache.js';
 
-const app = express();
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
+const parsePort = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+const parseBoolean = (value: string | undefined): boolean | null => {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return null;
+};
 
-// Routes
-app.use('/api/projects', projectRoutes);
-app.use('/api/settings', settingsRoutes);
-app.use('/api/models', modelRoutes);
-app.use('/api/projects/:id/assets', assetRoutes);
-app.use('/api/projects/:id', generateRoutes);
-app.use('/api/projects/:id/shots', shotRoutes);
-app.use('/api/projects/:id', exportRoutes);
+const PORT = parsePort(process.env.PORT, 3001);
+const requireApiAccessKeyEnv = parseBoolean(process.env.REQUIRE_API_ACCESS_KEY);
+const requireApiAccessKey = requireApiAccessKeyEnv ?? false;
 
-// Health check
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+const app = createApp({
+  apiAccessKey: process.env.API_ACCESS_KEY,
+  allowMissingApiKey: !requireApiAccessKey,
 });
 
 app.listen(PORT, () => {
   console.log(`[video-pipeline] API server running on http://localhost:${PORT}`);
+  if (!process.env.API_ACCESS_KEY && requireApiAccessKey) {
+    console.warn('[video-pipeline] API access key is required, but API_ACCESS_KEY is empty');
+  }
+
+  void recoverExternalImageReferencesOnStartup()
+    .then((summary) => {
+      if (summary.referencesFound === 0) return;
+
+      console.log(
+        `[external-cache] Startup recovery finished: cached ${summary.cachedCount}/${summary.referencesFound} refs ` +
+        `(${summary.projectsScanned} projects, ${summary.shotsScanned} shots)`,
+      );
+
+      if (summary.failedCount > 0) {
+        console.warn(`[external-cache] Startup recovery failed for ${summary.failedCount} refs`);
+      }
+    })
+    .catch((err) => {
+      console.error('[external-cache] Startup recovery crashed:', err);
+    });
 });

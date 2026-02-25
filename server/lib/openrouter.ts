@@ -1,4 +1,4 @@
-import { getApiKey } from '../routes/settings.js';
+import { getApiKey } from './config.js';
 
 type MessageContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
 
@@ -27,7 +27,11 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function makeRequest(body: Record<string, unknown>, externalSignal?: AbortSignal): Promise<OpenRouterResponse> {
+async function makeRequest(
+  body: Record<string, unknown>,
+  externalSignal?: AbortSignal,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<OpenRouterResponse> {
   const apiKey = await getApiKey();
   if (!apiKey) {
     throw new Error('OpenRouter API key is not configured. Please set it in Settings.');
@@ -44,7 +48,7 @@ async function makeRequest(body: Record<string, unknown>, externalSignal?: Abort
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     // Forward external abort to our controller
     const onExternalAbort = () => controller.abort();
@@ -109,13 +113,20 @@ async function makeRequest(body: Record<string, unknown>, externalSignal?: Abort
 export async function chatCompletion(
   model: string,
   messages: ChatMessage[],
-  temperature = 0.7
+  temperature = 0.7,
+  options?: { maxTokens?: number; timeoutMs?: number },
 ): Promise<string> {
-  const data = await makeRequest({
+  const requestBody: Record<string, unknown> = {
     model,
     messages,
     temperature,
-  });
+  };
+
+  if (options?.maxTokens && Number.isFinite(options.maxTokens) && options.maxTokens > 0) {
+    requestBody.max_tokens = Math.floor(options.maxTokens);
+  }
+
+  const data = await makeRequest(requestBody, undefined, options?.timeoutMs);
 
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
@@ -125,10 +136,16 @@ export async function chatCompletion(
   return content;
 }
 
-export interface ReferenceImage {
-  base64: string;   // raw base64 (no data: prefix)
-  mimeType: string; // e.g. "image/jpeg"
-}
+export type ReferenceImage =
+  | {
+      kind?: 'base64';
+      base64: string;   // raw base64 (no data: prefix)
+      mimeType: string; // e.g. "image/jpeg"
+    }
+  | {
+      kind: 'url';
+      url: string;      // external URL or data URL
+    };
 
 export interface ImageGenOptions {
   size?: string;    // e.g. "1024x1024", "1536x1024", "auto"
@@ -153,9 +170,13 @@ export async function generateImage(
 
   if (referenceImages?.length) {
     for (const ref of referenceImages) {
+      const imageUrl = ref.kind === 'url'
+        ? ref.url
+        : `data:${ref.mimeType};base64,${ref.base64}`;
+
       contentParts.push({
         type: 'image_url',
-        image_url: { url: `data:${ref.mimeType};base64,${ref.base64}` },
+        image_url: { url: imageUrl },
       });
     }
     // Text prompt instructs to use the reference for composition only, output must be photorealistic

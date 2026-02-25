@@ -1,8 +1,12 @@
-import { describe, it, expect, afterAll, beforeAll } from 'vitest'
+import { describe, it, expect, vi, afterAll, beforeAll } from 'vitest'
 import request from 'supertest'
 import path from 'node:path'
 import { createApp } from './setup.js'
-import { createProject, deleteProject, type Project } from '../../server/lib/storage.js'
+import { createProject, deleteProject, getProject, type Project } from '../../server/lib/storage.js'
+
+vi.mock('../../server/lib/openrouter.js', () => ({
+  chatCompletion: vi.fn().mockResolvedValue('Mock asset label'),
+}))
 
 const app = createApp()
 
@@ -99,6 +103,39 @@ describe('Assets API', () => {
       await request(app)
         .delete(`/api/projects/${project.id}/assets/non-existent-asset-id`)
         .expect(404)
+    })
+  })
+
+  describe('POST /api/projects/:id/assets/describe-all', () => {
+    it('describe-all persists labels and returns complete counters', async () => {
+      const isolated = await createProject('Describe All Test Project')
+      const testFile = path.join(process.cwd(), 'public', 'vite.svg')
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockClear()
+
+      try {
+        await request(app)
+          .post(`/api/projects/${isolated.id}/assets`)
+          .attach('files', testFile, 'angle-a_00000.svg')
+          .attach('files', testFile, 'angle-a_00001.svg')
+          .expect(201)
+
+        const describeRes = await request(app)
+          .post(`/api/projects/${isolated.id}/assets/describe-all`)
+          .expect(200)
+
+        expect(describeRes.body).toEqual({ described: 2, total: 2 })
+        expect(chatCompletion).toHaveBeenCalledTimes(2)
+
+        const stored = await getProject(isolated.id)
+        expect(stored).toBeTruthy()
+        if (!stored) return
+
+        const labels = stored.brief.assets.map((asset) => asset.label)
+        expect(labels).toEqual(['Mock asset label', 'Mock asset label'])
+      } finally {
+        await deleteProject(isolated.id)
+      }
     })
   })
 })

@@ -1,10 +1,19 @@
 import { create } from 'zustand'
-import type { Project, Shot, ShotStatus, PipelineStage, BriefAsset } from '../types'
+import type { Project, Shot, ShotStatus, PipelineStage, BriefAsset, DirectorReviewStage } from '../types'
 import { api } from '../lib/api'
 import { useToastStore } from './toastStore'
 
 const toast = (type: 'success' | 'info' | 'error', title: string, description?: string) =>
   useToastStore.getState().addToast(type, title, description)
+
+const getActionErrorMessage = (error: unknown, fallback = 'Unknown error') => {
+  if (error && typeof error === 'object' && 'message' in error && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message
+  }
+  if (error instanceof Error && error.message.trim()) return error.message
+  if (typeof error === 'string' && error.trim()) return error
+  return fallback
+}
 
 interface ProjectState {
   projects: Project[]
@@ -18,6 +27,10 @@ interface ProjectState {
   enhancingShotIds: Set<string>
   generatingVideoShotIds: Set<string>
   describeProgress: { active: boolean; currentId: string | null; done: number; total: number }
+
+  // Director
+  directorLoading: boolean
+  directorReviewStage: DirectorReviewStage | 'all' | null
 
   activeProject: () => Project | null
   activeShot: () => Shot | null
@@ -46,13 +59,23 @@ interface ProjectState {
   // Optimistic + async background save
   updateShot: (projectId: string, shotId: string, updates: Partial<Shot>) => void
   updateShotStatus: (projectId: string, shotId: string, status: ShotStatus) => void
+  batchUpdateShotStatus: (projectId: string, shotIds: string[], status: ShotStatus) => void
   updateProjectStage: (projectId: string, stage: PipelineStage) => void
   updateBriefText: (projectId: string, text: string) => void
   updateTargetDuration: (projectId: string, duration: number) => void
   addBriefAsset: (projectId: string, asset: BriefAsset) => void
   removeBriefAsset: (projectId: string, assetId: string) => void
   updateAssetLabel: (projectId: string, assetId: string, label: string) => void
+  deleteShotImage: (projectId: string, shotId: string, filename: string) => void
+  deleteShotVideo: (projectId: string, shotId: string) => void
   clearError: () => void
+
+  // Director actions
+  directorReviewScript: () => Promise<void>
+  directorReviewShots: () => Promise<void>
+  directorReviewImages: () => Promise<void>
+  directorReviewAll: () => Promise<void>
+  directorApplyFeedback: (reviewId: string, action: string, shotId?: string, shotIds?: string[]) => Promise<void>
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -65,6 +88,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   enhancingShotIds: new Set<string>(),
   generatingVideoShotIds: new Set<string>(),
   describeProgress: { active: false, currentId: null, done: 0, total: 0 },
+  directorLoading: false,
+  directorReviewStage: null,
 
   activeProject: () => {
     const { projects, activeProjectId } = get()
@@ -87,7 +112,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const projects = await api.projects.list()
       set({ projects, loading: false })
     } catch (e: any) {
-      set({ error: e.message, loading: false })
+      set({ error: getActionErrorMessage(e), loading: false })
     }
   },
 
@@ -100,10 +125,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const projects = exists
           ? state.projects.map((p) => (p.id === id ? project : p))
           : [...state.projects, project]
-        return { projects, activeProjectId: id, loading: false }
+        return { projects, activeProjectId: id, activeShotId: null, loading: false }
       })
     } catch (e: any) {
-      set({ error: e.message, loading: false })
+      set({ error: getActionErrorMessage(e), loading: false })
     }
   },
 
@@ -118,7 +143,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         loading: false,
       }))
     } catch (e: any) {
-      set({ error: e.message, loading: false })
+      set({ error: getActionErrorMessage(e), loading: false })
     }
   },
 
@@ -133,10 +158,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         projects: state.projects.map((p) => (p.id === projectId ? project : p)),
         loading: false,
       }))
-      toast('success', 'Сценарий готов', 'Можно переходить к разбивке на шоты')
+      toast('success', 'Сценарий сгенерирован', 'Сценарий создан и переведен на этап сценария')
     } catch (e: any) {
-      set({ error: e.message, loading: false })
-      toast('error', 'Ошибка генерации сценария', e.message)
+      set({ error: getActionErrorMessage(e), loading: false })
+      toast('error', 'Ошибка генерации сценария', getActionErrorMessage(e))
     }
   },
 
@@ -152,17 +177,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         loading: false,
       }))
       const count = project.shots?.length || 0
-      toast('success', 'Шот-лист готов', `Создано ${count} шотов — проверьте привязку ассетов`)
+      toast('success', 'Шоты разбиты', `Создано ${count} шотов, проект переведен на этап шотов`)
     } catch (e: any) {
-      set({ error: e.message, loading: false })
-      toast('error', 'Ошибка разбивки на шоты', e.message)
+      set({ error: getActionErrorMessage(e), loading: false })
+      toast('error', 'Ошибка разбивки на шоты', getActionErrorMessage(e))
     }
   },
 
   generateImage: async (shotId: string) => {
     const projectId = get().activeProjectId
     if (!projectId) return
-    // Track in store — survives page navigation
+    // Track in store; survives page navigation
     set((state) => ({
       error: null,
       generatingShotIds: new Set([...state.generatingShotIds, shotId]),
@@ -184,17 +209,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         }
       })
       const shot = project.shots?.find((s: any) => s.id === shotId)
-      toast('success', `Изображение готово`, `Шот #${String((shot?.order ?? 0)).padStart(2, '0')} → ревью`)
+      toast('success', 'Изображение сгенерировано', `Шот #${String((shot?.order ?? 0)).padStart(2, '0')} переведен в этап ревью изображения`)
     } catch (e: any) {
       set((state) => {
         const next = new Set(state.generatingShotIds)
         next.delete(shotId)
         return { generatingShotIds: next }
       })
-      const isCancelled = e.message?.includes('cancelled')
+      const isCancelled = getActionErrorMessage(e)?.includes('cancelled')
       if (!isCancelled) {
-        set({ error: e.message })
-        toast('error', 'Ошибка генерации', e.message)
+        set({ error: getActionErrorMessage(e) })
+        toast('error', 'Ошибка генерации изображения', getActionErrorMessage(e))
       }
       try {
         const project = await api.projects.get(projectId)
@@ -224,14 +249,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           projects: state.projects.map((p) => (p.id === projectId ? project : p)),
         }
       })
-      toast('success', 'Enhance готов', `Постобработка шота завершена`)
+      toast('success', 'Enhance завершен', 'Улучшенное изображение добавлено')
     } catch (e: any) {
       set((state) => {
         const next = new Set(state.enhancingShotIds)
         next.delete(shotId)
         return { enhancingShotIds: next }
       })
-      toast('error', 'Ошибка enhance', e.message)
+      toast('error', 'Ошибка Enhance', getActionErrorMessage(e))
     }
   },
 
@@ -244,9 +269,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set((state) => ({
         projects: state.projects.map((p) => (p.id === projectId ? project : p)),
       }))
-      toast('success', 'Пакетный enhance', `Обработано ${result.enhanced} из ${result.total} шотов`)
+      toast('success', 'Enhance завершен', `Улучшено ${result.enhanced} из ${result.total} шотов`)
     } catch (e: any) {
-      toast('error', 'Ошибка пакетной обработки', e.message)
+      toast('error', 'Ошибка пакетного Enhance', getActionErrorMessage(e))
     }
   },
 
@@ -267,14 +292,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           projects: state.projects.map((p) => (p.id === projectId ? project : p)),
         }
       })
-      toast('success', 'Видео готово', `Видео для шота сгенерировано`)
+      toast('success', 'Видео сгенерировано', 'Видео для этого шота готово')
     } catch (e: any) {
       set((state) => {
         const next = new Set(state.generatingVideoShotIds)
         next.delete(shotId)
         return { generatingVideoShotIds: next }
       })
-      toast('error', 'Ошибка генерации видео', e.message)
+      toast('error', 'Ошибка генерации видео', getActionErrorMessage(e))
     }
   },
 
@@ -287,9 +312,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set((state) => ({
         projects: state.projects.map((p) => (p.id === projectId ? project : p)),
       }))
-      toast('success', 'Пакетная генерация видео', `Сгенерировано ${result.generated} из ${result.total} видео`)
+      toast('success', 'Генерация всех видео завершена', `Сгенерировано ${result.generated} из ${result.total} видео`)
     } catch (e: any) {
-      toast('error', 'Ошибка пакетной генерации видео', e.message)
+      toast('error', 'Ошибка генерации всех видео', getActionErrorMessage(e))
     }
   },
 
@@ -342,8 +367,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (done > 0) {
       toast(
         wasCancelled ? 'info' : 'success',
-        wasCancelled ? 'Описание остановлено' : 'Описания готовы',
-        `Описано ${done} из ${toDescribe.length} ассетов`
+        wasCancelled ? 'РћРїРёСЃР°РЅРёРµ РѕС‚РјРµРЅРµРЅРѕ' : 'РћРїРёСЃР°РЅРёРµ Р·Р°РІРµСЂС€РµРЅРѕ',
+        `РћРїРёСЃР°РЅРѕ ${done} РёР· ${toDescribe.length} Р°СЃСЃРµС‚РѕРІ`
       )
     }
   },
@@ -385,7 +410,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!projectId) return
     try {
       await api.generate.cancelImage(projectId, shotId)
-      // Optimistic update — img_gen→draft, vid_gen→img_review
+      // Optimistic update: img_gen -> draft, vid_gen -> img_review
       set((state) => ({
         projects: state.projects.map((p) =>
           p.id === projectId
@@ -410,7 +435,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!projectId) return
     try {
       await api.generate.cancelAll(projectId)
-      // Optimistic update — img_gen→draft, vid_gen→img_review
+      // Optimistic update: img_gen -> draft, vid_gen -> img_review
       set((state) => ({
         projects: state.projects.map((p) =>
           p.id === projectId
@@ -453,17 +478,62 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   updateShotStatus: (projectId, shotId, status) => {
-    // Optimistic local update
+    // Optimistic local update: when reverting to draft, also clear generated content
+    const clearGenerated = status === 'draft'
     set((state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId
-          ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status } : s)) }
+          ? {
+              ...p,
+              shots: p.shots.map((s) =>
+                s.id === shotId
+                  ? {
+                      ...s,
+                      status,
+                      ...(clearGenerated && {
+                        generatedImages: [],
+                        enhancedImages: [],
+                        videoFile: null,
+                      }),
+                    }
+                  : s
+              ),
+            }
           : p
       ),
     }))
     // Background save
     api.shots.setStatus(projectId, shotId, status).catch((e) => {
       console.error('Failed to update shot status:', e)
+    })
+  },
+
+  batchUpdateShotStatus: (projectId, shotIds, status) => {
+    const clearGenerated = status === 'draft'
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              shots: p.shots.map((s) =>
+                shotIds.includes(s.id)
+                  ? {
+                      ...s,
+                      status,
+                      ...(clearGenerated && {
+                        generatedImages: [],
+                        enhancedImages: [],
+                        videoFile: null,
+                      }),
+                    }
+                  : s
+              ),
+            }
+          : p
+      ),
+    }))
+    api.shots.batchSetStatus(projectId, shotIds, status).catch((e) => {
+      console.error('Failed to batch update shot status:', e)
     })
   },
 
@@ -483,7 +553,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         p.id === projectId ? { ...p, brief: { ...p.brief, text } } : p
       ),
     }))
-    // Background save — debounced by the caller (BriefEditor)
+    // Background save - debounced by the caller (BriefEditor)
     api.projects.update(projectId, { brief: { text } }).catch((e) => {
       console.error('Failed to save brief text:', e)
     })
@@ -541,5 +611,154 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     api.assets.updateLabel(projectId, assetId, label).catch((e) => {
       console.error('Failed to save asset label:', e)
     })
+  },
+
+  deleteShotImage: (projectId, shotId, filename) => {
+    // Optimistic: remove from generatedImages and enhancedImages
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              shots: p.shots.map((s) =>
+                s.id === shotId
+                  ? {
+                      ...s,
+                      generatedImages: s.generatedImages.filter((f) => f !== filename),
+                      enhancedImages: (s.enhancedImages || []).filter((f) => f !== filename),
+                    }
+                  : s
+              ),
+            }
+          : p
+      ),
+    }))
+    // Background delete
+    api.shots.deleteImage(projectId, shotId, filename).catch((e) => {
+      console.error('Failed to delete shot image:', e)
+    })
+  },
+
+  deleteShotVideo: (projectId, shotId) => {
+    // Optimistic: set videoFile to null
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              shots: p.shots.map((s) =>
+                s.id === shotId ? { ...s, videoFile: null } : s
+              ),
+            }
+          : p
+      ),
+    }))
+    // Background delete
+    api.shots.deleteVideo(projectId, shotId).catch((e) => {
+      console.error('Failed to delete shot video:', e)
+    })
+  },
+
+  // --- Director actions ---
+
+  directorReviewScript: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set({ directorLoading: true, directorReviewStage: 'script' })
+    try {
+      await api.director.reviewScript(projectId)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        directorLoading: false,
+        directorReviewStage: null,
+      }))
+      toast('success', 'Ревью сценария завершено')
+    } catch (e: any) {
+      set({ directorLoading: false, directorReviewStage: null })
+      toast('error', 'Ошибка ревью сценария', getActionErrorMessage(e))
+    }
+  },
+
+  directorReviewShots: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set({ directorLoading: true, directorReviewStage: 'shots' })
+    try {
+      await api.director.reviewShots(projectId)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        directorLoading: false,
+        directorReviewStage: null,
+      }))
+      toast('success', 'Ревью шотов завершено')
+    } catch (e: any) {
+      set({ directorLoading: false, directorReviewStage: null })
+      toast('error', 'Ошибка ревью шотов', getActionErrorMessage(e))
+    }
+  },
+
+  directorReviewImages: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set({ directorLoading: true, directorReviewStage: 'images' })
+    try {
+      await api.director.reviewImages(projectId)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        directorLoading: false,
+        directorReviewStage: null,
+      }))
+      toast('success', 'Ревью изображений завершено')
+    } catch (e: any) {
+      set({ directorLoading: false, directorReviewStage: null })
+      toast('error', 'Ошибка ревью изображений', getActionErrorMessage(e))
+    }
+  },
+
+  directorReviewAll: async () => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set({ directorLoading: true, directorReviewStage: 'all' })
+    try {
+      await api.director.reviewAll(projectId)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        directorLoading: false,
+        directorReviewStage: null,
+      }))
+      toast('success', 'Полное ревью завершено')
+    } catch (e: any) {
+      set({ directorLoading: false, directorReviewStage: null })
+      toast('error', 'Ошибка полного ревью', getActionErrorMessage(e))
+    }
+  },
+
+  directorApplyFeedback: async (reviewId, action, shotId?, shotIds?) => {
+    const projectId = get().activeProjectId
+    if (!projectId) return
+    set({ directorLoading: true })
+    try {
+      await api.director.applyFeedback(projectId, reviewId, action, shotId, shotIds)
+      const project = await api.projects.get(projectId)
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        directorLoading: false,
+      }))
+      const actionLabels: Record<string, string> = {
+        'regenerate-script': 'Сценарий пересобран',
+        'regenerate-shots': 'Шоты пересобраны',
+        'regenerate-image': 'Изображение перегенерировано',
+        'regenerate-images': 'Изображения перегенерированы',
+        'reject-image': 'Изображение отклонено',
+      }
+      toast('success', actionLabels[action] || 'Действие применено')
+    } catch (e: any) {
+      set({ directorLoading: false })
+      toast('error', 'Ошибка применения фидбека', getActionErrorMessage(e))
+    }
   },
 }))

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import archiver from 'archiver';
 import { getProject, getProjectDir } from '../lib/storage.js';
+import { sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
 
@@ -11,7 +12,7 @@ router.get('/export', async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
-      res.status(404).json({ error: 'Project not found' });
+      sendApiError(res, 404, 'Project not found');
       return;
     }
 
@@ -28,7 +29,7 @@ router.get('/export', async (req: Request, res: Response) => {
     archive.on('error', (err) => {
       console.error('Archive error:', err);
       if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to create archive' });
+        sendApiError(res, 500, 'Failed to create archive');
       }
     });
 
@@ -131,7 +132,7 @@ router.get('/export', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Failed to export project:', err);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to export project' });
+      sendApiError(res, 500, 'Failed to export project');
     }
   }
 });
@@ -141,7 +142,7 @@ router.get('/export/prompts', async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
-      res.status(404).json({ error: 'Project not found' });
+      sendApiError(res, 404, 'Project not found');
       return;
     }
 
@@ -167,7 +168,7 @@ router.get('/export/prompts', async (req: Request, res: Response) => {
     res.send(lines.join('\n'));
   } catch (err) {
     console.error('Failed to export prompts:', err);
-    res.status(500).json({ error: 'Failed to export prompts' });
+    sendApiError(res, 500, 'Failed to export prompts');
   }
 });
 

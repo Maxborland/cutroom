@@ -1,4 +1,73 @@
+import type {
+  ApiErrorResponse,
+  Project,
+  Shot,
+  BriefAsset,
+  AppSettings,
+  DirectorReview,
+  DirectorState,
+  VideoGenerationResult,
+} from '../types/index'
+
 const BASE = '/api'
+
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends (infer U)[]
+    ? DeepPartial<U>[]
+    : T[K] extends object
+      ? DeepPartial<T[K]>
+      : T[K]
+}
+
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly code?: string
+  readonly details?: unknown
+  readonly path?: string
+
+  constructor(message: string, options: { status: number; code?: string; details?: unknown; path?: string }) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = options.status
+    this.code = options.code
+    this.details = options.details
+    this.path = options.path
+  }
+}
+
+export function isApiRequestError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+async function readApiError(res: Response): Promise<ApiErrorResponse> {
+  const jsonBody = await res.clone().json().catch(() => null)
+  if (isRecord(jsonBody) && typeof jsonBody.error === 'string') {
+    return {
+      error: jsonBody.error,
+      code: typeof jsonBody.code === 'string' ? jsonBody.code : undefined,
+      details: jsonBody.details,
+    }
+  }
+
+  const text = (await res.text().catch(() => '')).trim()
+  if (text) return { error: text }
+
+  return { error: res.statusText || 'Request failed' }
+}
+
+async function throwRequestError(res: Response, path: string): Promise<never> {
+  const payload = await readApiError(res)
+  throw new ApiRequestError(payload.error || res.statusText || 'Request failed', {
+    status: res.status,
+    code: payload.code,
+    details: payload.details,
+    path,
+  })
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -6,8 +75,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(err.error || res.statusText)
+    await throwRequestError(res, path)
   }
   if (res.status === 204) return undefined as T
   return res.json()
@@ -15,23 +83,24 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   projects: {
-    list: () => request<any[]>('/projects'),
-    get: (id: string) => request<any>(`/projects/${id}`),
+    list: () => request<Project[]>('/projects'),
+    get: (id: string) => request<Project>(`/projects/${id}`),
     create: (name: string) =>
-      request<any>('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
-    update: (id: string, data: any) =>
-      request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      request<Project>('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
+    update: (id: string, data: DeepPartial<Project>) =>
+      request<Project>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   },
   assets: {
     upload: async (projectId: string, files: File[]) => {
       const form = new FormData()
       files.forEach((f) => form.append('files', f))
+      const path = `/projects/${projectId}/assets`
       const res = await fetch(`${BASE}/projects/${projectId}/assets`, {
         method: 'POST',
         body: form,
       })
-      if (!res.ok) throw new Error('Upload failed')
+      if (!res.ok) await throwRequestError(res, path)
       return res.json()
     },
     delete: (projectId: string, assetId: string) =>
@@ -39,7 +108,7 @@ export const api = {
     url: (projectId: string, filename: string) =>
       `${BASE}/projects/${projectId}/assets/file/${encodeURIComponent(filename)}`,
     updateLabel: (projectId: string, assetId: string, label: string) =>
-      request<any>(`/projects/${projectId}/assets/${assetId}/label`, {
+      request<BriefAsset>(`/projects/${projectId}/assets/${assetId}/label`, {
         method: 'PUT', body: JSON.stringify({ label }),
       }),
     describe: (projectId: string, assetId: string) =>
@@ -51,13 +120,13 @@ export const api = {
     script: (projectId: string) =>
       request<{ script: string }>(`/projects/${projectId}/generate-script`, { method: 'POST' }),
     splitShots: (projectId: string) =>
-      request<{ shots: any[] }>(`/projects/${projectId}/split-shots`, { method: 'POST' }),
+      request<{ shots: Shot[] }>(`/projects/${projectId}/split-shots`, { method: 'POST' }),
     image: (projectId: string, shotId: string) =>
-      request<any>(`/projects/${projectId}/shots/${shotId}/generate-image`, { method: 'POST' }),
+      request<{ filename: string; url: string }>(`/projects/${projectId}/shots/${shotId}/generate-image`, { method: 'POST' }),
     cancelImage: (projectId: string, shotId: string) =>
-      request<any>(`/projects/${projectId}/shots/${shotId}/cancel-generation`, { method: 'POST' }),
+      request<{ cancelled: boolean }>(`/projects/${projectId}/shots/${shotId}/cancel-generation`, { method: 'POST' }),
     cancelAll: (projectId: string) =>
-      request<any>(`/projects/${projectId}/cancel-all-generation`, { method: 'POST' }),
+      request<{ cancelled: number }>(`/projects/${projectId}/cancel-all-generation`, { method: 'POST' }),
     enhance: (projectId: string, shotId: string, sourceImage: string) =>
       request<{ filename: string; url: string }>(`/projects/${projectId}/shots/${shotId}/enhance-image`, {
         method: 'POST',
@@ -66,51 +135,101 @@ export const api = {
     enhanceAll: (projectId: string) =>
       request<{ enhanced: number; total: number }>(`/projects/${projectId}/enhance-all`, { method: 'POST' }),
     video: (projectId: string, shotId: string) =>
-      request<{ filename: string; url: string }>(`/projects/${projectId}/shots/${shotId}/generate-video`, { method: 'POST' }),
+      request<VideoGenerationResult>(`/projects/${projectId}/shots/${shotId}/generate-video`, { method: 'POST' }),
     allVideos: (projectId: string) =>
       request<{ generated: number; total: number }>(`/projects/${projectId}/generate-all-videos`, { method: 'POST' }),
+    aiReview: (projectId: string, shotId: string) =>
+      request<{ review: string }>(`/projects/${projectId}/shots/${shotId}/ai-review`, { method: 'POST' }),
   },
   shots: {
-    update: (projectId: string, shotId: string, data: any) =>
-      request<any>(`/projects/${projectId}/shots/${shotId}`, {
+    update: (projectId: string, shotId: string, data: Partial<Shot>) =>
+      request<Shot>(`/projects/${projectId}/shots/${shotId}`, {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
     setStatus: (projectId: string, shotId: string, status: string) =>
-      request<any>(`/projects/${projectId}/shots/${shotId}/status`, {
+      request<Shot>(`/projects/${projectId}/shots/${shotId}/status`, {
         method: 'PUT',
         body: JSON.stringify({ status }),
+      }),
+    batchSetStatus: (projectId: string, shotIds: string[], status: string) =>
+      request<{ updated: number }>(`/projects/${projectId}/shots/batch-status`, {
+        method: 'PUT',
+        body: JSON.stringify({ shotIds, status }),
       }),
     uploadVideo: async (projectId: string, shotId: string, file: File) => {
       const form = new FormData()
       form.append('video', file)
+      const path = `/projects/${projectId}/shots/${shotId}/video`
       const res = await fetch(`${BASE}/projects/${projectId}/shots/${shotId}/video`, {
         method: 'POST',
         body: form,
       })
-      if (!res.ok) throw new Error('Upload failed')
+      if (!res.ok) await throwRequestError(res, path)
       return res.json()
     },
     generatedImageUrl: (projectId: string, shotId: string, filename: string) =>
-      `${BASE}/projects/${projectId}/shots/${shotId}/generated/${encodeURIComponent(filename)}`,
+      (filename.startsWith('http://') || filename.startsWith('https://') || filename.startsWith('data:'))
+        ? filename
+        : `${BASE}/projects/${projectId}/shots/${shotId}/generated/${encodeURIComponent(filename)}`,
     videoUrl: (projectId: string, shotId: string, filename: string) =>
-      `${BASE}/projects/${projectId}/shots/${shotId}/video/${encodeURIComponent(filename)}`,
+      (filename.startsWith('http://') || filename.startsWith('https://') || filename.startsWith('data:'))
+        ? filename
+        : `${BASE}/projects/${projectId}/shots/${shotId}/video/${encodeURIComponent(filename)}`,
+    cacheVideo: (projectId: string, shotId: string) =>
+      request<{ filename: string; url: string }>(`/projects/${projectId}/shots/${shotId}/cache-video`, { method: 'POST' }),
+    deleteImage: (projectId: string, shotId: string, filename: string) =>
+      request<Shot>(`/projects/${projectId}/shots/${shotId}/image/${encodeURIComponent(filename)}`, { method: 'DELETE' }),
+    deleteVideo: (projectId: string, shotId: string) =>
+      request<Shot>(`/projects/${projectId}/shots/${shotId}/video`, { method: 'DELETE' }),
   },
   settings: {
-    get: () => request<any>('/settings'),
-    update: (data: any) => request<any>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    get: () => request<AppSettings>('/settings'),
+    update: (data: Partial<AppSettings>) => request<AppSettings>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   },
   models: {
     list: () => request<{
       textModels: { id: string; name: string }[];
       imageModels: { id: string; name: string }[];
-      higgsfieldImageModels: { id: string; name: string }[];
-      higgsfieldVideoModels: { id: string; name: string }[];
+      imageGenModels: {
+        id: string;
+        name: string;
+        imageResolutionOptions?: string[];
+        imageResolutionSupport?: 'explicit' | 'none';
+        imageAspectRatioOptions?: string[];
+        imageAspectRatioSupport?: 'explicit' | 'none';
+        requiresImageInput?: boolean;
+      }[];
+      videoGenModels: {
+        id: string;
+        name: string;
+        videoQualityOptions?: string[];
+        videoQualitySupport?: 'explicit' | 'none';
+      }[];
+      audioGenModels: { id: string; name: string }[];
     }>('/models'),
-    testModel: (modelId: string) =>
-      request<{ valid: boolean; error?: string }>('/models/test', {
+  },
+  director: {
+    getState: (projectId: string) =>
+      request<DirectorState>(`/projects/${projectId}/director`),
+    reviewScript: (projectId: string) =>
+      request<DirectorReview>(`/projects/${projectId}/director/review-script`, { method: 'POST' }),
+    reviewShots: (projectId: string) =>
+      request<DirectorReview>(`/projects/${projectId}/director/review-shots`, { method: 'POST' }),
+    reviewImages: (projectId: string) =>
+      request<DirectorReview>(`/projects/${projectId}/director/review-images`, { method: 'POST' }),
+    reviewAll: (projectId: string) =>
+      request<{ reviews: DirectorReview[] }>(`/projects/${projectId}/director/review-all`, { method: 'POST' }),
+    applyFeedback: (
+      projectId: string,
+      reviewId: string,
+      action: string,
+      shotId?: string,
+      shotIds?: string[],
+    ) =>
+      request<any>(`/projects/${projectId}/director/apply-feedback`, {
         method: 'POST',
-        body: JSON.stringify({ modelId }),
+        body: JSON.stringify({ reviewId, action, shotId, shotIds }),
       }),
   },
   export: {

@@ -1,5 +1,5 @@
 import { useProjectStore } from '../stores/projectStore'
-import { Sparkles, Play, RotateCcw, Loader2 } from 'lucide-react'
+import { Sparkles, Play, RotateCcw, Loader2, Crown } from 'lucide-react'
 
 interface PipelineHeaderProps {
   activeView: string
@@ -12,6 +12,7 @@ const VIEW_TITLES: Record<string, string> = {
   review: 'Ревью',
   export: 'Экспорт',
   settings: 'Настройки',
+  director: 'Креативный директор',
 }
 
 export function PipelineHeader({ activeView }: PipelineHeaderProps) {
@@ -20,14 +21,16 @@ export function PipelineHeader({ activeView }: PipelineHeaderProps) {
   const generateScript = useProjectStore((s) => s.generateScript)
   const splitShots = useProjectStore((s) => s.splitShots)
   const generateImage = useProjectStore((s) => s.generateImage)
+  const directorReviewAll = useProjectStore((s) => s.directorReviewAll)
+  const directorLoading = useProjectStore((s) => s.directorLoading)
 
   if (!project) return null
 
   const stats = {
     total: project.shots.length,
     approved: project.shots.filter((s) => s.status === 'approved').length,
-    generating: project.shots.filter((s) => s.status === 'generating').length,
-    review: project.shots.filter((s) => s.status === 'review').length,
+    generating: project.shots.filter((s) => s.status === 'img_gen' || s.status === 'vid_gen').length,
+    review: project.shots.filter((s) => s.status === 'img_review' || s.status === 'vid_review').length,
     draft: project.shots.filter((s) => s.status === 'draft').length,
   }
 
@@ -49,33 +52,33 @@ export function PipelineHeader({ activeView }: PipelineHeaderProps) {
   }
 
   return (
-    <header className="h-14 border-b border-border flex items-center justify-between px-6 bg-surface-1/50 backdrop-blur-sm shrink-0">
+    <header className="h-14 border-b-2 border-border flex items-center justify-between px-6 bg-surface-1 shrink-0">
       <div className="flex items-center gap-4">
-        <h1 className="font-display font-bold text-lg">{VIEW_TITLES[activeView] ?? activeView}</h1>
+        <h1 className="font-heading font-bold text-lg uppercase tracking-tight">{VIEW_TITLES[activeView] ?? activeView}</h1>
 
         {(activeView === 'shots' || activeView === 'review') && stats.total > 0 && (
           <div className="flex items-center gap-3 ml-4">
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-emerald" />
+              <div className="w-2.5 h-2.5 rounded-[2px] bg-emerald border border-border" />
               <span className="font-mono text-xs text-text-secondary">{stats.approved}</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-sky" />
+              <div className="w-2.5 h-2.5 rounded-[2px] bg-sky border border-border" />
               <span className="font-mono text-xs text-text-secondary">{stats.review}</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-violet animate-pulse" />
+              <div className="w-2.5 h-2.5 rounded-[2px] bg-violet border border-border animate-pulse" />
               <span className="font-mono text-xs text-text-secondary">{stats.generating}</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-text-muted" />
+              <div className="w-2.5 h-2.5 rounded-[2px] bg-text-muted border border-border" />
               <span className="font-mono text-xs text-text-secondary">{stats.draft}</span>
             </div>
 
             {/* Progress bar */}
-            <div className="w-24 h-1.5 rounded-full bg-surface-3 ml-2 overflow-hidden">
+            <div className="w-24 h-2 rounded-[3px] bg-surface-3 border border-border ml-2 overflow-hidden">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-amber to-emerald transition-all duration-500"
+                className="h-full bg-emerald transition-all duration-500"
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -88,7 +91,7 @@ export function PipelineHeader({ activeView }: PipelineHeaderProps) {
           <button
             onClick={handleGenerateScript}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-amber text-bg text-sm font-semibold hover:bg-amber-light transition-colors glow-amber-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-1.5 rounded-[5px] bg-amber text-black text-sm font-bold uppercase brutal-btn disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
               <Loader2 size={14} className="animate-spin" />
@@ -102,7 +105,7 @@ export function PipelineHeader({ activeView }: PipelineHeaderProps) {
           <button
             onClick={handleSplitShots}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-amber text-bg text-sm font-semibold hover:bg-amber-light transition-colors glow-amber-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-1.5 rounded-[5px] bg-amber text-black text-sm font-bold uppercase brutal-btn disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
               <Loader2 size={14} className="animate-spin" />
@@ -112,16 +115,30 @@ export function PipelineHeader({ activeView }: PipelineHeaderProps) {
             {loading ? 'Разбивка...' : 'Разбить на шоты'}
           </button>
         )}
+        {activeView === 'director' && (
+          <button
+            onClick={directorReviewAll}
+            disabled={directorLoading}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-[5px] bg-amber text-black text-sm font-bold uppercase brutal-btn disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {directorLoading ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Crown size={14} />
+            )}
+            {directorLoading ? 'Анализ...' : 'Полное ревью'}
+          </button>
+        )}
         {activeView === 'shots' && (
           <>
-            <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-sm text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors">
+            <button className="flex items-center gap-2 px-3 py-1.5 rounded-[5px] border-2 border-border text-sm text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow">
               <RotateCcw size={14} />
               Перегенерировать все
             </button>
             <button
               onClick={handleGenerateAll}
               disabled={loading || stats.draft === 0}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-amber text-bg text-sm font-semibold hover:bg-amber-light transition-colors glow-amber-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-4 py-1.5 rounded-[5px] bg-amber text-black text-sm font-bold uppercase brutal-btn disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
                 <Loader2 size={14} className="animate-spin" />

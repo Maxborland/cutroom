@@ -13,32 +13,47 @@
 | Component | Vitest + @testing-library/react | React components in isolation |
 | E2E | Playwright | Full pipeline from project creation to export |
 
-### File Structure
+### Coverage Status (as of 2026-02-18)
+
+Implemented now:
 
 ```
 tests/
-├── unit/
-│   ├── storage.test.ts          # File system CRUD operations
-│   ├── openrouter.test.ts       # OpenRouter wrapper (mocked fetch)
-│   ├── api-client.test.ts       # Frontend API client (mocked fetch)
-│   └── projectStore.test.ts     # Zustand store actions
-├── integration/
-│   ├── projects.test.ts         # GET/POST/PUT/DELETE /api/projects
-│   ├── assets.test.ts           # Upload/serve/delete brief assets
-│   ├── shots.test.ts            # Shot CRUD + video upload
-│   ├── settings.test.ts         # Settings read/write + API key masking
-│   ├── generate.test.ts         # Script/shot generation (mocked LLM)
-│   └── export.test.ts           # ZIP + prompts text export
-├── components/
-│   ├── SettingsView.test.tsx     # Model dropdown, save, load
-│   ├── BriefEditor.test.tsx     # Upload zone, text input, asset list
-│   ├── ShotBoard.test.tsx       # Kanban columns, card rendering
-│   ├── ShotDetail.test.tsx      # Edit fields, status actions, generate
-│   └── PipelineHeader.test.tsx  # Stage buttons, statistics display
-└── e2e/
-    ├── pipeline.spec.ts         # Full pipeline: brief → script → shots → export
-    ├── settings.spec.ts         # Settings page with model dropdown
-    └── project-crud.spec.ts     # Create/switch/delete projects
+  setup.ts
+  unit/
+    storage.test.ts
+    openrouter.test.ts
+    projectStore.test.ts
+  integration/
+    setup.ts
+    projects.test.ts
+    assets.test.ts
+    shots.test.ts
+    settings.test.ts
+    export.test.ts
+    models.test.ts
+  components/
+    SettingsView.test.tsx
+    PipelineHeader.test.tsx
+  e2e/
+    pipeline.spec.ts
+    project-crud.spec.ts
+```
+
+Planned, not implemented yet:
+
+```
+tests/
+  unit/
+    api-client.test.ts
+  integration/
+    generate.test.ts
+  components/
+    BriefEditor.test.tsx
+    ShotBoard.test.tsx
+    ShotDetail.test.tsx
+  e2e/
+    settings.spec.ts
 ```
 
 ### Testing Approach
@@ -58,8 +73,8 @@ tests/
   "test:unit": "vitest run tests/unit",
   "test:integration": "vitest run tests/integration",
   "test:components": "vitest run tests/components",
-  "test:e2e": "playwright test",
-  "test:all": "vitest run && playwright test"
+  "test:e2e": "npx playwright test",
+  "test:all": "vitest run && npx playwright test"
 }
 ```
 

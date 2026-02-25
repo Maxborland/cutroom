@@ -20,7 +20,10 @@ describe('PipelineHeader', () => {
         shots: [
           { id: '1', status: 'draft' },
           { id: '2', status: 'approved' },
-          { id: '3', status: 'review' },
+          { id: '3', status: 'img_review' },
+          { id: '4', status: 'vid_review' },
+          { id: '5', status: 'img_gen' },
+          { id: '6', status: 'vid_gen' },
         ],
       }),
       loading: false,
@@ -49,7 +52,7 @@ describe('PipelineHeader', () => {
     render(<PipelineHeader activeView="shots" />)
 
     // The component renders 4 stat indicators: approved, review, generating, draft
-    // With our mock data: approved=1, review=1, generating=0, draft=1
+    // With our mock data: approved=1, review=2, generating=2, draft=1
     const statElements = screen.getAllByText(/^[0-9]+$/, { selector: '.font-mono' })
 
     // Should have exactly 4 stat indicators
@@ -58,6 +61,6 @@ describe('PipelineHeader', () => {
     // Extract the values and verify them
     const values = statElements.map((el) => el.textContent)
     // Order in PipelineHeader: approved, review, generating, draft
-    expect(values).toEqual(['1', '1', '0', '1'])
+    expect(values).toEqual(['1', '2', '2', '1'])
   })
 })

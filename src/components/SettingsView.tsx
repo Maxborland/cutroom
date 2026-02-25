@@ -26,7 +26,7 @@ const SIZE_OPTIONS = [
 const QUALITY_OPTIONS = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High (4K)' },
+  { value: 'high', label: 'High' },
 ]
 
 const ASPECT_RATIO_OPTIONS = [
@@ -50,6 +50,49 @@ type VideoModelOption = {
   name: string
   videoQualityOptions?: string[]
   videoQualitySupport?: 'explicit' | 'none'
+}
+
+type ImageModelOption = {
+  id: string
+  name: string
+  imageResolutionOptions?: string[]
+  imageResolutionSupport?: 'explicit' | 'none'
+  imageAspectRatioOptions?: string[]
+  imageAspectRatioSupport?: 'explicit' | 'none'
+  requiresImageInput?: boolean
+}
+
+function normalizeImageQualityValue(rawQuality: string, model?: ImageModelOption): string {
+  const modelOptions = model?.imageResolutionOptions || []
+  const hasExplicitSupport = model?.imageResolutionSupport === 'explicit' && modelOptions.length > 0
+  const normalizedQuality = rawQuality.trim()
+
+  if (hasExplicitSupport) {
+    if (!normalizedQuality) return modelOptions[modelOptions.length - 1]
+
+    const exact = modelOptions.find((value) => value.toLowerCase() === normalizedQuality.toLowerCase())
+    if (exact) return exact
+
+    const lowered = normalizedQuality.toLowerCase()
+    if (lowered === 'low') return modelOptions[0]
+    if (lowered === 'medium') return modelOptions[Math.floor((modelOptions.length - 1) / 2)]
+    if (lowered === 'high') return modelOptions[modelOptions.length - 1]
+
+    return modelOptions[modelOptions.length - 1]
+  }
+
+  if (!normalizedQuality) return 'high'
+
+  const lowered = normalizedQuality.toLowerCase()
+  if (lowered === 'low' || lowered === 'medium' || lowered === 'high') {
+    return lowered
+  }
+
+  if (/4k|2160/i.test(normalizedQuality)) return 'high'
+  if (/2k|1440|1080/i.test(normalizedQuality)) return 'medium'
+  if (/1k|768|720|512|480/i.test(normalizedQuality)) return 'low'
+
+  return 'high'
 }
 
 function normalizeVideoQualityValue(rawQuality: string, model?: VideoModelOption): string {
@@ -86,7 +129,7 @@ function SettingsSection({
   children: ReactNode
 }) {
   return (
-    <section id={id} className="brutal-card bg-surface-1 p-5 sm:p-6 relative overflow-hidden">
+    <section id={id} className="brutal-card bg-surface-1 p-5 sm:p-6 relative overflow-visible">
       <div className="pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-amber-glow" />
       <div className="relative">
         <div className="flex items-center gap-2 mb-2">
@@ -112,6 +155,7 @@ export function SettingsView() {
   const [imageModel, setImageModel] = useState('openai/gpt-image-1')
   const [enhanceModel, setEnhanceModel] = useState('openai/gpt-image-1')
   const [imageGenModel, setImageGenModel] = useState('fal/flux-kontext-max')
+  const [imageNoRefGenModel, setImageNoRefGenModel] = useState('')
   const [videoGenModel, setVideoGenModel] = useState('fal/kling-2.1-pro')
   const [audioGenModel, setAudioGenModel] = useState('fal/minimax/speech-02-hd')
   const [imageAspectRatio, setImageAspectRatio] = useState('16:9')
@@ -130,7 +174,7 @@ export function SettingsView() {
 
   const [textModels, setTextModels] = useState<{ id: string; name: string }[]>([])
   const [imageModels, setImageModels] = useState<{ id: string; name: string }[]>([])
-  const [imageGenModels, setImageGenModels] = useState<{ id: string; name: string }[]>([])
+  const [imageGenModels, setImageGenModels] = useState<ImageModelOption[]>([])
   const [videoGenModels, setVideoGenModels] = useState<VideoModelOption[]>([])
   const [audioGenModels, setAudioGenModels] = useState<{ id: string; name: string }[]>([])
 
@@ -187,6 +231,7 @@ export function SettingsView() {
         if (settings.defaultImageModel) setImageModel(settings.defaultImageModel)
         if (settings.defaultEnhanceModel) setEnhanceModel(settings.defaultEnhanceModel)
         if (settings.defaultImageGenModel) setImageGenModel(settings.defaultImageGenModel)
+        if (typeof settings.defaultImageNoRefGenModel === 'string') setImageNoRefGenModel(settings.defaultImageNoRefGenModel)
         if (settings.defaultVideoGenModel) setVideoGenModel(settings.defaultVideoGenModel)
         if (settings.defaultAudioGenModel) setAudioGenModel(settings.defaultAudioGenModel)
         if (settings.imageAspectRatio) setImageAspectRatio(settings.imageAspectRatio)
@@ -217,10 +262,65 @@ export function SettingsView() {
     if (normalized !== videoQuality) setVideoQuality(normalized)
   }, [videoGenModel, videoGenModels, videoQuality])
 
+  useEffect(() => {
+    const selected = imageGenModels.find((model) => model.id === imageGenModel)
+    const normalized = normalizeImageQualityValue(imageQuality, selected)
+    if (normalized !== imageQuality) setImageQuality(normalized)
+  }, [imageGenModel, imageGenModels, imageQuality])
+
+  const selectedImageGenModel = imageGenModels.find((model) => model.id === imageGenModel)
+  const modelImageResolutionOptions = selectedImageGenModel?.imageResolutionOptions || []
+  const hasModelImageResolutionOptions =
+    selectedImageGenModel?.imageResolutionSupport === 'explicit' && modelImageResolutionOptions.length > 0
+  const modelImageAspectRatioOptions = selectedImageGenModel?.imageAspectRatioOptions || []
+  const hasModelImageAspectRatioOptions =
+    selectedImageGenModel?.imageAspectRatioSupport === 'explicit' && modelImageAspectRatioOptions.length > 0
+  const imageQualityOptions = hasModelImageResolutionOptions
+    ? modelImageResolutionOptions.map((value) => ({ value, label: value }))
+    : QUALITY_OPTIONS
+  const imageAspectRatioOptions = hasModelImageAspectRatioOptions
+    ? modelImageAspectRatioOptions.map((value) => ({ value, label: value }))
+    : ASPECT_RATIO_OPTIONS
+  const maxModelImageResolution = hasModelImageResolutionOptions
+    ? modelImageResolutionOptions[modelImageResolutionOptions.length - 1]
+    : null
+  const noRefImageModelOptions = [
+    { id: '', name: 'OpenRouter (по умолчанию)' },
+    ...imageGenModels
+      .filter((model) => !model.requiresImageInput)
+      .map((model) => ({ id: model.id, name: model.name })),
+  ]
+  if (!noRefImageModelOptions.some((model) => model.id === 'fal-endpoint:fal-ai/nano-banana-pro')) {
+    noRefImageModelOptions.push({
+      id: 'fal-endpoint:fal-ai/nano-banana-pro',
+      name: 'Nano Banana Pro (Text-to-Image)',
+    })
+  }
+  if (imageNoRefGenModel && !noRefImageModelOptions.some((model) => model.id === imageNoRefGenModel)) {
+    const fallbackName = imageGenModels.find((model) => model.id === imageNoRefGenModel)?.name || imageNoRefGenModel
+    noRefImageModelOptions.push({ id: imageNoRefGenModel, name: fallbackName })
+  }
+
+  useEffect(() => {
+    if (!hasModelImageAspectRatioOptions) return
+
+    const current = imageAspectRatio.trim()
+    const exact = modelImageAspectRatioOptions.find((value) => value.toLowerCase() === current.toLowerCase())
+    if (exact) {
+      if (exact !== imageAspectRatio) setImageAspectRatio(exact)
+      return
+    }
+
+    setImageAspectRatio(modelImageAspectRatioOptions[0])
+  }, [hasModelImageAspectRatioOptions, imageAspectRatio, modelImageAspectRatioOptions])
+
   const selectedVideoModel = videoGenModels.find((model) => model.id === videoGenModel)
   const modelVideoQualityOptions = selectedVideoModel?.videoQualityOptions || []
   const hasModelVideoQualityOptions =
     selectedVideoModel?.videoQualitySupport === 'explicit' && modelVideoQualityOptions.length > 0
+  const maxModelVideoQuality = hasModelVideoQualityOptions
+    ? modelVideoQualityOptions[modelVideoQualityOptions.length - 1]
+    : null
 
   const handleSave = async () => {
     setSaving(true)
@@ -228,6 +328,7 @@ export function SettingsView() {
     setSaved(false)
 
     try {
+      const normalizedImageQuality = normalizeImageQualityValue(imageQuality, selectedImageGenModel)
       const normalizedVideoQuality = normalizeVideoQualityValue(videoQuality, selectedVideoModel)
       await api.settings.update({
         openRouterApiKey: apiKey,
@@ -241,11 +342,12 @@ export function SettingsView() {
         defaultImageModel: imageModel,
         defaultEnhanceModel: enhanceModel,
         defaultImageGenModel: imageGenModel,
+        defaultImageNoRefGenModel: imageNoRefGenModel,
         defaultVideoGenModel: videoGenModel,
         defaultAudioGenModel: audioGenModel,
         imageAspectRatio,
         imageSize,
-        imageQuality,
+        imageQuality: normalizedImageQuality,
         videoQuality: normalizedVideoQuality,
         enhanceSize,
         enhanceQuality,
@@ -257,6 +359,7 @@ export function SettingsView() {
         masterPromptDescribe: describePrompt,
         masterPromptImageGen: imageGenPrompt,
       })
+      if (normalizedImageQuality !== imageQuality) setImageQuality(normalizedImageQuality)
       if (normalizedVideoQuality !== videoQuality) setVideoQuality(normalizedVideoQuality)
       await loadModels()
       setSaved(true)
@@ -458,14 +561,34 @@ export function SettingsView() {
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <ModelSelect
-                  label="Модель генерации изображений"
-                  value={imageGenModel}
-                  onChange={setImageGenModel}
-                  models={imageGenModels}
-                  loading={modelsLoading}
-                  placeholder="fal/flux-kontext-max"
-                />
+                <div>
+                  <ModelSelect
+                    label="Модель генерации изображений"
+                    value={imageGenModel}
+                    onChange={setImageGenModel}
+                    models={imageGenModels}
+                    loading={modelsLoading}
+                    placeholder="fal/flux-kontext-max"
+                  />
+                  {selectedImageGenModel?.requiresImageInput && (
+                    <p className="text-[10px] text-text-muted mt-1">
+                      Для этой модели обязателен референс (из брифа или исходного кадра).
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <ModelSelect
+                    label={'\u041c\u043e\u0434\u0435\u043b\u044c \u0431\u0435\u0437 \u0440\u0435\u0444\u0435\u0440\u0435\u043d\u0441\u0430'}
+                    value={imageNoRefGenModel}
+                    onChange={setImageNoRefGenModel}
+                    models={noRefImageModelOptions}
+                    loading={modelsLoading}
+                    placeholder={'OpenRouter (\u043f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e)'}
+                  />
+                  <p className="text-[10px] text-text-muted mt-1">
+                    {'\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442\u0441\u044f, \u043a\u043e\u0433\u0434\u0430 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u0430\u044f image-\u043c\u043e\u0434\u0435\u043b\u044c \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u0440\u0435\u0444\u0435\u0440\u0435\u043d\u0441, \u043d\u043e \u0443 \u0448\u043e\u0442\u0430 \u043d\u0435\u0442 \u043f\u0440\u0438\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u043d\u044b\u0445 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0439.'}
+                  </p>
+                </div>
                 <ModelSelect
                   label="Модель генерации видео"
                   value={videoGenModel}
@@ -509,15 +632,21 @@ export function SettingsView() {
                     value={imageSize}
                     onChange={(e) => setImageSize(e.target.value)}
                     className="w-full brutal-input px-3 py-2 text-sm"
+                    disabled={hasModelImageResolutionOptions}
                   >
                     {SIZE_OPTIONS.map((o) => (
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
+                  {hasModelImageResolutionOptions && (
+                    <p className="text-[10px] text-text-muted mt-1">
+                      Для выбранной модели размер кадра задаётся через список разрешений справа.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label htmlFor="image-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    Качество генерации
+                    {hasModelImageResolutionOptions ? 'Разрешение генерации' : 'Качество генерации'}
                   </label>
                   <select
                     id="image-quality"
@@ -525,10 +654,17 @@ export function SettingsView() {
                     onChange={(e) => setImageQuality(e.target.value)}
                     className="w-full brutal-input px-3 py-2 text-sm"
                   >
-                    {QUALITY_OPTIONS.map((o) => (
+                    {imageQualityOptions.map((o) => (
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
+                  {hasModelImageResolutionOptions && (
+                    <p className="text-[10px] text-text-muted mt-1">
+                      {maxModelImageResolution?.toLowerCase() === '4k'
+                        ? `Максимум для выбранной модели: ${maxModelImageResolution}`
+                        : `Максимум для выбранной модели: ${maxModelImageResolution}. 4K недоступно для этой модели.`}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label htmlFor="image-aspect-ratio" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
@@ -540,10 +676,15 @@ export function SettingsView() {
                     onChange={(e) => setImageAspectRatio(e.target.value)}
                     className="w-full brutal-input px-3 py-2 text-sm"
                   >
-                    {ASPECT_RATIO_OPTIONS.map((o) => (
+                    {imageAspectRatioOptions.map((o) => (
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
+                  {hasModelImageAspectRatioOptions && (
+                    <p className="text-[10px] text-text-muted mt-1">
+                      Список сторон подтянут из возможностей выбранной модели.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label htmlFor="video-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
@@ -562,6 +703,13 @@ export function SettingsView() {
                         ))
                       : <option value="auto">Нет доступных resolution-опций</option>}
                   </select>
+                  {hasModelVideoQualityOptions && (
+                    <p className="text-[10px] text-text-muted mt-1">
+                      {maxModelVideoQuality?.toLowerCase() === '4k'
+                        ? `Максимум для выбранной модели: ${maxModelVideoQuality}`
+                        : `Максимум для выбранной модели: ${maxModelVideoQuality}. 4K недоступно для этой модели.`}
+                    </p>
+                  )}
                   {!hasModelVideoQualityOptions && (
                     <p className="text-[10px] text-text-muted mt-1">
                       У выбранной видео-модели API не вернуло поддерживаемые разрешения.
@@ -716,4 +864,3 @@ export function SettingsView() {
     </div>
   )
 }
-

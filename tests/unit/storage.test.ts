@@ -29,7 +29,7 @@ describe('storage', () => {
 
       expect(project.name).toBe('Test Project')
       expect(project.stage).toBe('brief')
-      expect(project.brief).toEqual({ text: '', assets: [] })
+      expect(project.brief).toEqual({ text: '', assets: [], targetDuration: 60 })
       expect(project.script).toBe('')
       expect(project.shots).toEqual([])
       expect(project.id).toBeTruthy()

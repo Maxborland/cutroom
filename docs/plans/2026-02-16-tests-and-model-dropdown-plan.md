@@ -2,15 +2,31 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add comprehensive test coverage (unit, integration, component, e2e) and replace text model inputs with searchable dropdowns populated from OpenRouter API.
+**Goal (original target):** Add comprehensive test coverage (unit, integration, component, e2e) and replace text model inputs with searchable dropdowns populated from OpenRouter API.
 
 **Architecture:** Vitest for unit/integration/component tests with jsdom environment for React. Supertest for Express route integration tests with temp filesystem. Playwright for e2e browser tests with both servers running. Model dropdown backed by a new `/api/models` endpoint that caches OpenRouter's model list.
 
 **Tech Stack:** Vitest, @testing-library/react, supertest, Playwright, jsdom
 
+**Status (as of 2026-02-18):** partially implemented.
+
+Implemented now:
+- Test infrastructure and scripts (`vitest.config.ts`, `playwright.config.ts`, `tests/setup.ts`, package test scripts)
+- Unit tests: `tests/unit/storage.test.ts`, `tests/unit/openrouter.test.ts`, `tests/unit/projectStore.test.ts`
+- Integration tests: `tests/integration/projects.test.ts`, `tests/integration/assets.test.ts`, `tests/integration/shots.test.ts`, `tests/integration/settings.test.ts`, `tests/integration/export.test.ts`, `tests/integration/models.test.ts`
+- Component tests: `tests/components/SettingsView.test.tsx`, `tests/components/PipelineHeader.test.tsx`
+- E2E tests: `tests/e2e/pipeline.spec.ts`, `tests/e2e/project-crud.spec.ts`
+
+Planned, not implemented yet:
+- `tests/unit/api-client.test.ts`
+- `tests/integration/generate.test.ts`
+- `tests/components/BriefEditor.test.tsx`
+- `tests/components/ShotBoard.test.tsx`
+- `tests/components/ShotDetail.test.tsx`
+- `tests/e2e/settings.spec.ts`
 ---
 
-### Task 1: Install test dependencies and configure Vitest
+### Task 1 (Implemented): Install test dependencies and configure Vitest
 
 **Files:**
 - Modify: `package.json`
@@ -76,7 +92,7 @@ git commit -m "chore: add Vitest test infrastructure"
 
 ---
 
-### Task 2: Unit tests — storage.ts
+### Task 2 (Implemented): Unit tests — storage.ts
 
 **Files:**
 - Create: `tests/unit/storage.test.ts`
@@ -250,7 +266,7 @@ git commit -m "test: add unit tests for storage layer"
 
 ---
 
-### Task 3: Unit tests — openrouter.ts
+### Task 3 (Implemented): Unit tests — openrouter.ts
 
 **Files:**
 - Create: `tests/unit/openrouter.test.ts`
@@ -368,7 +384,7 @@ git commit -m "test: add unit tests for OpenRouter integration"
 
 ---
 
-### Task 4: Unit tests — Zustand store
+### Task 4 (Implemented): Unit tests — Zustand store
 
 **Files:**
 - Create: `tests/unit/projectStore.test.ts`
@@ -601,7 +617,7 @@ git commit -m "test: add unit tests for Zustand project store"
 
 ---
 
-### Task 5: Integration tests — Express routes (projects, settings)
+### Task 5 (Implemented): Integration tests — Express routes (projects, settings)
 
 **Files:**
 - Create: `tests/integration/setup.ts`
@@ -851,7 +867,7 @@ git commit -m "test: add integration tests for projects and settings API"
 
 ---
 
-### Task 6: Integration tests — assets, shots, export
+### Task 6 (Implemented): Integration tests — assets, shots, export
 
 **Files:**
 - Create: `tests/integration/assets.test.ts`
@@ -1104,7 +1120,7 @@ git commit -m "test: add integration tests for assets, shots, and export API"
 
 ---
 
-### Task 7: Model dropdown — backend endpoint
+### Task 7 (Implemented): Model dropdown — backend endpoint
 
 **Files:**
 - Create: `server/routes/models.ts`
@@ -1304,7 +1320,7 @@ git commit -m "feat: add /api/models endpoint with OpenRouter model list"
 
 ---
 
-### Task 8: Model dropdown — frontend UI
+### Task 8 (Implemented): Model dropdown — frontend UI
 
 **Files:**
 - Create: `src/components/ModelSelect.tsx`
@@ -1532,7 +1548,7 @@ git commit -m "feat: add searchable model dropdown in settings"
 
 ---
 
-### Task 9: Component tests
+### Task 9 (Partially Implemented): Component tests
 
 **Files:**
 - Create: `tests/components/SettingsView.test.tsx`
@@ -1665,7 +1681,7 @@ git commit -m "test: add component tests for SettingsView and PipelineHeader"
 
 ---
 
-### Task 10: Install Playwright and configure e2e
+### Task 10 (Implemented): Install Playwright and configure e2e
 
 **Files:**
 - Create: `playwright.config.ts`
@@ -1862,7 +1878,7 @@ git commit -m "test: add Playwright e2e tests for pipeline flow"
 
 ---
 
-### Task 11: Final — run all tests and verify
+### Task 11 (Planned): Final — run all tests and verify
 
 **Step 1: Run unit + integration + component tests**
 

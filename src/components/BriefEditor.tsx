@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useCallback, useRef, useState } from 'react'
 import { downscaleImages, filterImageFiles } from '../lib/imageUtils'
 import { useLightboxStore } from '../stores/lightboxStore'
+import { useToastStore } from '../stores/toastStore'
 
 const BATCH_SIZE = 5
 
@@ -24,6 +25,13 @@ export function BriefEditor() {
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+  const setFolderInputRef = useCallback((node: HTMLInputElement | null) => {
+    folderInputRef.current = node
+    if (node) {
+      node.setAttribute('webkitdirectory', '')
+      node.setAttribute('directory', '')
+    }
+  }, [])
 
   const handleUpload = useCallback(
     async (rawFiles: File[]) => {
@@ -123,6 +131,7 @@ export function BriefEditor() {
 
   const handleRemoveAll = useCallback(async () => {
     if (!project) return
+    if (!window.confirm(`Удалить все ассеты (${project.brief.assets.length})? Это действие необратимо.`)) return
     for (const asset of [...project.brief.assets]) {
       removeBriefAsset(project.id, asset.id)
     }
@@ -139,13 +148,13 @@ export function BriefEditor() {
             <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
               01
             </span>
-            <h2 className="font-display font-semibold text-base">Описание</h2>
+            <h2 className="font-heading font-semibold text-base">Описание</h2>
           </div>
           <textarea
             value={project.brief.text}
             onChange={handleBriefTextChange}
             placeholder="Опишите видеоролик: тематика, стиль, настроение, хронометраж..."
-            className="w-full h-40 bg-surface-2 border border-border rounded-xl px-4 py-3 text-sm text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:border-amber/30 focus:ring-1 focus:ring-amber/20 transition-all"
+            className="w-full h-40 brutal-input px-4 py-3 text-sm resize-none"
           />
           <p className="mt-2 text-xs text-text-muted">
             LLM будет использовать этот текст + загруженные изображения для генерации сценария
@@ -158,17 +167,17 @@ export function BriefEditor() {
             <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
               02
             </span>
-            <h2 className="font-display font-semibold text-base">Хронометраж</h2>
+            <h2 className="font-heading font-semibold text-base">Хронометраж</h2>
           </div>
           <div className="flex items-center gap-2">
             {[15, 30, 60, 90, 120].map((sec) => (
               <button
                 key={sec}
                 onClick={() => updateTargetDuration(project.id, sec)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-mono transition-all ${
+                className={`px-3 py-1.5 rounded-[5px] text-sm font-mono border-2 border-border transition-all ${
                   project.brief.targetDuration === sec
-                    ? 'bg-amber text-bg-primary font-semibold'
-                    : 'bg-surface-2 text-text-secondary hover:bg-surface-3 border border-border'
+                    ? 'bg-amber text-black font-bold shadow-brutal-sm'
+                    : 'bg-surface-2 text-text-secondary hover:bg-surface-3'
                 }`}
               >
                 {sec}s
@@ -186,7 +195,7 @@ export function BriefEditor() {
             <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
               03
             </span>
-            <h2 className="font-display font-semibold text-base">Ассеты</h2>
+            <h2 className="font-heading font-semibold text-base">Ассеты</h2>
             <span className="ml-auto font-mono text-xs text-text-muted mr-2">
               {project.brief.assets.length} файлов
             </span>
@@ -195,13 +204,13 @@ export function BriefEditor() {
                 {describeProgress.active && describeProgress.total > 1 ? (
                   /* Progress indicator during bulk describe */
                   <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] bg-amber-dim text-amber">
+                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-[3px] text-[11px] bg-amber-dim text-amber border border-border">
                       <Loader2 size={11} className="animate-spin" />
                       <span className="font-mono">{describeProgress.done}/{describeProgress.total}</span>
                     </div>
-                    <div className="w-24 h-1.5 bg-surface-3 rounded-full overflow-hidden">
+                    <div className="w-24 h-1.5 bg-surface-3 rounded-[3px] overflow-hidden border border-border">
                       <motion.div
-                        className="h-full bg-amber rounded-full"
+                        className="h-full bg-amber"
                         initial={{ width: 0 }}
                         animate={{ width: `${(describeProgress.done / describeProgress.total) * 100}%` }}
                         transition={{ duration: 0.3 }}
@@ -210,7 +219,7 @@ export function BriefEditor() {
                     <button
                       onClick={handleCancelDescribe}
                       title="Остановить"
-                      className="p-1 rounded hover:bg-rose-dim text-rose transition-colors"
+                      className="p-1 rounded-[3px] hover:bg-rose-dim text-rose transition-colors"
                     >
                       <X size={12} />
                     </button>
@@ -220,7 +229,7 @@ export function BriefEditor() {
                     onClick={handleDescribeAll}
                     disabled={describeProgress.active}
                     title="Авто-описание всех"
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] bg-amber-dim text-amber hover:bg-amber/20 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1 px-2 py-1 rounded-[3px] text-[11px] bg-amber-dim text-amber border border-border hover:bg-amber/20 transition-colors disabled:opacity-50"
                   >
                     <Wand2 size={11} />
                     Описать все
@@ -230,7 +239,7 @@ export function BriefEditor() {
                   onClick={handleRemoveAll}
                   disabled={describeProgress.active}
                   title="Удалить все"
-                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-rose hover:bg-rose-dim transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1 px-2 py-1 rounded-[3px] text-[11px] text-rose hover:bg-rose-dim transition-colors disabled:opacity-50"
                 >
                   <Trash2 size={11} />
                 </button>
@@ -248,12 +257,11 @@ export function BriefEditor() {
             className="hidden"
           />
           {/* Hidden folder input */}
-          {/* @ts-expect-error webkitdirectory is non-standard but widely supported */}
           <input
-            ref={folderInputRef}
+            ref={setFolderInputRef}
             type="file"
             multiple
-            webkitdirectory=""
+
             onChange={handleFileInputChange}
             className="hidden"
           />
@@ -264,17 +272,17 @@ export function BriefEditor() {
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             className={`
-              border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer
+              border-2 border-dashed rounded-[5px] p-8 text-center transition-all cursor-pointer
               ${
                 dragOver
                   ? 'border-amber bg-amber-dim scale-[1.01]'
-                  : 'border-border hover:border-border-hover hover:bg-surface-2/50'
+                  : 'border-border hover:border-border-hover hover:bg-surface-2'
               }
             `}
           >
             <div className="flex flex-col items-center gap-3">
               <div
-                className={`w-12 h-12 rounded-xl flex items-center justify-center transition-colors ${dragOver ? 'bg-amber/20' : 'bg-surface-3'}`}
+                className={`w-12 h-12 rounded-[5px] border-2 border-border flex items-center justify-center transition-colors ${dragOver ? 'bg-amber-dim' : 'bg-surface-3'}`}
               >
                 {uploading ? (
                   <Loader2 size={20} className="text-amber animate-spin" />
@@ -294,9 +302,9 @@ export function BriefEditor() {
                     : 'JPG, PNG, WebP — рендеры, скриншоты, референсы (автосжатие до 1920px)'}
                 </p>
                 {uploading && uploadProgress.total > 0 && (
-                  <div className="w-48 h-1.5 bg-surface-3 rounded-full mt-2 mx-auto overflow-hidden">
+                  <div className="w-48 h-1.5 bg-surface-3 rounded-[3px] mt-2 mx-auto overflow-hidden border border-border">
                     <div
-                      className="h-full bg-amber rounded-full transition-all duration-300"
+                      className="h-full bg-amber transition-all duration-300"
                       style={{ width: `${(uploadProgress.done / uploadProgress.total) * 100}%` }}
                     />
                   </div>
@@ -306,7 +314,7 @@ export function BriefEditor() {
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3/80 transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border bg-surface-3 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3/80 transition-colors disabled:opacity-50"
                 >
                   <ImageIcon size={13} />
                   Выбрать файлы
@@ -314,7 +322,7 @@ export function BriefEditor() {
                 <button
                   onClick={() => folderInputRef.current?.click()}
                   disabled={uploading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3/80 transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border bg-surface-3 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3/80 transition-colors disabled:opacity-50"
                 >
                   <FolderOpen size={13} />
                   Выбрать папку
@@ -339,15 +347,15 @@ export function BriefEditor() {
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 20 }}
                     transition={{ delay: i * 0.05 }}
-                    className={`flex items-center gap-3 bg-surface-2 border rounded-lg p-3 group transition-colors ${
+                    className={`flex items-center gap-3 bg-surface-2 border-2 rounded-[5px] p-3 group transition-colors ${
                       describeProgress.currentId === asset.id
-                        ? 'border-amber/30 ring-1 ring-amber/10'
+                        ? 'border-amber'
                         : 'border-border hover:border-border-hover'
                     }`}
                   >
                     {/* Thumbnail */}
                     <div
-                      className="w-12 h-12 rounded-md bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                      className="w-12 h-12 rounded-[3px] bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden cursor-pointer border-2 border-border hover:border-amber transition-colors"
                       onClick={() => {
                         const allUrls = project.brief.assets.map((a) => api.assets.url(project.id, a.filename))
                         useLightboxStore.getState().show(allUrls, i)
@@ -384,7 +392,7 @@ export function BriefEditor() {
                     </div>
 
                     {/* Order badge */}
-                    <span className="font-mono text-[10px] text-text-muted bg-surface-3 px-2 py-0.5 rounded">
+                    <span className="font-mono text-[10px] text-text-muted bg-surface-3 px-2 py-0.5 rounded-[3px] border border-border">
                       #{i + 1}
                     </span>
 
@@ -393,7 +401,7 @@ export function BriefEditor() {
                       onClick={() => handleDescribeOne(asset.id)}
                       disabled={describeProgress.active}
                       title="Авто-описание"
-                      className={`p-1 rounded hover:bg-amber-dim transition-all disabled:opacity-50 ${
+                      className={`p-1 rounded-[3px] hover:bg-amber-dim transition-all disabled:opacity-50 ${
                         describeProgress.currentId === asset.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                       }`}
                     >
@@ -407,7 +415,7 @@ export function BriefEditor() {
                     {/* Remove */}
                     <button
                       onClick={() => handleRemoveAsset(asset.id)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-dim transition-all"
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded-[3px] hover:bg-rose-dim transition-all"
                     >
                       <X size={14} className="text-rose" />
                     </button>
@@ -424,9 +432,9 @@ export function BriefEditor() {
             <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
               04
             </span>
-            <h2 className="font-display font-semibold text-base">Мастер-промпт сценариста</h2>
+            <h2 className="font-heading font-semibold text-base">Мастер-промпт сценариста</h2>
           </div>
-          <div className="bg-surface-2 border border-border rounded-xl p-4">
+          <div className="bg-surface-2 border-2 border-border rounded-[5px] p-4">
             <p className="font-mono text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">
               {project.settings.masterPromptScriptwriter}
             </p>

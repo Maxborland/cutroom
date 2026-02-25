@@ -15,6 +15,7 @@ import {
   Play,
   Clock,
   Loader2,
+  Trash2,
 } from 'lucide-react'
 import type { ShotStatus } from '../types'
 import { useRef, useState } from 'react'
@@ -43,11 +44,14 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   const generateVideoAction = useProjectStore((s) => s.generateVideo)
   const enhanceImage = useProjectStore((s) => s.enhanceImage)
   const cancelGeneration = useProjectStore((s) => s.cancelGeneration)
+  const deleteShotImage = useProjectStore((s) => s.deleteShotImage)
+  const deleteShotVideo = useProjectStore((s) => s.deleteShotVideo)
   const loadProject = useProjectStore((s) => s.loadProject)
   const generatingShotIds = useProjectStore((s) => s.generatingShotIds)
   const enhancingShotIds = useProjectStore((s) => s.enhancingShotIds)
   const generatingVideoShotIds = useProjectStore((s) => s.generatingVideoShotIds)
   const [uploadingVideo, setUploadingVideo] = useState(false)
+  const [cachingVideo, setCachingVideo] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
 
@@ -65,6 +69,12 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   const generating = shot ? generatingShotIds.has(shot.id) : false
   const enhancing = shot ? enhancingShotIds.has(shot.id) : false
   const generatingVideo = shot ? generatingVideoShotIds.has(shot.id) : false
+  const isExternalVideo = Boolean(
+    shot.videoFile &&
+      (shot.videoFile.startsWith('http://') ||
+        shot.videoFile.startsWith('https://') ||
+        shot.videoFile.startsWith('data:')),
+  )
 
   const handleGenerate = () => {
     generateImage(shot.id)
@@ -99,6 +109,19 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     }
   }
 
+  const handleCacheVideo = async () => {
+    if (!isExternalVideo) return
+    setCachingVideo(true)
+    try {
+      await api.shots.cacheVideo(project.id, shot.id)
+      await loadProject(project.id)
+    } catch (err) {
+      console.error('Video cache failed:', err)
+    } finally {
+      setCachingVideo(false)
+    }
+  }
+
   return (
     <div className="h-full flex flex-col bg-surface-1 overflow-hidden">
       {/* Hidden video input */}
@@ -111,12 +134,12 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
       />
 
       {/* Header */}
-      <div className="flex items-center justify-between px-5 h-12 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-5 h-12 border-b-2 border-border shrink-0">
         <div className="flex items-center gap-3">
           <span className="font-mono text-sm font-bold text-amber">
             #{String(shot.order).padStart(2, '0')}
           </span>
-          <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-mono ${statusInfo.bg} ${statusInfo.color}`}>
+          <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-[3px] text-xs font-mono border border-border ${statusInfo.bg} ${statusInfo.color}`}>
             {statusInfo.label}
           </div>
           <div className="flex items-center gap-1 text-text-muted ml-2">
@@ -128,20 +151,20 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <button
             onClick={() => goToShot(-1)}
             disabled={shotIndex === 0}
-            className="p-1 rounded hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20 transition-colors"
+            className="p-1 rounded-[3px] hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20"
           >
             <ChevronLeft size={16} />
           </button>
           <button
             onClick={() => goToShot(1)}
             disabled={shotIndex === project.shots.length - 1}
-            className="p-1 rounded hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20 transition-colors"
+            className="p-1 rounded-[3px] hover:bg-surface-2 text-text-muted hover:text-text-primary disabled:opacity-20"
           >
             <ChevronRight size={16} />
           </button>
           <button
             onClick={onClose}
-            className="p-1 rounded hover:bg-surface-2 text-text-muted hover:text-text-primary ml-2 transition-colors"
+            className="p-1 rounded-[3px] hover:bg-surface-2 text-text-muted hover:text-text-primary ml-2"
           >
             <X size={16} />
           </button>
@@ -155,7 +178,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <textarea
             value={shot.scene}
             onChange={(e) => updateShot(project.id, shot.id, { scene: e.target.value })}
-            className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary resize-none focus:outline-none focus:border-amber/30 transition-colors min-h-[80px]"
+            className="w-full brutal-input px-3 py-2 text-sm resize-none min-h-[80px]"
           />
         </Field>
 
@@ -164,7 +187,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <textarea
             value={shot.audioDescription}
             onChange={(e) => updateShot(project.id, shot.id, { audioDescription: e.target.value })}
-            className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-text-primary resize-none focus:outline-none focus:border-amber/30 transition-colors min-h-[60px]"
+            className="w-full brutal-input px-3 py-2 text-sm resize-none min-h-[60px]"
           />
         </Field>
 
@@ -175,10 +198,12 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
               {linkedAssets.map((asset) => (
                 <div
                   key={asset.id}
-                  className="flex items-center gap-3 bg-surface-2 border border-border rounded-lg p-2.5"
+                  className="flex items-center gap-3 bg-surface-2 border-2 border-border rounded-[5px] p-2.5"
                 >
-                  <div
-                    className="w-10 h-10 rounded bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                  <button
+                    type="button"
+                    aria-label={`Open linked asset ${asset.filename}`}
+                    className="w-10 h-10 rounded-[3px] bg-surface-3 flex items-center justify-center shrink-0 overflow-hidden cursor-pointer border-2 border-border hover:border-amber transition-colors"
                     onClick={() => {
                       const urls = linkedAssets.map((a) => api.assets.url(project.id, a.filename))
                       const idx = linkedAssets.indexOf(asset)
@@ -194,7 +219,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                         target.style.display = 'none'
                       }}
                     />
-                  </div>
+                  </button>
                   <div className="flex-1 min-w-0">
                     <p className="font-mono text-xs text-amber truncate">{asset.filename}</p>
                     {asset.label && (
@@ -212,7 +237,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           icon={<Sparkles size={13} />}
           label="Промпт для изображения"
           action={
-            <button className="flex items-center gap-1 text-[10px] text-amber hover:text-amber-light transition-colors">
+            <button className="flex items-center gap-1 text-[10px] text-amber hover:text-amber-light">
               <Wand2 size={10} />
               Авто
             </button>
@@ -221,13 +246,13 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <textarea
             value={shot.imagePrompt}
             onChange={(e) => updateShot(project.id, shot.id, { imagePrompt: e.target.value })}
-            className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-xs font-mono text-text-secondary resize-none focus:outline-none focus:border-amber/30 transition-colors min-h-[80px] leading-relaxed"
+            className="w-full brutal-input px-3 py-2 text-xs font-mono resize-none min-h-[80px] leading-relaxed"
           />
           <div className="flex gap-2 mt-2">
             <button
               onClick={handleGenerate}
               disabled={generating}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber text-bg text-[11px] font-semibold hover:bg-amber-light transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-[5px] bg-amber text-black text-[11px] font-bold uppercase brutal-btn disabled:opacity-50"
             >
               {generating ? (
                 <Loader2 size={11} className="animate-spin" />
@@ -238,7 +263,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             </button>
             <button
               onClick={() => handleCopy(shot.imagePrompt, 'imagePrompt')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border text-[11px] text-text-secondary hover:text-text-primary transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-[5px] border-2 border-border text-[11px] text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow"
             >
               {copied === 'imagePrompt' ? (
                 <CheckCircle2 size={11} className="text-emerald" />
@@ -253,9 +278,9 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
         {/* Video prompt */}
         <Field
           icon={<Film size={13} />}
-          label="Промпт для видео (Higgsfield)"
+          label="Промпт для видео"
           action={
-            <button className="flex items-center gap-1 text-[10px] text-amber hover:text-amber-light transition-colors">
+            <button className="flex items-center gap-1 text-[10px] text-amber hover:text-amber-light">
               <Wand2 size={10} />
               Авто
             </button>
@@ -264,13 +289,13 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <textarea
             value={shot.videoPrompt}
             onChange={(e) => updateShot(project.id, shot.id, { videoPrompt: e.target.value })}
-            className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-xs font-mono text-text-secondary resize-none focus:outline-none focus:border-amber/30 transition-colors min-h-[80px] leading-relaxed"
+            className="w-full brutal-input px-3 py-2 text-xs font-mono resize-none min-h-[80px] leading-relaxed"
           />
           <div className="flex gap-2 mt-2">
             <button
               onClick={() => generateVideoAction(shot.id)}
               disabled={generatingVideo || shot.generatedImages.length === 0}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet text-white text-[11px] font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-[5px] bg-violet text-white text-[11px] font-bold uppercase brutal-btn disabled:opacity-50"
             >
               {generatingVideo ? (
                 <Loader2 size={11} className="animate-spin" />
@@ -281,7 +306,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             </button>
             <button
               onClick={() => handleCopy(shot.videoPrompt, 'videoPrompt')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border text-[11px] text-text-secondary hover:text-text-primary transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-[5px] border-2 border-border text-[11px] text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow"
             >
               {copied === 'videoPrompt' ? (
                 <CheckCircle2 size={11} className="text-emerald" />
@@ -299,10 +324,74 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             <div className="grid grid-cols-2 gap-2">
               {shot.generatedImages.map((img, i) => (
                 <div key={i} className="space-y-1.5">
-                  <div
-                    className="aspect-video bg-surface-3 rounded-lg border border-border flex items-center justify-center overflow-hidden cursor-pointer hover:ring-2 hover:ring-amber/40 transition-all"
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      aria-label={`Open generated image ${i + 1}`}
+                      className="aspect-video bg-surface-3 rounded-[5px] border-2 border-border flex items-center justify-center overflow-hidden cursor-pointer hover:border-amber transition-colors"
+                      onClick={() => {
+                        const urls = shot.generatedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
+                        useLightboxStore.getState().show(urls, i)
+                      }}
+                    >
+                      <img
+                        src={api.shots.generatedImageUrl(project.id, shot.id, img)}
+                        alt={img}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement
+                          target.style.display = 'none'
+                          target.parentElement!.innerHTML = `<span class="font-mono text-[10px] text-text-muted">${img}</span>`
+                        }}
+                      />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (window.confirm('Удалить это изображение?')) {
+                          deleteShotImage(project.id, shot.id, img)
+                        }
+                      }}
+                      className="absolute top-1.5 right-1.5 p-1 rounded-[3px] bg-black/70 text-white/70 hover:text-rose hover:bg-black/90 opacity-0 group-hover:opacity-100 transition-all border border-border"
+                      title="Удалить изображение"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => handleEnhance(img)}
+                    disabled={enhancing}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-[3px] text-[10px] font-bold bg-amber-dim text-amber border border-border hover:bg-amber/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {enhancing ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <Sparkles size={10} />
+                    )}
+                    {enhancing ? 'Обработка...' : 'Enhance'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="border-2 border-dashed border-border rounded-[5px] p-6 text-center">
+              <p className="text-xs text-text-muted">Изображения ещё не сгенерированы</p>
+            </div>
+          )}
+        </Field>
+
+        {/* Enhanced images */}
+        {shot.enhancedImages && shot.enhancedImages.length > 0 && (
+          <Field icon={<Sparkles size={13} />} label="Постобработка (Enhance)">
+            <div className="grid grid-cols-2 gap-2">
+              {shot.enhancedImages.map((img, i) => (
+                <div key={i} className="relative group">
+                  <button
+                    type="button"
+                    aria-label={`Open enhanced image ${i + 1}`}
+                    className="aspect-video bg-surface-3 rounded-[5px] border-2 border-emerald flex items-center justify-center overflow-hidden cursor-pointer hover:border-emerald transition-colors"
                     onClick={() => {
-                      const urls = shot.generatedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
+                      const urls = shot.enhancedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
                       useLightboxStore.getState().show(urls, i)
                     }}
                   >
@@ -316,52 +405,19 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                         target.parentElement!.innerHTML = `<span class="font-mono text-[10px] text-text-muted">${img}</span>`
                       }}
                     />
-                  </div>
-                  <button
-                    onClick={() => handleEnhance(img)}
-                    disabled={enhancing}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-gradient-to-r from-violet/20 to-amber/20 text-amber hover:from-violet/30 hover:to-amber/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {enhancing ? (
-                      <Loader2 size={10} className="animate-spin" />
-                    ) : (
-                      <Sparkles size={10} />
-                    )}
-                    {enhancing ? 'Обработка...' : 'Enhance'}
                   </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="border border-dashed border-border rounded-lg p-6 text-center">
-              <p className="text-xs text-text-muted">Изображения ещё не сгенерированы</p>
-            </div>
-          )}
-        </Field>
-
-        {/* Enhanced images */}
-        {shot.enhancedImages && shot.enhancedImages.length > 0 && (
-          <Field icon={<Sparkles size={13} />} label="Постобработка (Enhance)">
-            <div className="grid grid-cols-2 gap-2">
-              {shot.enhancedImages.map((img, i) => (
-                <div
-                  key={i}
-                  className="aspect-video bg-surface-3 rounded-lg border border-emerald/20 flex items-center justify-center overflow-hidden cursor-pointer hover:ring-2 hover:ring-emerald/40 transition-all"
-                  onClick={() => {
-                    const urls = shot.enhancedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
-                    useLightboxStore.getState().show(urls, i)
-                  }}
-                >
-                  <img
-                    src={api.shots.generatedImageUrl(project.id, shot.id, img)}
-                    alt={img}
-                    className="w-full h-full object-cover"
-                    onError={(e) => {
-                      const target = e.target as HTMLImageElement
-                      target.style.display = 'none'
-                      target.parentElement!.innerHTML = `<span class="font-mono text-[10px] text-text-muted">${img}</span>`
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (window.confirm('Удалить это изображение?')) {
+                        deleteShotImage(project.id, shot.id, img)
+                      }
                     }}
-                  />
+                    className="absolute top-1.5 right-1.5 p-1 rounded-[3px] bg-black/70 text-white/70 hover:text-rose hover:bg-black/90 opacity-0 group-hover:opacity-100 transition-all border border-border"
+                    title="Удалить изображение"
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -375,12 +431,50 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
               <video
                 src={api.shots.videoUrl(project.id, shot.id, shot.videoFile)}
                 controls
-                className="w-full rounded-lg border border-emerald/20"
+                className="w-full rounded-[5px] border-2 border-emerald"
               />
-              <p className="font-mono text-[10px] text-text-muted">{shot.videoFile}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-mono text-[10px] text-text-muted break-all">
+                  {isExternalVideo ? 'Внешний URL (временное хранение)' : shot.videoFile}
+                </p>
+                <div className="flex items-center gap-2">
+                  {isExternalVideo && (
+                    <button
+                      onClick={handleCacheVideo}
+                      disabled={cachingVideo}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-[3px] text-[10px] text-amber hover:bg-amber-dim transition-colors disabled:opacity-50"
+                    >
+                      {cachingVideo ? (
+                        <>
+                          <Loader2 size={10} className="animate-spin" />
+                          Докачка...
+                        </>
+                      ) : (
+                        'Докачать локально'
+                      )}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (window.confirm('Удалить видео?')) {
+                        deleteShotVideo(project.id, shot.id)
+                      }
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-[3px] text-[10px] text-rose hover:bg-rose-dim transition-colors"
+                  >
+                    <Trash2 size={10} />
+                    Удалить видео
+                  </button>
+                </div>
+              </div>
+              {isExternalVideo && (
+                <p className="text-[10px] text-amber">
+                  Видео проигрывается по внешней ссылке. Для стабильного хранения нажмите "Докачать локально".
+                </p>
+              )}
             </div>
           ) : (
-            <div className="border border-dashed border-border rounded-lg p-6 text-center space-y-2">
+            <div className="border-2 border-dashed border-border rounded-[5px] p-6 text-center space-y-2">
               {generatingVideo ? (
                 <div className="flex items-center gap-2 justify-center text-violet text-xs">
                   <Loader2 size={14} className="animate-spin" />
@@ -393,7 +487,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                     <button
                       onClick={() => generateVideoAction(shot.id)}
                       disabled={shot.generatedImages.length === 0}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet text-white text-xs font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-violet text-white text-xs font-bold uppercase brutal-btn disabled:opacity-50"
                     >
                       <Film size={12} />
                       Сгенерировать видео
@@ -401,7 +495,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                     <button
                       onClick={() => videoInputRef.current?.click()}
                       disabled={uploadingVideo}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border text-xs text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow disabled:opacity-50"
                     >
                       {uploadingVideo ? (
                         <>
@@ -421,12 +515,12 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
       </div>
 
       {/* Footer actions */}
-      <div className="px-5 py-3 border-t border-border flex items-center gap-2 shrink-0">
+      <div className="px-5 py-3 border-t-2 border-border flex items-center gap-2 shrink-0">
         {shot.status === 'draft' && (
           <button
             onClick={handleGenerate}
             disabled={generating}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet text-white text-xs font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-violet text-white text-xs font-bold uppercase brutal-btn disabled:opacity-50"
           >
             {generating ? (
               <Loader2 size={12} className="animate-spin" />
@@ -444,7 +538,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             </div>
             <button
               onClick={() => cancelGeneration(shot.id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-rose text-xs text-rose hover:bg-rose-dim transition-colors"
             >
               <X size={12} />
               Отменить
@@ -458,14 +552,14 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                 generateVideoAction(shot.id)
               }}
               disabled={generatingVideo || shot.generatedImages.length === 0}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet text-white text-xs font-semibold hover:bg-violet/80 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-violet text-white text-xs font-bold uppercase brutal-btn disabled:opacity-50"
             >
               <Film size={12} />
               Генерировать видео
             </button>
             <button
               onClick={() => updateShotStatus(project.id, shot.id, 'draft')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border text-xs text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow"
             >
               Вернуть в черновик
             </button>
@@ -479,7 +573,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
             </div>
             <button
               onClick={() => cancelGeneration(shot.id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-rose text-xs text-rose hover:bg-rose-dim transition-colors"
             >
               <X size={12} />
               Отменить
@@ -490,21 +584,21 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <>
             <button
               onClick={() => updateShotStatus(project.id, shot.id, 'approved')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/80 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-emerald text-black text-xs font-bold uppercase brutal-btn"
             >
               <CheckCircle2 size={12} />
               Утвердить
             </button>
             <button
               onClick={() => updateShotStatus(project.id, shot.id, 'img_review')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs text-text-secondary hover:text-text-primary transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border-2 border-border text-xs text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow"
             >
               Вернуть на ревью изображения
             </button>
           </>
         )}
         {shot.status === 'approved' && (
-          <div className="flex items-center gap-1.5 text-emerald text-xs">
+          <div className="flex items-center gap-1.5 text-emerald text-xs font-bold">
             <CheckCircle2 size={12} />
             Шот утверждён
           </div>

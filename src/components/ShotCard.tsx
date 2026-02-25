@@ -24,27 +24,27 @@ const STATUS_STYLES: Record<string, { border: string; badge: string; icon: React
     icon: <FileImage size={12} />,
   },
   img_gen: {
-    border: 'border-violet/20 hover:border-violet/40',
+    border: 'border-violet hover:border-violet',
     badge: 'bg-violet-dim text-violet',
     icon: <Loader2 size={12} className="animate-spin" />,
   },
   img_review: {
-    border: 'border-sky/20 hover:border-sky/40',
+    border: 'border-sky hover:border-sky',
     badge: 'bg-sky-dim text-sky',
     icon: <Eye size={12} />,
   },
   vid_gen: {
-    border: 'border-violet/20 hover:border-violet/40',
+    border: 'border-violet hover:border-violet',
     badge: 'bg-violet-dim text-violet',
     icon: <Loader2 size={12} className="animate-spin" />,
   },
   vid_review: {
-    border: 'border-amber/20 hover:border-amber/40',
+    border: 'border-amber hover:border-amber',
     badge: 'bg-amber-dim text-amber',
     icon: <Eye size={12} />,
   },
   approved: {
-    border: 'border-emerald/20 hover:border-emerald/40',
+    border: 'border-emerald hover:border-emerald',
     badge: 'bg-emerald-dim text-emerald',
     icon: <CheckCircle2 size={12} />,
   },
@@ -58,18 +58,18 @@ export function ShotCard({ shot, isActive, briefAssets, onClick }: ShotCardProps
     <button
       onClick={onClick}
       className={`
-        w-full text-left bg-surface-2 border rounded-xl p-3.5 transition-all group cursor-pointer
+        w-full text-left bg-surface-2 border-2 rounded-[5px] p-3.5 transition-all group cursor-pointer
         ${style.border}
-        ${isActive ? 'ring-1 ring-amber/30 border-amber/20 glow-amber-sm' : ''}
+        ${isActive ? 'border-amber shadow-brutal-sm' : ''}
       `}
     >
       {/* Shot number + duration */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px] font-semibold text-amber bg-amber-dim px-1.5 py-0.5 rounded">
-            #{String(shot.order).padStart(2, '0')}
+          <span className="font-mono text-[10px] font-semibold text-amber bg-amber-dim px-1.5 py-0.5 rounded-[3px] border border-border">
+            #{String(shot.order + 1).padStart(2, '0')}
           </span>
-          <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono ${style.badge}`}>
+          <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono border border-border ${style.badge}`}>
             {style.icon}
           </div>
         </div>
@@ -88,7 +88,7 @@ export function ShotCard({ shot, isActive, briefAssets, onClick }: ShotCardProps
           {linkedAssets.map((asset) => (
             <span
               key={asset.id}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-dim text-amber font-mono text-[9px] max-w-full truncate"
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[3px] bg-amber-dim text-amber font-mono text-[9px] max-w-full truncate border border-border"
             >
               <ImageIcon size={9} className="shrink-0" />
               {asset.filename}
@@ -98,7 +98,7 @@ export function ShotCard({ shot, isActive, briefAssets, onClick }: ShotCardProps
       )}
 
       {/* Bottom indicators */}
-      <div className="flex items-center gap-3 pt-2 border-t border-border">
+      <div className="flex items-center gap-3 pt-2 border-t-2 border-border">
         {shot.generatedImages.length > 0 && (
           <div className="flex items-center gap-1 text-text-muted">
             <Sparkles size={10} />

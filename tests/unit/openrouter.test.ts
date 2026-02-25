@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { chatCompletion, generateImage } from '../../server/lib/openrouter'
 
-// Mock the settings module to control getApiKey
-vi.mock('../../server/routes/settings', () => ({
+// Mock the config module to control getApiKey
+vi.mock('../../server/lib/config', () => ({
   getApiKey: vi.fn(),
 }))
 
-import { getApiKey } from '../../server/routes/settings'
+import { getApiKey } from '../../server/lib/config'
 
 const mockedGetApiKey = vi.mocked(getApiKey)
 
@@ -79,6 +79,40 @@ describe('openrouter', () => {
       expect(body.temperature).toBe(0.3)
     })
 
+    it('passes max_tokens when maxTokens option is provided', async () => {
+      mockFetchResponse({
+        choices: [{ message: { content: 'Response' } }],
+      })
+
+      await chatCompletion(
+        'test-model',
+        [{ role: 'user', content: 'Hi' }],
+        0.4,
+        { maxTokens: 123 }
+      )
+
+      const fetchMock = vi.mocked(global.fetch)
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+      expect(body.max_tokens).toBe(123)
+    })
+
+    it('uses custom timeout when timeoutMs option is provided', async () => {
+      mockFetchResponse({
+        choices: [{ message: { content: 'Response' } }],
+      })
+      const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+
+      await chatCompletion(
+        'test-model',
+        [{ role: 'user', content: 'Hi' }],
+        0.4,
+        { timeoutMs: 4321 }
+      )
+
+      expect(timeoutSpy.mock.calls.some((call) => call[1] === 4321)).toBe(true)
+      timeoutSpy.mockRestore()
+    })
+
     it('throws if no API key is configured', async () => {
       mockedGetApiKey.mockResolvedValue('')
 
@@ -129,7 +163,7 @@ describe('openrouter', () => {
       const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
       expect(body.model).toBe('image-model')
       expect(body.messages).toEqual([
-        { role: 'user', content: 'A beautiful sunset' },
+        { role: 'user', content: [{ type: 'text', text: 'A beautiful sunset' }] },
       ])
     })
 
@@ -138,7 +172,7 @@ describe('openrouter', () => {
 
       await expect(
         generateImage('image-model', 'prompt')
-      ).rejects.toThrow('No content in OpenRouter image generation response')
+      ).rejects.toThrow('No image data in OpenRouter response')
     })
 
     it('throws if no API key', async () => {
@@ -147,6 +181,26 @@ describe('openrouter', () => {
       await expect(
         generateImage('image-model', 'prompt')
       ).rejects.toThrow('OpenRouter API key is not configured')
+    })
+
+    it('passes external reference image url without base64 conversion', async () => {
+      mockFetchResponse({
+        choices: [{ message: { content: 'image-out' } }],
+      })
+
+      await generateImage(
+        'image-model',
+        'enhance prompt',
+        [{ kind: 'url', url: 'https://cdn.example.com/ref.png' }]
+      )
+
+      const fetchMock = vi.mocked(global.fetch)
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+      const content = body.messages[0].content
+      expect(content[0]).toEqual({
+        type: 'image_url',
+        image_url: { url: 'https://cdn.example.com/ref.png' },
+      })
     })
   })
 })

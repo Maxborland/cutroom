@@ -1,34 +1,43 @@
 @import "tailwindcss";
 
 @theme {
-  --font-display: "Syne", sans-serif;
-  --font-body: "DM Sans", sans-serif;
+  /* ── Typography ── */
+  --font-heading: "Bricolage Grotesque", sans-serif;
+  --font-body: "Outfit", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
 
-  --color-bg: #08080a;
-  --color-surface-1: #111113;
-  --color-surface-2: #1a1a1d;
-  --color-surface-3: #232326;
-  --color-border: rgba(255, 255, 255, 0.06);
-  --color-border-hover: rgba(255, 255, 255, 0.12);
+  /* ── Dark neo-brutalist palette ── */
+  --color-bg: #110f1a;
+  --color-surface-1: #1b1729;
+  --color-surface-2: #25213a;
+  --color-surface-3: #332e52;
+  --color-border: #000000;
+  --color-border-hover: #FF6B35;
 
-  --color-text-primary: #fafaf9;
-  --color-text-secondary: #a8a8b3;
-  --color-text-muted: #5a5a65;
+  --color-text-primary: #eae8ef;
+  --color-text-secondary: #a09cb3;
+  --color-text-muted: #5e5878;
 
-  --color-amber: #e8a135;
-  --color-amber-light: #f5be4f;
-  --color-amber-glow: rgba(232, 161, 53, 0.15);
-  --color-amber-dim: rgba(232, 161, 53, 0.08);
+  /* ── Accent: orange ── */
+  --color-amber: #FF6B35;
+  --color-amber-light: #FF8A5C;
+  --color-amber-glow: rgba(255, 107, 53, 0.15);
+  --color-amber-dim: rgba(255, 107, 53, 0.10);
 
-  --color-emerald: #34d399;
-  --color-emerald-dim: rgba(52, 211, 153, 0.1);
-  --color-rose: #fb7185;
-  --color-rose-dim: rgba(251, 113, 133, 0.1);
-  --color-sky: #38bdf8;
-  --color-sky-dim: rgba(56, 189, 248, 0.1);
-  --color-violet: #a78bfa;
-  --color-violet-dim: rgba(167, 139, 250, 0.1);
+  /* ── Status — saturated, flat ── */
+  --color-emerald: #00C853;
+  --color-emerald-dim: rgba(0, 200, 83, 0.12);
+  --color-rose: #FF1744;
+  --color-rose-dim: rgba(255, 23, 68, 0.12);
+  --color-sky: #2979FF;
+  --color-sky-dim: rgba(41, 121, 255, 0.12);
+  --color-violet: #7C3AED;
+  --color-violet-dim: rgba(124, 58, 237, 0.12);
+
+  /* ── Neo-brutal tokens ── */
+  --shadow-brutal: 4px 4px 0px 0px #000000;
+  --shadow-brutal-sm: 2px 2px 0px 0px #000000;
+  --radius-base: 5px;
 }
 
 * {
@@ -41,31 +50,62 @@ body {
   background: var(--color-bg);
   color: var(--color-text-primary);
   font-family: var(--font-body);
+  font-weight: 500;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
 
-/* Film grain overlay */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  opacity: 0.03;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-}
-
 ::selection {
   background: var(--color-amber);
-  color: var(--color-bg);
+  color: #000;
 }
 
-.glow-amber {
-  box-shadow: 0 0 20px var(--color-amber-glow), 0 0 40px var(--color-amber-dim);
+/* ── Neo-brutal utilities ── */
+
+.shadow-brutal {
+  box-shadow: var(--shadow-brutal);
 }
 
-.glow-amber-sm {
-  box-shadow: 0 0 8px var(--color-amber-glow);
+.shadow-brutal-sm {
+  box-shadow: var(--shadow-brutal-sm);
+}
+
+.brutal-btn {
+  border: 2px solid #000;
+  box-shadow: var(--shadow-brutal-sm);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.brutal-btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0px 0px #000000;
+}
+
+.brutal-btn:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 0px 0px 0px 0px #000000;
+}
+
+.brutal-card {
+  border: 2px solid #000;
+  border-radius: var(--radius-base);
+  box-shadow: var(--shadow-brutal-sm);
+}
+
+.brutal-input {
+  border: 2px solid #000;
+  border-radius: var(--radius-base);
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+  transition: border-color 0.15s;
+}
+
+.brutal-input:focus {
+  outline: none;
+  border-color: var(--color-amber);
+}
+
+.brutal-input::placeholder {
+  color: var(--color-text-muted);
 }

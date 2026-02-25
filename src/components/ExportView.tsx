@@ -23,19 +23,19 @@ export function ExportView() {
       <div className="max-w-2xl mx-auto space-y-8">
         {/* Status overview */}
         <div className="grid grid-cols-3 gap-4">
-          <div className="bg-surface-2 border border-border rounded-xl p-4 text-center">
+          <div className="bg-surface-2 border-2 border-border rounded-[5px] p-4 text-center shadow-brutal-sm">
             <p className="font-mono text-2xl font-bold text-text-primary">{total}</p>
             <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted mt-1">
               Всего шотов
             </p>
           </div>
-          <div className="bg-surface-2 border border-emerald/10 rounded-xl p-4 text-center">
+          <div className="bg-surface-2 border-2 border-emerald rounded-[5px] p-4 text-center shadow-brutal-sm">
             <p className="font-mono text-2xl font-bold text-emerald">{approved.length}</p>
             <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted mt-1">
               Утверждено
             </p>
           </div>
-          <div className="bg-surface-2 border border-sky/10 rounded-xl p-4 text-center">
+          <div className="bg-surface-2 border-2 border-sky rounded-[5px] p-4 text-center shadow-brutal-sm">
             <p className="font-mono text-2xl font-bold text-sky">{withVideo.length}</p>
             <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted mt-1">
               С видео
@@ -45,12 +45,12 @@ export function ExportView() {
 
         {/* Shot list for export */}
         <section>
-          <h2 className="font-display font-semibold text-base mb-4">Состав экспорта</h2>
+          <h2 className="font-heading font-semibold text-base mb-4">Состав экспорта</h2>
           <div className="space-y-2">
             {project.shots.map((shot) => (
               <div
                 key={shot.id}
-                className="flex items-center gap-3 bg-surface-2 border border-border rounded-lg p-3"
+                className="flex items-center gap-3 bg-surface-2 border-2 border-border rounded-[5px] p-3"
               >
                 <span className="font-mono text-xs font-bold text-amber w-8">
                   #{String(shot.order).padStart(2, '0')}
@@ -84,7 +84,7 @@ export function ExportView() {
         <section className="space-y-3">
           <button
             onClick={handleExportZip}
-            className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-amber text-bg text-sm font-bold hover:bg-amber-light transition-colors glow-amber"
+            className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-[5px] bg-amber text-black text-sm font-bold uppercase brutal-btn"
           >
             <Package size={16} />
             Экспортировать ZIP
@@ -95,7 +95,7 @@ export function ExportView() {
 
           <button
             onClick={handleExportPrompts}
-            className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl border border-border text-sm text-text-secondary hover:text-text-primary hover:border-border-hover transition-colors"
+            className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-[5px] border-2 border-border text-sm text-text-secondary hover:text-text-primary shadow-brutal-sm hover:shadow-brutal transition-shadow"
           >
             <Download size={16} />
             Скачать только промпты

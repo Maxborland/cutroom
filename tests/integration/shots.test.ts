@@ -4,6 +4,7 @@ import { createApp } from './setup.js'
 import {
   createProject,
   deleteProject,
+  getProject,
   saveProject,
   type Project,
   type ShotMeta,
@@ -21,10 +22,15 @@ describe('Shots API', () => {
     shot = {
       id: 'shot-001',
       order: 0,
-      prompt: 'A cinematic aerial shot of a luxury building at sunset',
-      durationSec: 5,
+      scene: 'A cinematic aerial shot of a luxury building at sunset',
+      audioDescription: '',
+      imagePrompt: 'Initial image prompt',
+      videoPrompt: 'Initial video prompt',
+      duration: 5,
+      assetRefs: [],
       status: 'draft',
       generatedImages: [],
+      enhancedImages: [],
       selectedImage: null,
       videoFile: null,
     }
@@ -40,28 +46,28 @@ describe('Shots API', () => {
     it('should update shot fields', async () => {
       const res = await request(app)
         .put(`/api/projects/${project.id}/shots/shot-001`)
-        .send({ prompt: 'Updated prompt', durationSec: 10 })
+        .send({ scene: 'Updated scene', duration: 10 })
         .expect(200)
 
-      expect(res.body.prompt).toBe('Updated prompt')
-      expect(res.body.durationSec).toBe(10)
+      expect(res.body.scene).toBe('Updated scene')
+      expect(res.body.duration).toBe(10)
     })
 
     it('should preserve id and order', async () => {
       const res = await request(app)
         .put(`/api/projects/${project.id}/shots/shot-001`)
-        .send({ id: 'hacked-id', order: 999, prompt: 'Another update' })
+        .send({ id: 'hacked-id', order: 999, scene: 'Another update' })
         .expect(200)
 
       expect(res.body.id).toBe('shot-001')
       expect(res.body.order).toBe(0)
-      expect(res.body.prompt).toBe('Another update')
+      expect(res.body.scene).toBe('Another update')
     })
 
     it('should return 404 for non-existent shot', async () => {
       const res = await request(app)
         .put(`/api/projects/${project.id}/shots/non-existent-shot`)
-        .send({ prompt: 'Will not work' })
+        .send({ scene: 'Will not work' })
         .expect(404)
 
       expect(res.body.error).toBe('Shot not found')
@@ -70,7 +76,7 @@ describe('Shots API', () => {
     it('should return 404 for non-existent project', async () => {
       await request(app)
         .put('/api/projects/fake-project-id/shots/shot-001')
-        .send({ prompt: 'Will not work' })
+        .send({ scene: 'Will not work' })
         .expect(404)
     })
   })
@@ -110,6 +116,33 @@ describe('Shots API', () => {
         .expect(400)
 
       expect(res.body.error).toBe('status is required')
+    })
+  })
+
+  describe('PUT /api/projects/:id/shots/batch-status', () => {
+    it('rejects batch-status when shotIds is empty', async () => {
+      const res = await request(app)
+        .put(`/api/projects/${project.id}/shots/batch-status`)
+        .send({ shotIds: [], status: 'draft' })
+        .expect(400)
+
+      expect(res.body.error).toBe('shotIds array is required')
+    })
+  })
+
+  describe('DELETE /api/projects/:id/shots/:shotId/video', () => {
+    it('deletes external video url without filesystem access errors', async () => {
+      shot.videoFile = 'https://cdn.example.com/video.mp4'
+      await saveProject(project)
+
+      const res = await request(app)
+        .delete(`/api/projects/${project.id}/shots/${shot.id}/video`)
+        .expect(200)
+
+      expect(res.body.videoFile).toBeNull()
+
+      const saved = await getProject(project.id)
+      expect(saved?.shots[0]?.videoFile).toBeNull()
     })
   })
 })

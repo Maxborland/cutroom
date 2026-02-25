@@ -15,7 +15,7 @@ export function ScriptView() {
         return (
           <span
             key={i}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-dim text-amber font-mono text-xs mx-0.5"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[3px] bg-amber-dim text-amber font-mono text-xs mx-0.5 border border-border"
           >
             <ImageIcon size={10} />
             {filename}
@@ -29,7 +29,7 @@ export function ScriptView() {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-3xl mx-auto">
-        <div className="bg-surface-2 border border-border rounded-xl p-6">
+        <div className="bg-surface-2 border-2 border-border rounded-[5px] p-6 shadow-brutal-sm">
           <div className="prose prose-invert prose-sm max-w-none">
             {project.script.split('\n\n').map((paragraph, i) => (
               <p key={i} className="text-sm text-text-secondary leading-relaxed mb-4 last:mb-0">
@@ -43,7 +43,7 @@ export function ScriptView() {
         </div>
 
         {/* Assets referenced */}
-        <div className="mt-6 p-4 bg-surface-2/50 border border-border rounded-xl">
+        <div className="mt-6 p-4 bg-surface-2 border-2 border-border rounded-[5px]">
           <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted mb-3">
             Файлы, упомянутые в сценарии
           </p>
@@ -53,9 +53,9 @@ export function ScriptView() {
               .map((asset) => (
                 <div
                   key={asset.id}
-                  className="flex items-center gap-2 bg-surface-2 border border-border rounded-lg px-3 py-2"
+                  className="flex items-center gap-2 bg-surface-2 border-2 border-border rounded-[5px] px-3 py-2"
                 >
-                  <div className="w-8 h-8 rounded bg-surface-3 flex items-center justify-center">
+                  <div className="w-8 h-8 rounded-[3px] bg-surface-3 border border-border flex items-center justify-center">
                     <ImageIcon size={12} className="text-text-muted" />
                   </div>
                   <div>

@@ -66,11 +66,13 @@ describe('SettingsView', () => {
     expect(spinner).toBeTruthy()
 
     await waitFor(() => {
-      expect(screen.getByText('Настройки пайплайна')).toBeInTheDocument()
+      expect(container.querySelector('#api')).toBeTruthy()
     })
 
-    expect(screen.getByText('Ключи и текстовые модели')).toBeInTheDocument()
-    expect(screen.getByText('Генерация изображений и видео')).toBeInTheDocument()
+    expect(container.querySelector('#generation')).toBeTruthy()
+    expect(container.querySelector('#quality')).toBeTruthy()
+    expect(container.querySelector('#director')).toBeTruthy()
+    expect(container.querySelector('#prompts')).toBeTruthy()
   })
 
   it('associates API key inputs with labels', async () => {
@@ -122,6 +124,7 @@ describe('SettingsView', () => {
 
     expect(api.settings.update).toHaveBeenCalledWith(
       expect.objectContaining({
+        defaultImageNoRefGenModel: expect.any(String),
         videoQuality: expect.any(String),
       }),
     )
@@ -148,5 +151,16 @@ describe('SettingsView', () => {
 
     const lastCall = (api.settings.update as any).mock.calls.at(-1)?.[0]
     expect(lastCall.videoQuality).toBe('auto')
+  })
+
+  it('does not label generic quality as guaranteed 4K', async () => {
+    const { container } = render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(container.querySelector('#video-quality')).toBeTruthy()
+    })
+
+    expect(screen.queryByText('High (4K)')).not.toBeInTheDocument()
+    expect(screen.getByText(/4K/)).toBeInTheDocument()
   })
 })

@@ -3,7 +3,7 @@ import { useProjectStore } from '../stores/projectStore'
 import { ShotCard } from './ShotCard'
 import { ShotDetail } from './ShotDetail'
 import { AnimatePresence, motion } from 'framer-motion'
-import { XCircle, Sparkles, CheckCircle2, ArrowRight, ArrowLeft, Wand2, Film } from 'lucide-react'
+import { XCircle, Sparkles, CheckCircle2, ArrowLeft, Wand2, Film } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
@@ -25,6 +25,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { Shot, ShotStatus } from '../types'
+import { mapWithConcurrency } from '../lib/async-pool'
 
 const COLUMN_PREFIX = 'column:'
 
@@ -57,8 +58,8 @@ function DroppableColumn({
   return (
     <div
       ref={setNodeRef}
-      className={`flex-1 space-y-2 overflow-y-auto pr-1 rounded-lg transition-colors min-h-[60px] p-1 ${
-        isOver ? 'bg-amber/5 ring-1 ring-amber/20' : ''
+      className={`flex-1 space-y-2 overflow-y-auto pr-1 rounded-[5px] min-h-[60px] p-1 ${
+        isOver ? 'bg-amber-dim ring-2 ring-amber' : ''
       }`}
     >
       {children}
@@ -111,9 +112,9 @@ export function ShotBoard() {
   const cancelAllGeneration = useProjectStore((s) => s.cancelAllGeneration)
   const enhanceAll = useProjectStore((s) => s.enhanceAll)
   const updateShotStatus = useProjectStore((s) => s.updateShotStatus)
-  const generateAllVideosAction = useProjectStore((s) => s.generateAllVideos)
+  const batchUpdateShotStatus = useProjectStore((s) => s.batchUpdateShotStatus)
   const [enhancingAll, setEnhancingAll] = useState(false)
-  const [generatingAllVideos, setGeneratingAllVideos] = useState(false)
+  const [bulkGeneratingImages, setBulkGeneratingImages] = useState(false)
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overColumn, setOverColumn] = useState<ShotStatus | null>(null)
@@ -124,9 +125,19 @@ export function ShotBoard() {
 
   if (!project) return null
 
-  const handleBulkGenerateImages = () => {
+  const handleBulkGenerateImages = async () => {
+    if (bulkGeneratingImages) return
     const drafts = project.shots.filter((s) => s.status === 'draft')
-    for (const shot of drafts) generateImage(shot.id)
+    if (drafts.length === 0) return
+
+    setBulkGeneratingImages(true)
+    try {
+      await mapWithConcurrency(drafts, 2, async (shot) => {
+        await generateImage(shot.id)
+      })
+    } finally {
+      setBulkGeneratingImages(false)
+    }
   }
 
   const handleBulkGenerateVideos = () => {
@@ -145,21 +156,12 @@ export function ShotBoard() {
 
   const handleBulkApproveVideos = () => {
     const vidReviewShots = project.shots.filter((s) => s.status === 'vid_review')
-    for (const shot of vidReviewShots) updateShotStatus(project.id, shot.id, 'approved')
-  }
-
-  const handleGenerateAllVideos = async () => {
-    setGeneratingAllVideos(true)
-    try {
-      await generateAllVideosAction()
-    } finally {
-      setGeneratingAllVideos(false)
-    }
+    batchUpdateShotStatus(project.id, vidReviewShots.map(s => s.id), 'approved')
   }
 
   const handleBulkMove = (from: ShotStatus, to: ShotStatus) => {
     const shots = project.shots.filter((s) => s.status === from)
-    for (const shot of shots) updateShotStatus(project.id, shot.id, to)
+    batchUpdateShotStatus(project.id, shots.map(s => s.id), to)
   }
 
   const resolveStatus = (overId: string | number): ShotStatus | null => {
@@ -198,6 +200,16 @@ export function ShotBoard() {
 
     const targetStatus = resolveStatus(over.id)
     if (targetStatus && targetStatus !== shot.status) {
+      if (targetStatus === 'img_gen') {
+        void generateImage(shotId)
+        return
+      }
+
+      if (targetStatus === 'vid_gen') {
+        void generateVideoAction(shotId)
+        return
+      }
+
       updateShotStatus(project.id, shotId, targetStatus)
     }
   }
@@ -230,7 +242,7 @@ export function ShotBoard() {
                   {/* Column header */}
                   <div className="flex items-center gap-2 mb-3 px-1">
                     <div
-                      className={`w-2 h-2 rounded-full ${
+                      className={`w-2.5 h-2.5 rounded-[2px] border border-border ${
                         col.status === 'draft'
                           ? 'bg-text-muted'
                           : col.status === 'img_gen' || col.status === 'vid_gen'
@@ -252,9 +264,11 @@ export function ShotBoard() {
                     {/* Bulk actions per column */}
                     {col.status === 'draft' && shots.length > 0 && (
                       <button
-                        onClick={handleBulkGenerateImages}
+                        onClick={() => { void handleBulkGenerateImages() }}
+                        disabled={bulkGeneratingImages}
+                        aria-label="Generate all images in draft column"
                         title="Генерировать все изображения"
-                        className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors"
+                        className="p-0.5 rounded-[3px] hover:bg-violet-dim text-violet transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Sparkles size={12} />
                       </button>
@@ -262,8 +276,9 @@ export function ShotBoard() {
                     {col.status === 'img_gen' && shots.length > 0 && (
                       <button
                         onClick={cancelAllGeneration}
+                        aria-label="Cancel all generations in this column"
                         title="Отменить все"
-                        className="p-0.5 rounded hover:bg-red-500/10 text-red-400 transition-colors"
+                        className="p-0.5 rounded-[3px] hover:bg-rose-dim text-rose transition-colors"
                       >
                         <XCircle size={12} />
                       </button>
@@ -272,16 +287,18 @@ export function ShotBoard() {
                       <div className="flex gap-1">
                         <button
                           onClick={() => handleBulkMove('img_review', 'draft')}
+                          aria-label="Move all image-review shots to draft"
                           title="Все в черновик"
-                          className="p-0.5 rounded hover:bg-text-muted/10 text-text-muted transition-colors"
+                          className="p-0.5 rounded-[3px] hover:bg-surface-3 text-text-muted transition-colors"
                         >
                           <ArrowLeft size={12} />
                         </button>
                         <button
                           onClick={handleEnhanceAll}
+                          aria-label="Enhance all image-review shots"
                           disabled={enhancingAll}
-                          title="Enhance все"
-                          className="p-0.5 rounded hover:bg-amber/10 text-amber transition-colors disabled:opacity-50"
+                          title="Улучшить все"
+                          className="p-0.5 rounded-[3px] hover:bg-amber-dim text-amber transition-colors disabled:opacity-50"
                         >
                           {enhancingAll ? (
                             <div className="w-3 h-3 rounded-full border-2 border-amber border-t-transparent animate-spin" />
@@ -291,8 +308,9 @@ export function ShotBoard() {
                         </button>
                         <button
                           onClick={handleBulkGenerateVideos}
+                          aria-label="Generate videos for all image-review shots"
                           title="Генерировать все видео"
-                          className="p-0.5 rounded hover:bg-violet/10 text-violet transition-colors"
+                          className="p-0.5 rounded-[3px] hover:bg-violet-dim text-violet transition-colors"
                         >
                           <Film size={12} />
                         </button>
@@ -301,8 +319,9 @@ export function ShotBoard() {
                     {col.status === 'vid_gen' && shots.length > 0 && (
                       <button
                         onClick={cancelAllGeneration}
+                        aria-label="Cancel all generations in this column"
                         title="Отменить все"
-                        className="p-0.5 rounded hover:bg-red-500/10 text-red-400 transition-colors"
+                        className="p-0.5 rounded-[3px] hover:bg-rose-dim text-rose transition-colors"
                       >
                         <XCircle size={12} />
                       </button>
@@ -311,15 +330,17 @@ export function ShotBoard() {
                       <div className="flex gap-1">
                         <button
                           onClick={() => handleBulkMove('vid_review', 'img_review')}
+                          aria-label="Move all video-review shots to image review"
                           title="Все на ревью изображений"
-                          className="p-0.5 rounded hover:bg-sky/10 text-sky transition-colors"
+                          className="p-0.5 rounded-[3px] hover:bg-sky-dim text-sky transition-colors"
                         >
                           <ArrowLeft size={12} />
                         </button>
                         <button
                           onClick={handleBulkApproveVideos}
+                          aria-label="Approve all video-review shots"
                           title="Утвердить все"
-                          className="p-0.5 rounded hover:bg-emerald/10 text-emerald transition-colors"
+                          className="p-0.5 rounded-[3px] hover:bg-emerald-dim text-emerald transition-colors"
                         >
                           <CheckCircle2 size={12} />
                         </button>
@@ -328,8 +349,9 @@ export function ShotBoard() {
                     {col.status === 'approved' && shots.length > 0 && (
                       <button
                         onClick={() => handleBulkMove('approved', 'vid_review')}
+                        aria-label="Move all approved shots back to video review"
                         title="Все на ревью видео"
-                        className="p-0.5 rounded hover:bg-amber/10 text-amber transition-colors"
+                        className="p-0.5 rounded-[3px] hover:bg-amber-dim text-amber transition-colors"
                       >
                         <ArrowLeft size={12} />
                       </button>
@@ -356,8 +378,8 @@ export function ShotBoard() {
 
                       {shots.length === 0 && (
                         <div
-                          className={`border border-dashed rounded-lg p-6 text-center ${
-                            isOverThis ? 'border-amber/30' : 'border-border'
+                          className={`border-2 border-dashed rounded-[5px] p-6 text-center ${
+                            isOverThis ? 'border-amber bg-amber-dim' : 'border-border'
                           }`}
                         >
                           <p className="text-xs text-text-muted">
@@ -396,7 +418,7 @@ export function ShotBoard() {
             animate={{ width: '45%', opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            className="border-l border-border overflow-hidden"
+            className="border-l-2 border-border overflow-hidden"
           >
             <ShotDetail onClose={() => setActiveShotId(null)} />
           </motion.div>

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import request from 'supertest'
 import { createApp } from './setup.js'
-import { deleteProject } from '../../server/lib/storage.js'
+import { deleteProject, getProject, saveProject } from '../../server/lib/storage.js'
 
 const app = createApp()
 
@@ -29,7 +29,7 @@ describe('Projects API', () => {
       expect(res.body).toHaveProperty('id')
       expect(res.body.name).toBe('Test Project')
       expect(res.body.stage).toBe('brief')
-      expect(res.body.brief).toEqual({ text: '', assets: [] })
+      expect(res.body.brief).toEqual({ text: '', assets: [], targetDuration: 60 })
       expect(res.body.shots).toEqual([])
       expect(res.body).toHaveProperty('created')
       expect(res.body).toHaveProperty('updated')
@@ -148,6 +148,52 @@ describe('Projects API', () => {
 
       expect(res.body.settings.temperature).toBe(0.9)
       expect(res.body.settings.model).toBe(originalModel)
+    })
+
+    it('updates only brief asset labels without replacing asset metadata', async () => {
+      const createRes = await request(app)
+        .post('/api/projects')
+        .send({ name: 'Asset Label Merge Test' })
+        .expect(201)
+      createdIds.push(createRes.body.id)
+
+      const stored = await getProject(createRes.body.id)
+      expect(stored).toBeTruthy()
+      if (!stored) return
+
+      stored.brief.assets = [
+        {
+          id: 'asset-1',
+          filename: 'ref-1.png',
+          label: 'Initial label',
+          url: '/api/projects/p/assets/ref-1.png',
+          uploadedAt: '2026-02-19T00:00:00.000Z',
+        },
+      ]
+      await saveProject(stored)
+
+      const res = await request(app)
+        .put(`/api/projects/${createRes.body.id}`)
+        .send({
+          brief: {
+            assets: [
+              {
+                id: 'asset-1',
+                label: 'Updated label',
+              },
+            ],
+          },
+        })
+        .expect(200)
+
+      expect(res.body.brief.assets).toHaveLength(1)
+      expect(res.body.brief.assets[0]).toEqual({
+        id: 'asset-1',
+        filename: 'ref-1.png',
+        label: 'Updated label',
+        url: '/api/projects/p/assets/ref-1.png',
+        uploadedAt: '2026-02-19T00:00:00.000Z',
+      })
     })
 
     it('should return 404 for non-existent project', async () => {
