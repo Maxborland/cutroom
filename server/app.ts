@@ -7,6 +7,7 @@ import assetRoutes from './routes/assets.js';
 import generateRoutes from './routes/generate/index.js';
 import shotRoutes from './routes/shots.js';
 import exportRoutes from './routes/export.js';
+import montageRoutes from './routes/montage.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
 
 interface CreateAppOptions {
@@ -163,6 +164,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   app.use('/api/projects/:id', generateRoutes);
   app.use('/api/projects/:id/shots', shotRoutes);
   app.use('/api/projects/:id', exportRoutes);
+  app.use('/api/projects/:id', montageRoutes);
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

@@ -36,6 +36,17 @@ export interface Project {
   brief: Brief;
   script: string;
   shots: ShotMeta[];
+  // Montage fields
+  voiceoverScript?: string;
+  voiceoverScriptApproved?: boolean;
+  voiceoverFile?: string;
+  voiceoverProvider?: string;
+  voiceoverVoiceId?: string;
+  musicFile?: string;
+  musicPrompt?: string;
+  musicProvider?: string;
+  montagePlan?: MontagePlan;
+  renders?: RenderJob[];
 }
 
 export interface ShotMeta {
@@ -56,6 +67,97 @@ export interface ShotMeta {
 
 export const VALID_SHOT_STATUSES = ['draft', 'img_gen', 'img_review', 'vid_gen', 'vid_review', 'approved'] as const;
 export type ShotStatus = typeof VALID_SHOT_STATUSES[number];
+
+// ── Montage Types ────────────────────────────────────────────────────
+
+export interface MontageStyle {
+  preset: 'premium' | 'calm' | 'dynamic' | 'custom';
+  fontFamily: string;
+  primaryColor: string;
+  secondaryColor: string;
+  textColor: string;
+}
+
+export interface TimelineEntry {
+  shotId: string;
+  clipFile: string;
+  startSec: number;
+  durationSec: number;
+  trimStartSec?: number;
+  trimEndSec?: number;
+  motionEffect?: 'ken_burns' | 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right';
+}
+
+export interface TransitionEntry {
+  fromShotId: string;
+  toShotId: string;
+  type: 'cut' | 'fade' | 'crossfade' | 'slide_left' | 'slide_right' | 'zoom_blur' | 'wipe';
+  durationSec: number;
+  easing?: 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out';
+}
+
+export interface IntroCard {
+  title: string;
+  subtitle?: string;
+  durationSec: number;
+  animation: 'fade_in' | 'slide_up' | 'typewriter';
+}
+
+export interface LowerThird {
+  shotId: string;
+  text: string;
+  position: 'bottom_left' | 'bottom_center' | 'bottom_right';
+  appearAtSec: number;
+  durationSec: number;
+}
+
+export interface OutroCard {
+  title: string;
+  phone?: string;
+  website?: string;
+  logoFile?: string;
+  durationSec: number;
+  animation: 'fade_in' | 'slide_up';
+}
+
+export interface MontagePlan {
+  version: number;
+  format: {
+    width: number;
+    height: number;
+    fps: number;
+  };
+  timeline: TimelineEntry[];
+  transitions: TransitionEntry[];
+  motionGraphics: {
+    intro?: IntroCard;
+    lowerThirds: LowerThird[];
+    outro?: OutroCard;
+  };
+  audio: {
+    voiceover: { file: string; gainDb: number };
+    music: {
+      file: string;
+      gainDb: number;
+      duckingDb: number;
+      duckFadeMs: number;
+    };
+  };
+  style: MontageStyle;
+}
+
+export interface RenderJob {
+  id: string;
+  createdAt: string;
+  quality: 'preview' | 'final';
+  resolution: string;
+  status: 'queued' | 'rendering' | 'done' | 'failed';
+  progress?: number;
+  outputFile?: string;
+  durationSec?: number;
+  errorMessage?: string;
+  logFile?: string;
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 

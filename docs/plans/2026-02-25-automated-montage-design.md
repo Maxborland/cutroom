@@ -438,13 +438,13 @@ No vocals. Suitable for voiceover overlay.
 - Consider running render in a separate Docker service/container if the main server is resource-constrained.
 - `data/projects/{id}/montage/` directory holds all montage artifacts (normalized clips, audio, renders).
 
-## 17. Open Questions (to resolve during implementation)
+## 17. Resolved Questions
 
-1. **Suno API access** -- is there an API key available, or should we start with manual music upload only?
-2. **ElevenLabs vs OpenAI TTS** -- which provider to prioritize? (affects voice selection UI)
-3. **Remotion license** -- free tier is sufficient for self-hosted render; commercial use requires checking their license terms.
-4. **Branding assets** -- logo file, default fonts, color palette -- should these be per-project or global settings?
+1. **Suno API** -- integrate in settings; use API if available, manual upload as fallback.
+2. **Voiceover TTS** -- ElevenLabs as primary provider.
+3. **Branding assets** -- per-project (logo, fonts, colors stored in project data).
+4. **Remotion** -- self-hosted, free tier sufficient.
 
 ---
 
-**Approval requested.** Once approved, implementation starts with Phase 1 (data model + API skeleton).
+**Status: APPROVED (2026-02-25).** Implementation started with Phase 1.
