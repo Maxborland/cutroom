@@ -271,21 +271,25 @@ function getMimeForExt(ext: string): string {
   return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
 }
 
-// Multer for music upload
+// Allowed MIME types for audio upload validation
+const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
+
+// Multer for music upload — validates by both extension and MIME type
 const musicUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ALLOWED_AUDIO_EXTENSIONS.has(ext)) {
+    const extValid = ALLOWED_AUDIO_EXTENSIONS.has(ext);
+    const mimeValid = ALLOWED_AUDIO_MIMES.has(file.mimetype);
+    if (extValid && mimeValid) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Allowed: mp3, wav, m4a, ogg, aac'));
+      cb(new Error('Invalid file type. Allowed audio formats: mp3, wav, m4a, ogg, aac'));
     }
   },
 });
 
-// Suno polling helper
 // POST /api/projects/:id/montage/generate-music-prompt
 // Generates a music prompt via LLM that the user can copy into Suno UI
 router.post('/montage/generate-music-prompt', async (req: Request, res: Response) => {
