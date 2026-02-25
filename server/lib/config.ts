@@ -36,6 +36,14 @@ export interface GlobalSettings {
   // Creative Director
   defaultDirectorModel?: string;
   masterPromptDirector?: string;
+  // Montage
+  defaultVoiceoverProvider?: string;
+  defaultVoiceoverVoiceId?: string;
+  elevenLabsApiKey?: string;
+  sunoApiKey?: string;
+  defaultMusicStyle?: string;
+  defaultMontagePreset?: string;
+  remotionConcurrency?: number;
 }
 
 const DEFAULT_SETTINGS: GlobalSettings = {

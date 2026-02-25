@@ -7,6 +7,8 @@ import type {
   DirectorReview,
   DirectorState,
   VideoGenerationResult,
+  MontagePlan,
+  RenderJob,
 } from '../types/index'
 
 const BASE = '/api'
@@ -235,5 +237,47 @@ export const api = {
   export: {
     zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,
     promptsUrl: (projectId: string) => `${BASE}/projects/${projectId}/export/prompts`,
+  },
+  montage: {
+    generateVoScript: (projectId: string) =>
+      request<{ voiceoverScript: string }>(`/projects/${projectId}/montage/generate-vo-script`, { method: 'POST' }),
+    updateVoScript: (projectId: string, script: string) =>
+      request<Project>(`/projects/${projectId}/montage/vo-script`, {
+        method: 'PUT',
+        body: JSON.stringify({ voiceoverScript: script }),
+      }),
+    approveVoScript: (projectId: string) =>
+      request<Project>(`/projects/${projectId}/montage/approve-vo-script`, { method: 'POST' }),
+    generateVoiceover: (projectId: string, options?: { provider?: string; voiceId?: string }) =>
+      request<{ voiceoverFile: string }>(`/projects/${projectId}/montage/generate-voiceover`, {
+        method: 'POST',
+        body: JSON.stringify(options ?? {}),
+      }),
+    generateMusic: (projectId: string, options?: { prompt?: string; provider?: string }) =>
+      request<{ musicFile: string }>(`/projects/${projectId}/montage/generate-music`, {
+        method: 'POST',
+        body: JSON.stringify(options ?? {}),
+      }),
+    generatePlan: (projectId: string) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
+    updatePlan: (projectId: string, plan: MontagePlan) =>
+      request<Project>(`/projects/${projectId}/montage/plan`, {
+        method: 'PUT',
+        body: JSON.stringify({ montagePlan: plan }),
+      }),
+    refinePlan: (projectId: string, feedback: string) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/refine-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ feedback }),
+      }),
+    render: (projectId: string, quality: 'preview' | 'final') =>
+      request<RenderJob>(`/projects/${projectId}/montage/render`, {
+        method: 'POST',
+        body: JSON.stringify({ quality }),
+      }),
+    getRenderStatus: (projectId: string, jobId: string) =>
+      request<RenderJob>(`/projects/${projectId}/montage/render/${jobId}`),
+    getRenderDownloadUrl: (projectId: string, jobId: string) =>
+      `${BASE}/projects/${projectId}/montage/render/${jobId}/download`,
   },
 }
