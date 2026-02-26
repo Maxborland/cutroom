@@ -35,18 +35,20 @@ vi.mock('../../server/lib/normalize.js', () => ({
 
 vi.mock('../../server/lib/tts-providers.js', () => ({
   getAvailableProviders: vi.fn().mockResolvedValue([
+    { id: 'elevenlabs-fal', name: 'ElevenLabs via fal.ai (multilingual)', configured: true },
     { id: 'kokoro', name: 'Kokoro (fal.ai)', configured: true },
-    { id: 'elevenlabs', name: 'ElevenLabs', configured: true },
+    { id: 'elevenlabs', name: 'ElevenLabs (direct API)', configured: true },
   ]),
   getVoices: vi.fn().mockReturnValue([
     { id: 'af_heart', name: 'Heart', gender: 'female', language: 'en-US', provider: 'kokoro' },
+    { id: 'Aria', name: 'Aria', gender: 'female', language: 'multilingual', provider: 'elevenlabs-fal' },
     { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', language: 'multilingual', provider: 'elevenlabs' },
   ]),
   generateSpeech: vi.fn().mockResolvedValue({
     audioBuffer: Buffer.from('fake-tts-audio'),
     contentType: 'audio/mpeg',
-    provider: 'kokoro',
-    voiceId: 'af_heart',
+    provider: 'elevenlabs-fal',
+    voiceId: 'Aria',
   }),
 }))
 
@@ -210,12 +212,12 @@ describe('Montage Integration', () => {
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
-        .send({ provider: 'kokoro', voiceId: 'af_heart' })
+        .send({ provider: 'elevenlabs-fal', voiceId: 'Aria' })
         .expect(200)
 
       expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
-      expect(res.body.provider).toBe('kokoro')
-      expect(res.body.voiceId).toBe('af_heart')
+      expect(res.body.provider).toBe('elevenlabs-fal')
+      expect(res.body.voiceId).toBe('Aria')
     })
 
     it('returns 400 when script not approved', async () => {
@@ -237,13 +239,14 @@ describe('Montage Integration', () => {
 
       const { getAvailableProviders } = await import('../../server/lib/tts-providers.js')
       vi.mocked(getAvailableProviders).mockResolvedValueOnce([
+        { id: 'elevenlabs-fal', name: 'ElevenLabs via fal.ai', configured: false },
         { id: 'kokoro', name: 'Kokoro', configured: false },
         { id: 'elevenlabs', name: 'ElevenLabs', configured: false },
       ])
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
-        .send({ provider: 'elevenlabs', voiceId: 'pNInz6obpgDQGcFmaJgB' })
+        .send({ provider: 'elevenlabs-fal', voiceId: 'Aria' })
         .expect(400)
 
       expect(res.body.error).toContain('API key')

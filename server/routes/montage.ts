@@ -161,11 +161,16 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const { getAvailableProviders, generateSpeech } = await import('../lib/tts-providers.js');
     type TtsProvider = 'kokoro' | 'elevenlabs';
 
-    const requestedProvider = (req.body.provider || project.voiceoverProvider || settings.defaultVoiceoverProvider || 'kokoro') as TtsProvider;
-    const requestedVoice = req.body.voiceId || project.voiceoverVoiceId || settings.defaultVoiceoverVoiceId || (requestedProvider === 'kokoro' ? 'af_heart' : 'pNInz6obpgDQGcFmaJgB');
+    const requestedProvider = (req.body.provider || project.voiceoverProvider || settings.defaultVoiceoverProvider || 'elevenlabs-fal') as TtsProvider;
+    const defaultVoices: Record<string, string> = {
+      'kokoro': 'af_heart',
+      'elevenlabs-fal': 'Aria',
+      'elevenlabs': 'pNInz6obpgDQGcFmaJgB',
+    };
+    const requestedVoice = req.body.voiceId || project.voiceoverVoiceId || settings.defaultVoiceoverVoiceId || defaultVoices[requestedProvider] || 'Aria';
 
     // Validate provider is a known value
-    const validProviders: TtsProvider[] = ['kokoro', 'elevenlabs'];
+    const validProviders: TtsProvider[] = ['kokoro', 'elevenlabs-fal', 'elevenlabs'];
     if (!validProviders.includes(requestedProvider)) {
       sendApiError(res, 400, `Unknown TTS provider: ${String(requestedProvider).slice(0, 50)}`);
       return;
