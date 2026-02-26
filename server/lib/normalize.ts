@@ -19,8 +19,8 @@ function execFileAsync(
   });
 }
 
-const FFMPEG = '/home/linuxbrew/.linuxbrew/bin/ffmpeg';
-const FFPROBE = '/home/linuxbrew/.linuxbrew/bin/ffprobe';
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
 
 const TARGET_WIDTH = 3840;
 const TARGET_HEIGHT = 2160;

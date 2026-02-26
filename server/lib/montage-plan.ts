@@ -111,23 +111,27 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   const totalShotDuration = approvedShots.reduce((sum, s) => sum + s.duration, 0);
 
   // Step 4: Distribute durations proportionally with minimum floor
+  // Guard: if total minimum exceeds available time, expand available time
+  const minTotal = approvedShots.length * MIN_CLIP_DURATION;
+  const effectiveAvailable = Math.max(availableTime, minTotal);
+
   let allocatedDurations = approvedShots.map(shot => {
-    const proportional = (shot.duration / totalShotDuration) * availableTime;
+    const proportional = (shot.duration / totalShotDuration) * effectiveAvailable;
     return Math.max(proportional, MIN_CLIP_DURATION);
   });
 
-  // Normalize to fit exactly into availableTime
+  // Normalize to fit exactly into effectiveAvailable
   const totalAllocated = allocatedDurations.reduce((sum, d) => sum + d, 0);
-  if (totalAllocated !== availableTime && totalAllocated > 0) {
-    const scale = availableTime / totalAllocated;
+  if (totalAllocated !== effectiveAvailable && totalAllocated > 0) {
+    const scale = effectiveAvailable / totalAllocated;
     allocatedDurations = allocatedDurations.map(d => {
       const scaled = d * scale;
       return Math.max(scaled, MIN_CLIP_DURATION);
     });
     // Final pass: adjust to sum exactly
     const finalTotal = allocatedDurations.reduce((sum, d) => sum + d, 0);
-    if (finalTotal !== availableTime && allocatedDurations.length > 0) {
-      allocatedDurations[0] += availableTime - finalTotal;
+    if (finalTotal !== effectiveAvailable && allocatedDurations.length > 0) {
+      allocatedDurations[0] += effectiveAvailable - finalTotal;
     }
   }
 

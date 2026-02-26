@@ -572,6 +572,12 @@ router.post('/montage/refine-plan', async (req: Request, res: Response) => {
       return;
     }
 
+    // Validate refined plan has required structure
+    if (!refinedPlan.version || !refinedPlan.timeline || !refinedPlan.format || !refinedPlan.audio || !refinedPlan.style) {
+      sendApiError(res, 500, 'LLM returned plan missing required fields');
+      return;
+    }
+
     await withProject(project.id, (p) => {
       p.montagePlan = refinedPlan;
     });
