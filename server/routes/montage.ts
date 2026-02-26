@@ -159,7 +159,7 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     // Determine provider and voice from request body → project → settings → defaults
     const settings = await getGlobalSettings();
     const { getAvailableProviders, generateSpeech } = await import('../lib/tts-providers.js');
-    type TtsProvider = 'kokoro' | 'elevenlabs';
+    type TtsProvider = 'kokoro' | 'elevenlabs-fal' | 'elevenlabs';
 
     const requestedProvider = (req.body.provider || project.voiceoverProvider || settings.defaultVoiceoverProvider || 'elevenlabs-fal') as TtsProvider;
     const defaultVoices: Record<string, string> = {
