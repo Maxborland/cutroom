@@ -153,7 +153,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
       // If project has a saved provider/voice, use them
       if (project.voiceoverProvider) setSelectedProvider(project.voiceoverProvider)
       if (project.voiceoverVoiceId) setSelectedVoice(project.voiceoverVoiceId)
-    }).catch(() => { /* ignore */ })
+    }).catch((err) => { console.error('Failed to load voices:', err) })
   }, [project.id])
 
   const filteredVoices = voices.filter((v) => v.provider === selectedProvider)

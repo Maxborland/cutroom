@@ -155,7 +155,9 @@ async function generateKokoroSpeech(
   const voice = KOKORO_VOICES.find(v => v.id === voiceId);
   const endpoint = voice ? (KOKORO_ENDPOINTS[voice.language] || 'fal-ai/kokoro') : 'fal-ai/kokoro';
 
-  console.log(`[tts] Kokoro: endpoint=${endpoint} voice=${voiceId} text=${text.length} chars`);
+  // Sanitize voiceId for log output (prevent log injection)
+  const safeVoiceId = voiceId.replace(/[\r\n\t]/g, '');
+  console.log(`[tts] Kokoro: endpoint=${endpoint} voice=${safeVoiceId} text=${text.length} chars`);
 
   const result = await fal.subscribe(endpoint, {
     input: {
@@ -165,12 +167,18 @@ async function generateKokoroSpeech(
     },
   });
 
-  const audioUrl = (result.data as any)?.audio?.url;
+  const audioUrl = (result.data as { audio?: { url?: string } })?.audio?.url;
   if (!audioUrl) {
     throw new Error('Kokoro TTS returned no audio URL');
   }
 
-  // Download audio file
+  // SSRF guard: only allow URLs from trusted fal.ai domains
+  const parsedUrl = new URL(audioUrl);
+  if (!parsedUrl.hostname.endsWith('.fal.media') && !parsedUrl.hostname.endsWith('.fal.ai')) {
+    throw new Error(`Unexpected audio URL domain: ${parsedUrl.hostname}`);
+  }
+
+  // Download audio file from validated fal.ai URL
   const response = await fetch(audioUrl);
   if (!response.ok) {
     throw new Error(`Failed to download Kokoro audio: ${response.status}`);
@@ -196,11 +204,18 @@ async function generateElevenLabsSpeech(
     throw new Error('ElevenLabs API key is not configured. Please set it in Settings.');
   }
 
+  // Validate voiceId format to prevent path traversal in URL
+  if (!/^[a-zA-Z0-9_-]+$/.test(voiceId)) {
+    throw new Error(`Invalid ElevenLabs voice ID format: contains disallowed characters`);
+  }
+
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
 
-  console.log(`[tts] ElevenLabs: voice=${voiceId} text=${text.length} chars`);
+  // Sanitize voiceId for log output (prevent log injection)
+  const safeVoiceId = voiceId.replace(/[\r\n\t]/g, '');
+  console.log(`[tts] ElevenLabs: voice=${safeVoiceId} text=${text.length} chars`);
 
   let response: Response;
   try {

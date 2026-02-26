@@ -164,6 +164,21 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const requestedProvider = (req.body.provider || project.voiceoverProvider || settings.defaultVoiceoverProvider || 'kokoro') as TtsProvider;
     const requestedVoice = req.body.voiceId || project.voiceoverVoiceId || settings.defaultVoiceoverVoiceId || (requestedProvider === 'kokoro' ? 'af_heart' : 'pNInz6obpgDQGcFmaJgB');
 
+    // Validate provider is a known value
+    const validProviders: TtsProvider[] = ['kokoro', 'elevenlabs'];
+    if (!validProviders.includes(requestedProvider)) {
+      sendApiError(res, 400, `Unknown TTS provider: ${String(requestedProvider).slice(0, 50)}`);
+      return;
+    }
+
+    // Validate voiceId belongs to the selected provider
+    const { getVoices } = await import('../lib/tts-providers.js');
+    const providerVoices = getVoices(requestedProvider);
+    if (providerVoices.length > 0 && !providerVoices.some(v => v.id === requestedVoice)) {
+      sendApiError(res, 400, `Voice '${String(requestedVoice).slice(0, 50)}' does not belong to provider '${requestedProvider}'`);
+      return;
+    }
+
     // Verify provider is configured
     const providers = await getAvailableProviders();
     const providerInfo = providers.find(p => p.id === requestedProvider);
@@ -175,6 +190,13 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
 
     // Generate speech
     const result = await generateSpeech(scriptAtGeneration, requestedProvider, requestedVoice);
+
+    // Validate audio content type before writing to disk
+    const allowedAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/wave', 'audio/x-wav'];
+    if (!allowedAudioTypes.some(t => result.contentType.includes(t))) {
+      sendApiError(res, 500, `Unexpected audio content type from TTS provider: ${result.contentType.slice(0, 50)}`);
+      return;
+    }
 
     // Write to unique temp file first, promote only after validation passes
     const montageDir = resolveProjectPath(project.id, 'montage');

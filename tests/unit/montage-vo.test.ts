@@ -294,6 +294,7 @@ describe('Montage Voiceover Pipeline', () => {
       await withProject(projectId, (proj) => {
         proj.voiceoverScript = 'Текст.'
         proj.voiceoverScriptApproved = true
+        proj.voiceoverVoiceId = undefined as any
       })
 
       const { getAvailableProviders } = await import('../../server/lib/tts-providers.js')
@@ -304,7 +305,7 @@ describe('Montage Voiceover Pipeline', () => {
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
-        .send({ provider: 'kokoro' })
+        .send({ provider: 'kokoro', voiceId: 'af_heart' })
         .expect(400)
 
       expect(res.body.error).toContain('API key')

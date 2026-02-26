@@ -243,7 +243,7 @@ describe('Montage Integration', () => {
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
-        .send({ provider: 'elevenlabs' })
+        .send({ provider: 'elevenlabs', voiceId: 'pNInz6obpgDQGcFmaJgB' })
         .expect(400)
 
       expect(res.body.error).toContain('API key')
