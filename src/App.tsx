@@ -18,7 +18,7 @@ import type { PipelineStage } from './types'
 import { Clapperboard, Plus, Loader2 } from 'lucide-react'
 
 const PIPELINE_VIEWS: PipelineStage[] = ['brief', 'script', 'shots', 'review', 'export']
-const APP_VIEWS = [...PIPELINE_VIEWS, 'settings', 'director'] as const
+const APP_VIEWS = [...PIPELINE_VIEWS, 'montage', 'settings', 'director'] as const
 type AppView = (typeof APP_VIEWS)[number]
 
 function isAppView(value: string | undefined): value is AppView {
