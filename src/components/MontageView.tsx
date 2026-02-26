@@ -128,7 +128,6 @@ interface VoiceInfo {
 
 interface ProviderInfo {
   id: string
-  name: string
   configured: boolean
 }
 
@@ -136,27 +135,33 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
   const [loading, setLoading] = useState(false)
   const [script, setScript] = useState(project.voiceoverScript || '')
   const [editing, setEditing] = useState(false)
-  const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [voices, setVoices] = useState<VoiceInfo[]>([])
-  const [selectedProvider, setSelectedProvider] = useState(project.voiceoverProvider || 'kokoro')
-  const [selectedVoice, setSelectedVoice] = useState(project.voiceoverVoiceId || 'af_heart')
+  const [activeProvider, setActiveProvider] = useState('')
+  const [selectedVoice, setSelectedVoice] = useState(project.voiceoverVoiceId || '')
 
   useEffect(() => {
     setScript(project.voiceoverScript || '')
   }, [project.voiceoverScript])
 
-  // Load voices on mount
+  // Load voices on mount — provider comes from backend (Settings)
   useEffect(() => {
     api.montage.getVoices(project.id).then((data) => {
-      setProviders(data.providers)
       setVoices(data.voices)
-      // If project has a saved provider/voice, use them
-      if (project.voiceoverProvider) setSelectedProvider(project.voiceoverProvider)
-      if (project.voiceoverVoiceId) setSelectedVoice(project.voiceoverVoiceId)
-    }).catch((err) => { console.error('Failed to load voices:', err) })
+      // The first configured provider is the active one (set in Settings)
+      const configured = data.providers.find((p: ProviderInfo) => p.configured)
+      const providerId = configured?.id || ''
+      setActiveProvider(providerId)
+      // Set default voice for provider if not already set
+      if (project.voiceoverVoiceId) {
+        setSelectedVoice(project.voiceoverVoiceId)
+      } else {
+        const provVoices = data.voices.filter((v: VoiceInfo) => v.provider === providerId)
+        if (provVoices.length > 0) setSelectedVoice(provVoices[0].id)
+      }
+    }).catch((err: unknown) => { console.error('Failed to load voices:', err) })
   }, [project.id])
 
-  const filteredVoices = voices.filter((v) => v.provider === selectedProvider)
+  const filteredVoices = voices.filter((v) => v.provider === activeProvider)
 
   const generateScript = async () => {
     setLoading(true)
@@ -194,7 +199,6 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
     setLoading(true)
     try {
       await api.montage.generateVoiceover(project.id, {
-        provider: selectedProvider,
         voiceId: selectedVoice,
       })
       onRefresh()
@@ -276,52 +280,28 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                   <span className="font-mono text-xs text-emerald uppercase">Скрипт утверждён</span>
                 </div>
 
-                {/* Provider & voice selection */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
-                      Провайдер
-                    </label>
-                    <select
-                      value={selectedProvider}
-                      onChange={(e) => {
-                        setSelectedProvider(e.target.value)
-                        // Auto-select first voice for new provider
-                        const provVoices = voices.filter(v => v.provider === e.target.value)
-                        if (provVoices.length > 0) setSelectedVoice(provVoices[0].id)
-                      }}
-                      className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
-                    >
-                      {providers.map((p) => (
-                        <option key={p.id} value={p.id} disabled={!p.configured}>
-                          {p.name}{!p.configured ? ' (не настроен)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
-                      Голос
-                    </label>
-                    <select
-                      value={selectedVoice}
-                      onChange={(e) => setSelectedVoice(e.target.value)}
-                      className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
-                    >
-                      {filteredVoices.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.name} ({v.gender === 'female' ? '♀' : '♂'}{v.language !== 'multilingual' ? ` ${v.language}` : ''})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                {/* Voice selection — provider comes from Settings */}
+                <div>
+                  <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                    Голос
+                  </label>
+                  <select
+                    value={selectedVoice}
+                    onChange={(e) => setSelectedVoice(e.target.value)}
+                    className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                  >
+                    {filteredVoices.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name} ({v.gender === 'female' ? '♀' : '♂'}{v.language !== 'multilingual' ? ` ${v.language}` : ''})
+                      </option>
+                    ))}
+                  </select>
+                  {filteredVoices.length === 0 && (
+                    <p className="text-xs text-amber/80 mt-1">
+                      Настройте TTS провайдер в разделе Настройки.
+                    </p>
+                  )}
                 </div>
-
-                {selectedProvider === 'kokoro' && (
-                  <p className="text-xs text-amber/80">
-                    ⚠ Kokoro не поддерживает русский язык. Для русской озвучки используйте ElevenLabs.
-                  </p>
-                )}
 
                 {project.voiceoverFile ? (
                   <div className="flex items-center gap-3">
