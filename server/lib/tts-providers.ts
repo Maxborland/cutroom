@@ -158,6 +158,44 @@ export async function generateSpeech(
   throw new Error(`Unknown TTS provider: ${provider}`);
 }
 
+// ── Retry helper for transient network errors ──────────────────────
+
+const RETRYABLE_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EPIPE', 'EAI_AGAIN']);
+
+function isRetryable(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as Record<string, unknown>;
+  const code = String(e.code ?? '').toUpperCase();
+  if (RETRYABLE_CODES.has(code)) return true;
+  const cause = e.cause as Record<string, unknown> | undefined;
+  if (cause) {
+    const causeCode = String(cause.code ?? '').toUpperCase();
+    if (RETRYABLE_CODES.has(causeCode)) return true;
+  }
+  const msg = String(e.message ?? '').toLowerCase();
+  if (msg.includes('terminated') || msg.includes('econnreset') || msg.includes('socket hang up')) return true;
+  return false;
+}
+
+async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries && isRetryable(err)) {
+        const delay = 1000 * (attempt + 1);
+        console.warn(`[tts] ${label}: retryable error (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms...`, (err as Error).message);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
 // ── Kokoro (fal.ai) implementation ──────────────────────────────────
 
 async function generateKokoroSpeech(
@@ -177,13 +215,12 @@ async function generateKokoroSpeech(
   const safeVoiceId = voiceId.replace(/[\r\n\t]/g, '');
   console.log(`[tts] Kokoro: endpoint=${endpoint} voice=${safeVoiceId} text=${text.length} chars`);
 
-  const result = await fal.subscribe(endpoint, {
-    input: {
-      prompt: text,
-      voice: voiceId,
-      speed: options?.speed ?? 1,
-    },
-  });
+  const result = await withRetry(
+    () => fal.subscribe(endpoint, {
+      input: { prompt: text, voice: voiceId, speed: options?.speed ?? 1 },
+    }),
+    'Kokoro',
+  );
 
   const audioUrl = (result.data as { audio?: { url?: string } })?.audio?.url;
   if (!audioUrl) throw new Error('Kokoro TTS returned no audio URL');
@@ -193,8 +230,11 @@ async function generateKokoroSpeech(
     throw new Error(`Unexpected audio URL domain: ${parsedUrl.hostname}`);
   }
 
-  const response = await fetch(audioUrl);
-  if (!response.ok) throw new Error(`Failed to download Kokoro audio: ${response.status}`);
+  const response = await withRetry(async () => {
+    const res = await fetch(audioUrl);
+    if (!res.ok) throw new Error(`Failed to download Kokoro audio: ${res.status}`);
+    return res;
+  }, 'Kokoro download');
 
   const audioBuffer = Buffer.from(await response.arrayBuffer());
   const contentType = response.headers.get('content-type') || 'audio/wav';
@@ -220,13 +260,16 @@ async function generateElevenLabsFalSpeech(
   const safeVoiceId = voiceId.replace(/[\r\n\t]/g, '');
   console.log(`[tts] ElevenLabs-fal: voice=${safeVoiceId} lang=${languageCode} text=${text.length} chars`);
 
-  const result = await fal.subscribe('fal-ai/elevenlabs/text-to-dialogue/eleven-v3', {
-    input: {
-      inputs: [{ text, voice: voiceId }],
-      language_code: languageCode,
-      stability: 0.5,
-    },
-  });
+  const result = await withRetry(
+    () => fal.subscribe('fal-ai/elevenlabs/text-to-dialogue/eleven-v3', {
+      input: {
+        inputs: [{ text, voice: voiceId }],
+        language_code: languageCode,
+        stability: 0.5,
+      },
+    }),
+    'ElevenLabs-fal',
+  );
 
   const audioUrl = (result.data as { audio?: { url?: string } })?.audio?.url;
   if (!audioUrl) throw new Error('ElevenLabs-fal TTS returned no audio URL');
@@ -236,8 +279,11 @@ async function generateElevenLabsFalSpeech(
     throw new Error(`Unexpected audio URL domain: ${parsedUrl.hostname}`);
   }
 
-  const response = await fetch(audioUrl);
-  if (!response.ok) throw new Error(`Failed to download ElevenLabs-fal audio: ${response.status}`);
+  const response = await withRetry(async () => {
+    const res = await fetch(audioUrl);
+    if (!res.ok) throw new Error(`Failed to download ElevenLabs-fal audio: ${res.status}`);
+    return res;
+  }, 'ElevenLabs-fal download');
 
   const audioBuffer = Buffer.from(await response.arrayBuffer());
   const contentType = response.headers.get('content-type') || 'audio/mpeg';
