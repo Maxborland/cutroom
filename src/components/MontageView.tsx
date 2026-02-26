@@ -118,14 +118,45 @@ export function MontageView() {
 
 // ── Voiceover Step ──────────────────────────────────────────────────
 
+interface VoiceInfo {
+  id: string
+  name: string
+  gender: string
+  language: string
+  provider: string
+}
+
+interface ProviderInfo {
+  id: string
+  name: string
+  configured: boolean
+}
+
 function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false)
   const [script, setScript] = useState(project.voiceoverScript || '')
   const [editing, setEditing] = useState(false)
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [voices, setVoices] = useState<VoiceInfo[]>([])
+  const [selectedProvider, setSelectedProvider] = useState(project.voiceoverProvider || 'kokoro')
+  const [selectedVoice, setSelectedVoice] = useState(project.voiceoverVoiceId || 'af_heart')
 
   useEffect(() => {
     setScript(project.voiceoverScript || '')
   }, [project.voiceoverScript])
+
+  // Load voices on mount
+  useEffect(() => {
+    api.montage.getVoices(project.id).then((data) => {
+      setProviders(data.providers)
+      setVoices(data.voices)
+      // If project has a saved provider/voice, use them
+      if (project.voiceoverProvider) setSelectedProvider(project.voiceoverProvider)
+      if (project.voiceoverVoiceId) setSelectedVoice(project.voiceoverVoiceId)
+    }).catch(() => { /* ignore */ })
+  }, [project.id])
+
+  const filteredVoices = voices.filter((v) => v.provider === selectedProvider)
 
   const generateScript = async () => {
     setLoading(true)
@@ -162,7 +193,10 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
   const generateAudio = async () => {
     setLoading(true)
     try {
-      await api.montage.generateVoiceover(project.id)
+      await api.montage.generateVoiceover(project.id, {
+        provider: selectedProvider,
+        voiceId: selectedVoice,
+      })
       onRefresh()
     } finally {
       setLoading(false)
@@ -236,11 +270,58 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
             </div>
 
             {project.voiceoverScriptApproved && (
-              <div className="pt-2 border-t border-border">
-                <div className="flex items-center gap-2 mb-3">
+              <div className="pt-2 border-t border-border space-y-3">
+                <div className="flex items-center gap-2">
                   <Check size={14} className="text-emerald" />
                   <span className="font-mono text-xs text-emerald uppercase">Скрипт утверждён</span>
                 </div>
+
+                {/* Provider & voice selection */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                      Провайдер
+                    </label>
+                    <select
+                      value={selectedProvider}
+                      onChange={(e) => {
+                        setSelectedProvider(e.target.value)
+                        // Auto-select first voice for new provider
+                        const provVoices = voices.filter(v => v.provider === e.target.value)
+                        if (provVoices.length > 0) setSelectedVoice(provVoices[0].id)
+                      }}
+                      className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                    >
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id} disabled={!p.configured}>
+                          {p.name}{!p.configured ? ' (не настроен)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                      Голос
+                    </label>
+                    <select
+                      value={selectedVoice}
+                      onChange={(e) => setSelectedVoice(e.target.value)}
+                      className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                    >
+                      {filteredVoices.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name} ({v.gender === 'female' ? '♀' : '♂'}{v.language !== 'multilingual' ? ` ${v.language}` : ''})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {selectedProvider === 'kokoro' && (
+                  <p className="text-xs text-amber/80">
+                    ⚠ Kokoro не поддерживает русский язык. Для русской озвучки используйте ElevenLabs.
+                  </p>
+                )}
 
                 {project.voiceoverFile ? (
                   <div className="flex items-center gap-3">
@@ -251,7 +332,8 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                   </div>
                 ) : (
                   <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
-                    <Volume2 size={14} /> Сгенерировать аудио
+                    {loading ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
+                    Сгенерировать аудио
                   </button>
                 )}
               </div>
