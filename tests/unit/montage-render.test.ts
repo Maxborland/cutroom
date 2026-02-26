@@ -18,12 +18,14 @@ import {
 vi.mock('../../server/lib/render-worker.js', () => ({
   startRender: vi.fn().mockResolvedValue('render-test-123-preview'),
   getRenderJob: vi.fn(),
+  deleteRenderJob: vi.fn(),
 }))
 
-import { startRender, getRenderJob } from '../../server/lib/render-worker.js'
+import { startRender, getRenderJob, deleteRenderJob } from '../../server/lib/render-worker.js'
 
 const mockStartRender = startRender as unknown as Mock
 const mockGetRenderJob = getRenderJob as unknown as Mock
+const mockDeleteRenderJob = deleteRenderJob as unknown as Mock
 
 const app = createApp()
 

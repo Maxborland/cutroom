@@ -7,7 +7,7 @@ import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition } from '@remotion/renderer';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { resolveProjectPath, ensureDir, withProject, type RenderJob } from './storage.js';
+import { resolveProjectPath, ensureDir, withProject, getProject, type RenderJob } from './storage.js';
 import { resolvePlan } from '../remotion/src/lib/plan-reader.js';
 import type { MontagePlan } from './storage.js';
 
@@ -46,9 +46,13 @@ const PRESETS: Record<RenderQuality, RenderConfig> = {
   },
 };
 
+/** Maximum number of completed preview renders to keep per project */
+const MAX_PREVIEW_RENDERS = 3;
+
 /**
  * Start a render job. Returns immediately with a jobId.
  * Progress is tracked in the project's RenderJob entry.
+ * Automatically cleans up old preview renders before starting.
  */
 export async function startRender(
   projectId: string,
@@ -76,6 +80,11 @@ export async function startRender(
     p.renders.push(job);
   });
 
+  // Clean up old preview renders in background (best-effort)
+  cleanupOldRenders(projectId, quality).catch((err) => {
+    console.warn(`[render] Cleanup failed for ${projectId}:`, err.message);
+  });
+
   // Fire and forget — run render in background
   doRender(projectId, plan, jobId, outputFile, config).catch((err) => {
     console.error(`[render] Job ${jobId} failed:`, err);
@@ -101,17 +110,28 @@ async function doRender(
   const resolvedPlan = resolvePlan(plan, projectDir);
 
   // Bundle Remotion project
-  const bundled = await bundle({
-    entryPoint: REMOTION_ENTRY,
-    // Avoid writing to project dir
-  });
+  let bundled: string;
+  try {
+    bundled = await bundle({
+      entryPoint: REMOTION_ENTRY,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Remotion bundle failed: ${msg}`);
+  }
 
   // Select composition
-  const composition = await selectComposition({
-    serveUrl: bundled,
-    id: 'Montage',
-    inputProps: { plan: resolvedPlan },
-  });
+  let composition;
+  try {
+    composition = await selectComposition({
+      serveUrl: bundled,
+      id: 'Montage',
+      inputProps: { plan: resolvedPlan },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Remotion composition select failed: ${msg}`);
+  }
 
   // Override dimensions and duration based on quality + plan
   const compositionWithOverrides = {
@@ -123,22 +143,28 @@ async function doRender(
   };
 
   // Render
-  await renderMedia({
-    composition: compositionWithOverrides,
-    serveUrl: bundled,
-    codec: config.codec as any,
-    outputLocation: outputFile,
-    inputProps: { plan: resolvedPlan },
-    crf: config.crf,
-    concurrency: config.concurrency,
-    onProgress: ({ progress }) => {
-      // Update progress every 5%
-      const pct = Math.round(progress * 100);
-      if (pct % 5 === 0) {
-        updateJob(projectId, jobId, { progress: pct }).catch(() => {});
-      }
-    },
-  });
+  try {
+    await renderMedia({
+      composition: compositionWithOverrides,
+      serveUrl: bundled,
+      codec: config.codec as any,
+      outputLocation: outputFile,
+      inputProps: { plan: resolvedPlan },
+      crf: config.crf,
+      concurrency: config.concurrency,
+      onProgress: ({ progress }) => {
+        const pct = Math.round(progress * 100);
+        if (pct % 5 === 0) {
+          updateJob(projectId, jobId, { progress: pct }).catch(() => {});
+        }
+      },
+    });
+  } catch (err) {
+    // Clean up partial output file on failure
+    await fs.unlink(outputFile).catch(() => {});
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Remotion render failed: ${msg}`);
+  }
 
   // Mark done
   await updateJob(projectId, jobId, {
@@ -168,8 +194,80 @@ export async function getRenderJob(
   projectId: string,
   jobId: string,
 ): Promise<RenderJob | null> {
-  const { getProject } = await import('./storage.js');
   const project = await getProject(projectId);
   if (!project) return null;
   return project.renders?.find(r => r.id === jobId) ?? null;
+}
+
+/**
+ * Delete a render job and its output file.
+ * Returns true if found and deleted, false if not found.
+ */
+export async function deleteRenderJob(
+  projectId: string,
+  jobId: string,
+): Promise<boolean> {
+  const project = await getProject(projectId);
+  if (!project) return false;
+
+  const job = project.renders?.find(r => r.id === jobId);
+  if (!job) return false;
+
+  // Don't delete currently rendering jobs
+  if (job.status === 'rendering') {
+    throw new Error('Cannot delete a render job that is currently rendering');
+  }
+
+  // Delete output file if it exists
+  if (job.outputFile) {
+    const filePath = resolveProjectPath(projectId, job.outputFile);
+    await fs.unlink(filePath).catch(() => {});
+  }
+
+  // Remove from project renders list
+  await withProject(projectId, (p) => {
+    if (p.renders) {
+      p.renders = p.renders.filter(r => r.id !== jobId);
+    }
+  });
+
+  return true;
+}
+
+/**
+ * Clean up old completed renders. Keeps the most recent MAX_PREVIEW_RENDERS
+ * for the given quality, deleting older output files and job entries.
+ */
+async function cleanupOldRenders(
+  projectId: string,
+  quality: RenderQuality,
+): Promise<void> {
+  const project = await getProject(projectId);
+  if (!project?.renders) return;
+
+  const completedByQuality = project.renders
+    .filter(r => r.quality === quality && (r.status === 'done' || r.status === 'failed'))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  if (completedByQuality.length <= MAX_PREVIEW_RENDERS) return;
+
+  const toRemove = completedByQuality.slice(MAX_PREVIEW_RENDERS);
+
+  // Delete output files
+  for (const job of toRemove) {
+    if (job.outputFile) {
+      const filePath = resolveProjectPath(projectId, job.outputFile);
+      await fs.unlink(filePath).catch(() => {});
+    }
+  }
+
+  // Remove entries from project
+  const removeIds = new Set(toRemove.map(r => r.id));
+  await withProject(projectId, (p) => {
+    if (p.renders) {
+      p.renders = p.renders.filter(r => !removeIds.has(r.id));
+    }
+  });
+
+  console.log(`[render] Cleaned up ${toRemove.length} old ${quality} render(s) for project ${projectId}`);
 }
