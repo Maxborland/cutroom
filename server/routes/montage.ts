@@ -594,7 +594,18 @@ router.post('/montage/render', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'No montage plan. Generate or upload a plan first.');
+      return;
+    }
+
+    const quality = req.body.quality === 'final' ? 'final' : 'preview';
+
+    const { startRender } = await import('../lib/render-worker.js');
+    const jobId = await startRender(project.id, project.montagePlan, quality);
+
+    res.json({ jobId, status: 'queued', quality });
   } catch (err) {
     console.error('Failed to start render:', err);
     sendApiError(res, 500, 'Failed to start render');
@@ -606,7 +617,16 @@ router.get('/montage/render/:jobId', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    const { getRenderJob } = await import('../lib/render-worker.js');
+    const job = await getRenderJob(project.id, req.params.jobId);
+
+    if (!job) {
+      sendApiError(res, 404, 'Render job not found');
+      return;
+    }
+
+    res.json(job);
   } catch (err) {
     console.error('Failed to get render status:', err);
     sendApiError(res, 500, 'Failed to get render status');
@@ -618,7 +638,32 @@ router.get('/montage/render/:jobId/download', async (req: Request, res: Response
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    const { getRenderJob } = await import('../lib/render-worker.js');
+    const job = await getRenderJob(project.id, req.params.jobId);
+
+    if (!job) {
+      sendApiError(res, 404, 'Render job not found');
+      return;
+    }
+
+    if (job.status !== 'done' || !job.outputFile) {
+      sendApiError(res, 400, `Render not complete. Status: ${job.status}`);
+      return;
+    }
+
+    const filePath = resolveProjectPath(project.id, job.outputFile);
+    try {
+      await fs.access(filePath);
+    } catch {
+      sendApiError(res, 404, 'Rendered file not found on disk');
+      return;
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${job.id}.mp4"`);
+    const stream = fsCb.createReadStream(filePath);
+    stream.pipe(res);
   } catch (err) {
     console.error('Failed to download render:', err);
     sendApiError(res, 500, 'Failed to download render');
