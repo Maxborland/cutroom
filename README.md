@@ -1,20 +1,51 @@
-# CutRoom Video Pipeline
+<div align="center">
 
-AI-assisted pipeline for producing short marketing videos from a brief: script generation, shot planning, image/video generation, review, and export.
+# CutRoom
 
-## Stack
+**AI-powered video production pipeline. From brief to 4K render.**
 
-- Frontend: React 19, TypeScript, Vite, Zustand, Tailwind
-- Backend: Express 5, file-based storage (`data/projects`)
-- Tests: Vitest (unit/integration/components), Playwright (e2e)
+[![React](https://img.shields.io/badge/React-19-61dafb)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
+[![Remotion](https://img.shields.io/badge/Remotion-Render-0B84F3)](https://remotion.dev/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+
+</div>
+
+---
+
+## Overview
+
+CutRoom automates the video production workflow that typically requires a team of scriptwriters, designers, video editors, and sound engineers. One person can produce professional marketing videos end-to-end using AI.
 
 ## Pipeline
 
-`Brief -> Script -> Shots -> Review -> Export`
+```
+Brief → Script → Shot Planning → Image/Video Generation → Review → Voiceover → Music → Montage → 4K Render
+```
 
-Shot statuses: `draft -> img_gen -> img_review -> vid_gen -> vid_review -> approved`.
+## Features
 
-## Local Development
+- 🎬 **Script Generation** — AI writes video scripts from a brief
+- 🎨 **Shot Planning** — Automatic shot breakdown with scene descriptions
+- 🖼 **AI Image/Video Gen** — fal.ai, Replicate, OpenRouter integration
+- 👁 **Director Review** — Human-in-the-loop approval for each shot
+- 🎙 **Voiceover** — ElevenLabs TTS with script-to-speech pipeline
+- 🎵 **Music** — LLM-generated prompts for Suno + manual upload
+- 🎞 **Auto-Montage** — Heuristic-based timeline assembly with transitions
+- 📐 **4K Render** — Remotion-powered deterministic video rendering
+- 🔄 **LLM Refinement** — Refine montage plan with natural language feedback
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19 + TypeScript + Zustand + Tailwind CSS + Vite |
+| Backend | Express 5 + file-based storage |
+| AI/ML | OpenRouter, fal.ai, Replicate, ElevenLabs |
+| Video | Remotion + ffmpeg (normalize, Ken Burns, encode) |
+| Testing | Vitest (unit) + Playwright (E2E) |
+
+## Quick Start
 
 ```bash
 npm install
@@ -22,38 +53,26 @@ npm run dev:all
 ```
 
 - Frontend: `http://localhost:5173`
-- API server: `http://localhost:3001`
+- API: `http://localhost:3001`
 
-### API Access Key Mode
+## Architecture
 
-- By default, local development allows requests without `API_ACCESS_KEY`.
-- If `REQUIRE_API_ACCESS_KEY=true`, missing `API_ACCESS_KEY` returns `503` for `/api/*` (except `/api/health`).
-- Set `REQUIRE_API_ACCESS_KEY=false` (or leave unset) for local/dev work.
-- Model discovery timeout is controlled by `MODEL_DISCOVERY_TIMEOUT_MS` (default: `5000`).
+```
+server/
+├── routes/montage.ts      # Montage pipeline endpoints
+├── lib/storage.ts         # Project types & file-based storage
+├── lib/montage-plan.ts    # Heuristic plan generation
+├── lib/normalize.ts       # ffmpeg clip normalization
+├── lib/config.ts          # Global settings
+└── lib/openrouter.ts      # LLM integration
 
-## Quality Gates
-
-```bash
-npm run lint
-npm run build
-npm run test
-npm run test:integration
-npm run test:components
+src/
+├── components/            # React UI components
+├── lib/api.ts             # API client
+├── stores/                # Zustand state
+└── types/                 # TypeScript interfaces
 ```
 
-## Settings Contracts
+## License
 
-Global settings source of truth: `server/lib/config.ts` (`data/settings.json`), including:
-
-- API keys: `openRouterApiKey`, `falApiKey`, `replicateApiToken`
-- Defaults: `default*Model` values for text/describe/script/split/review/image/enhance/imageGen/videoGen/audioGen/director
-- Generation params: `imageSize`, `imageQuality`, `enhanceSize`, `enhanceQuality`, `imageAspectRatio`
-- Master prompts: `masterPrompt*`
-
-Project-level settings source of truth: `server/lib/storage.ts` (`project.json`):
-
-- `scriptwriterPrompt`, `shotSplitterPrompt`, `model`, `temperature`
-
-## Fallback Behavior
-
-Image fallback to OpenRouter uses an OpenRouter-compatible model id. If a provider-specific model (`fal/*`, `rep/*`) reaches OpenRouter fallback, it is remapped to a safe OpenRouter default (`openai/gpt-image-1`).
+AGPL-3.0 License — see [LICENSE](LICENSE) for details.
