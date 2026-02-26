@@ -154,22 +154,37 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
       || 'pNInz6obpgDQGcFmaJgB'; // Default ElevenLabs voice (Adam)
 
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': elevenLabsApiKey,
-        'Content-Type': 'application/json',
-        'Accept': 'audio/mpeg',
-      },
-      body: JSON.stringify({
-        text: scriptAtGeneration,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
+    const ttsController = new AbortController();
+    const ttsTimeout = setTimeout(() => ttsController.abort(), 120_000); // 2 min timeout
+
+    let response: globalThis.Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': elevenLabsApiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg',
         },
-      }),
-    });
+        body: JSON.stringify({
+          text: scriptAtGeneration,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+          },
+        }),
+        signal: ttsController.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(ttsTimeout);
+      if (ttsController.signal.aborted) {
+        sendApiError(res, 504, 'ElevenLabs TTS request timed out (120s)');
+        return;
+      }
+      throw fetchErr;
+    }
+    clearTimeout(ttsTimeout);
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error');
@@ -630,6 +645,34 @@ router.get('/montage/render/:jobId', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Failed to get render status:', err);
     sendApiError(res, 500, 'Failed to get render status');
+  }
+});
+
+// DELETE /api/projects/:id/montage/render/:jobId
+router.delete('/montage/render/:jobId', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { deleteRenderJob } = await import('../lib/render-worker.js');
+
+    try {
+      const deleted = await deleteRenderJob(project.id, req.params.jobId);
+      if (!deleted) {
+        sendApiError(res, 404, 'Render job not found');
+        return;
+      }
+      res.json({ deleted: true });
+    } catch (deleteErr) {
+      if (deleteErr instanceof Error && deleteErr.message.includes('currently rendering')) {
+        sendApiError(res, 409, deleteErr.message);
+        return;
+      }
+      throw deleteErr;
+    }
+  } catch (err) {
+    console.error('Failed to delete render job:', err);
+    sendApiError(res, 500, 'Failed to delete render job');
   }
 });
 
