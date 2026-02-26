@@ -33,6 +33,23 @@ vi.mock('../../server/lib/normalize.js', () => ({
   probeDuration: vi.fn().mockResolvedValue(30),
 }))
 
+vi.mock('../../server/lib/tts-providers.js', () => ({
+  getAvailableProviders: vi.fn().mockResolvedValue([
+    { id: 'kokoro', name: 'Kokoro (fal.ai)', configured: true },
+    { id: 'elevenlabs', name: 'ElevenLabs', configured: true },
+  ]),
+  getVoices: vi.fn().mockReturnValue([
+    { id: 'af_heart', name: 'Heart', gender: 'female', language: 'en-US', provider: 'kokoro' },
+    { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', language: 'multilingual', provider: 'elevenlabs' },
+  ]),
+  generateSpeech: vi.fn().mockResolvedValue({
+    audioBuffer: Buffer.from('fake-tts-audio'),
+    contentType: 'audio/mpeg',
+    provider: 'kokoro',
+    voiceId: 'af_heart',
+  }),
+}))
+
 vi.mock('../../server/lib/montage-plan.js', () => ({
   generateMontagePlan: vi.fn().mockReturnValue({
     version: 1,
@@ -169,26 +186,36 @@ describe('Montage Integration', () => {
 
   // ─── Voiceover Audio ──────────────────────────────────────────────
 
+  describe('GET /montage/voices', () => {
+    it('returns available providers and voices', async () => {
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/montage/voices`)
+        .expect(200)
+
+      expect(res.body.providers).toBeInstanceOf(Array)
+      expect(res.body.providers.length).toBeGreaterThan(0)
+      expect(res.body.voices).toBeInstanceOf(Array)
+      expect(res.body.voices.length).toBeGreaterThan(0)
+      expect(res.body.voices[0]).toHaveProperty('id')
+      expect(res.body.voices[0]).toHaveProperty('provider')
+    })
+  })
+
   describe('POST /montage/generate-voiceover', () => {
-    it('calls ElevenLabs and saves audio file', async () => {
+    it('generates voiceover via TTS provider and saves audio', async () => {
       await withProject(projectId, (proj) => {
         proj.voiceoverScript = 'Script for TTS'
         proj.voiceoverScriptApproved = true
       })
 
-      const audioData = Buffer.from('fake-mp3-data')
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        arrayBuffer: () => Promise.resolve(audioData.buffer.slice(audioData.byteOffset, audioData.byteOffset + audioData.byteLength)),
-      })
-
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
+        .send({ provider: 'kokoro', voiceId: 'af_heart' })
         .expect(200)
 
       expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
-      expect(res.body.provider).toBe('elevenlabs')
-      expect(mockFetch).toHaveBeenCalledOnce()
+      expect(res.body.provider).toBe('kokoro')
+      expect(res.body.voiceId).toBe('af_heart')
     })
 
     it('returns 400 when script not approved', async () => {
@@ -202,23 +229,24 @@ describe('Montage Integration', () => {
         .expect(400)
     })
 
-    it('returns 500 when ElevenLabs returns error', async () => {
+    it('returns 400 when provider not configured', async () => {
       await withProject(projectId, (proj) => {
         proj.voiceoverScript = 'Script'
         proj.voiceoverScriptApproved = true
       })
 
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        text: () => Promise.resolve('Unauthorized'),
-      })
+      const { getAvailableProviders } = await import('../../server/lib/tts-providers.js')
+      vi.mocked(getAvailableProviders).mockResolvedValueOnce([
+        { id: 'kokoro', name: 'Kokoro', configured: false },
+        { id: 'elevenlabs', name: 'ElevenLabs', configured: false },
+      ])
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
-        .expect(500)
+        .send({ provider: 'elevenlabs', voiceId: 'pNInz6obpgDQGcFmaJgB' })
+        .expect(400)
 
-      expect(res.body.error).toContain('ElevenLabs API error')
+      expect(res.body.error).toContain('API key')
     })
   })
 

@@ -248,8 +248,13 @@ export const api = {
       }),
     approveVoScript: (projectId: string) =>
       request<Project>(`/projects/${projectId}/montage/approve-vo-script`, { method: 'POST' }),
+    getVoices: (projectId: string) =>
+      request<{
+        providers: { id: string; name: string; configured: boolean }[];
+        voices: { id: string; name: string; gender: string; language: string; provider: string }[];
+      }>(`/projects/${projectId}/montage/voices`),
     generateVoiceover: (projectId: string, options?: { provider?: string; voiceId?: string }) =>
-      request<{ voiceoverFile: string }>(`/projects/${projectId}/montage/generate-voiceover`, {
+      request<{ voiceoverFile: string; provider: string; voiceId: string }>(`/projects/${projectId}/montage/generate-voiceover`, {
         method: 'POST',
         body: JSON.stringify(options ?? {}),
       }),

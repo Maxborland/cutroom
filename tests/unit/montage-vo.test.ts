@@ -19,7 +19,25 @@ vi.mock('../../server/lib/openrouter.js', () => ({
   generateImage: vi.fn(),
 }))
 
-// Mock global fetch for ElevenLabs
+// Mock tts-providers to avoid real API calls
+vi.mock('../../server/lib/tts-providers.js', () => ({
+  getAvailableProviders: vi.fn().mockResolvedValue([
+    { id: 'kokoro', name: 'Kokoro (fal.ai)', configured: true },
+    { id: 'elevenlabs', name: 'ElevenLabs', configured: true },
+  ]),
+  getVoices: vi.fn().mockReturnValue([
+    { id: 'af_heart', name: 'Heart', gender: 'female', language: 'en-US', provider: 'kokoro' },
+    { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', language: 'multilingual', provider: 'elevenlabs' },
+  ]),
+  generateSpeech: vi.fn().mockResolvedValue({
+    audioBuffer: Buffer.from('fake-tts-audio'),
+    contentType: 'audio/mpeg',
+    provider: 'elevenlabs',
+    voiceId: 'pNInz6obpgDQGcFmaJgB',
+  }),
+}))
+
+// Mock global fetch (kept for any remaining direct fetch calls)
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
@@ -203,58 +221,60 @@ describe('Montage Voiceover Pipeline', () => {
   // ─── POST /montage/generate-voiceover ─────────────────────────────
 
   describe('POST /montage/generate-voiceover', () => {
-    it('should generate voiceover audio via ElevenLabs when approved', async () => {
+    it('should generate voiceover audio via TTS provider when approved', async () => {
       await withProject(projectId, (proj) => {
         proj.voiceoverScript = 'Текст для озвучки.'
         proj.voiceoverScriptApproved = true
       })
 
-      // Write a settings file with ElevenLabs key
-      const settingsPath = path.join(process.cwd(), 'data', 'settings.json')
-      const existingSettings = JSON.parse(await fs.readFile(settingsPath, 'utf-8').catch(() => '{}'))
-      await fs.writeFile(settingsPath, JSON.stringify({
-        ...existingSettings,
-        elevenLabsApiKey: 'test-eleven-labs-key',
-        defaultVoiceoverVoiceId: 'test-voice-id',
-      }, null, 2))
-
-      // Mock the fetch for ElevenLabs
-      const audioBuffer = Buffer.from('fake-audio-data')
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        arrayBuffer: async () => audioBuffer.buffer.slice(
-          audioBuffer.byteOffset,
-          audioBuffer.byteOffset + audioBuffer.byteLength,
-        ),
+      const { generateSpeech } = await import('../../server/lib/tts-providers.js')
+      vi.mocked(generateSpeech).mockResolvedValueOnce({
+        audioBuffer: Buffer.from('fake-audio-data'),
+        contentType: 'audio/mpeg',
+        provider: 'kokoro' as any,
+        voiceId: 'af_heart',
       })
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
+        .send({ provider: 'kokoro', voiceId: 'af_heart' })
         .expect(200)
 
       expect(res.body).toHaveProperty('voiceoverFile')
       expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
-      expect(res.body.provider).toBe('elevenlabs')
+      expect(res.body.provider).toBe('kokoro')
+      expect(res.body.voiceId).toBe('af_heart')
 
-      // Verify fetch was called with correct ElevenLabs params
-      expect(mockFetch).toHaveBeenCalledOnce()
-      const [url, opts] = mockFetch.mock.calls[0]
-      expect(url).toContain('https://api.elevenlabs.io/v1/text-to-speech/test-voice-id')
-      expect(opts.method).toBe('POST')
-      expect(opts.headers['xi-api-key']).toBe('test-eleven-labs-key')
-      const body = JSON.parse(opts.body)
-      expect(body.text).toBe('Текст для озвучки.')
-      expect(body.model_id).toBe('eleven_multilingual_v2')
-
-      // Verify file was saved
-      const filePath = resolveProjectPath(projectId, 'montage', 'voiceover.mp3')
-      const stat = await fs.stat(filePath)
-      expect(stat.isFile()).toBe(true)
+      // Verify generateSpeech was called correctly
+      expect(generateSpeech).toHaveBeenCalledWith('Текст для озвучки.', 'kokoro', 'af_heart')
 
       // Verify project updated
       const updated = await getProject(projectId)
       expect(updated!.voiceoverFile).toBe('montage/voiceover.mp3')
-      expect(updated!.voiceoverProvider).toBe('elevenlabs')
+      expect(updated!.voiceoverProvider).toBe('kokoro')
+      expect(updated!.voiceoverVoiceId).toBe('af_heart')
+    })
+
+    it('should generate wav when Kokoro returns audio/wav', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = 'English text.'
+        proj.voiceoverScriptApproved = true
+      })
+
+      const { generateSpeech } = await import('../../server/lib/tts-providers.js')
+      vi.mocked(generateSpeech).mockResolvedValueOnce({
+        audioBuffer: Buffer.from('fake-wav-data'),
+        contentType: 'audio/wav',
+        provider: 'kokoro' as any,
+        voiceId: 'af_heart',
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-voiceover`)
+        .send({ provider: 'kokoro', voiceId: 'af_heart' })
+        .expect(200)
+
+      expect(res.body.voiceoverFile).toBe('montage/voiceover.wav')
     })
 
     it('should return 400 if voiceover script not approved', async () => {
@@ -270,25 +290,25 @@ describe('Montage Voiceover Pipeline', () => {
       expect(res.body.error).toBeTruthy()
     })
 
-    it('should return 400 if no ElevenLabs API key configured', async () => {
+    it('should return 400 if provider API key not configured', async () => {
       await withProject(projectId, (proj) => {
         proj.voiceoverScript = 'Текст.'
         proj.voiceoverScriptApproved = true
+        proj.voiceoverVoiceId = undefined as any
       })
 
-      // Overwrite settings with no ElevenLabs key
-      const settingsPath = path.join(process.cwd(), 'data', 'settings.json')
-      const existingSettings = JSON.parse(await fs.readFile(settingsPath, 'utf-8').catch(() => '{}'))
-      await fs.writeFile(settingsPath, JSON.stringify({
-        ...existingSettings,
-        elevenLabsApiKey: '',
-      }, null, 2))
+      const { getAvailableProviders } = await import('../../server/lib/tts-providers.js')
+      vi.mocked(getAvailableProviders).mockResolvedValueOnce([
+        { id: 'kokoro', name: 'Kokoro (fal.ai)', configured: false },
+        { id: 'elevenlabs', name: 'ElevenLabs', configured: false },
+      ])
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
+        .send({ provider: 'kokoro', voiceId: 'af_heart' })
         .expect(400)
 
-      expect(res.body.error).toContain('ElevenLabs')
+      expect(res.body.error).toContain('API key')
     })
 
     it('should return 404 for non-existent project', async () => {

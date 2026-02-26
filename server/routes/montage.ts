@@ -128,6 +128,20 @@ router.post('/montage/approve-vo-script', async (req: Request, res: Response) =>
   }
 });
 
+// GET /api/projects/:id/montage/voices
+// Returns available TTS providers and voices
+router.get('/montage/voices', async (_req: Request, res: Response) => {
+  try {
+    const { getAvailableProviders, getVoices } = await import('../lib/tts-providers.js');
+    const providers = await getAvailableProviders();
+    const voices = getVoices();
+    res.json({ providers, voices });
+  } catch (err) {
+    console.error('Failed to get voices:', err);
+    sendApiError(res, 500, 'Failed to get voices');
+  }
+});
+
 // POST /api/projects/:id/montage/generate-voiceover
 router.post('/montage/generate-voiceover', async (req: Request, res: Response) => {
   try {
@@ -142,67 +156,58 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     // Capture the script text at generation time for TOCTOU comparison
     const scriptAtGeneration = project.voiceoverScript || '';
 
+    // Determine provider and voice from request body → project → settings → defaults
     const settings = await getGlobalSettings();
-    const elevenLabsApiKey = settings.elevenLabsApiKey;
-    if (!elevenLabsApiKey) {
-      sendApiError(res, 400, 'ElevenLabs API key is not configured. Please set it in Settings.');
+    const { getAvailableProviders, generateSpeech } = await import('../lib/tts-providers.js');
+    type TtsProvider = 'kokoro' | 'elevenlabs';
+
+    const requestedProvider = (req.body.provider || project.voiceoverProvider || settings.defaultVoiceoverProvider || 'kokoro') as TtsProvider;
+    const requestedVoice = req.body.voiceId || project.voiceoverVoiceId || settings.defaultVoiceoverVoiceId || (requestedProvider === 'kokoro' ? 'af_heart' : 'pNInz6obpgDQGcFmaJgB');
+
+    // Validate provider is a known value
+    const validProviders: TtsProvider[] = ['kokoro', 'elevenlabs'];
+    if (!validProviders.includes(requestedProvider)) {
+      sendApiError(res, 400, `Unknown TTS provider: ${String(requestedProvider).slice(0, 50)}`);
       return;
     }
 
-    const voiceId = project.voiceoverVoiceId
-      || settings.defaultVoiceoverVoiceId
-      || 'pNInz6obpgDQGcFmaJgB'; // Default ElevenLabs voice (Adam)
-
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
-    const ttsController = new AbortController();
-    const ttsTimeout = setTimeout(() => ttsController.abort(), 120_000); // 2 min timeout
-
-    let response: globalThis.Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'xi-api-key': elevenLabsApiKey,
-          'Content-Type': 'application/json',
-          'Accept': 'audio/mpeg',
-        },
-        body: JSON.stringify({
-          text: scriptAtGeneration,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-          },
-        }),
-        signal: ttsController.signal,
-      });
-    } catch (fetchErr) {
-      clearTimeout(ttsTimeout);
-      if (ttsController.signal.aborted) {
-        sendApiError(res, 504, 'ElevenLabs TTS request timed out (120s)');
-        return;
-      }
-      throw fetchErr;
-    }
-    clearTimeout(ttsTimeout);
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      sendApiError(res, 500, `ElevenLabs API error (${response.status}): ${errorText}`);
+    // Validate voiceId belongs to the selected provider
+    const { getVoices } = await import('../lib/tts-providers.js');
+    const providerVoices = getVoices(requestedProvider);
+    if (providerVoices.length > 0 && !providerVoices.some(v => v.id === requestedVoice)) {
+      sendApiError(res, 400, `Voice '${String(requestedVoice).slice(0, 50)}' does not belong to provider '${requestedProvider}'`);
       return;
     }
 
-    const audioBuffer = Buffer.from(await response.arrayBuffer());
+    // Verify provider is configured
+    const providers = await getAvailableProviders();
+    const providerInfo = providers.find(p => p.id === requestedProvider);
+    if (!providerInfo?.configured) {
+      const keyName = requestedProvider === 'kokoro' ? 'fal.ai' : 'ElevenLabs';
+      sendApiError(res, 400, `${keyName} API key is not configured. Please set it in Settings.`);
+      return;
+    }
+
+    // Generate speech
+    const result = await generateSpeech(scriptAtGeneration, requestedProvider, requestedVoice);
+
+    // Validate audio content type before writing to disk
+    const allowedAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/wave', 'audio/x-wav'];
+    if (!allowedAudioTypes.some(t => result.contentType.includes(t))) {
+      sendApiError(res, 500, `Unexpected audio content type from TTS provider: ${result.contentType.slice(0, 50)}`);
+      return;
+    }
 
     // Write to unique temp file first, promote only after validation passes
     const montageDir = resolveProjectPath(project.id, 'montage');
     await ensureDir(montageDir);
-    const tmpName = `voiceover_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.tmp.mp3`;
+    const ext = result.contentType.includes('wav') ? 'wav' : 'mp3';
+    const tmpName = `voiceover_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.tmp.${ext}`;
     const tmpPath = path.join(montageDir, tmpName);
-    await fs.writeFile(tmpPath, audioBuffer);
+    await fs.writeFile(tmpPath, result.audioBuffer);
 
     // Re-check approval AND script content inside withProject to prevent TOCTOU race
-    // (user may have edited script during the long TTS request, resetting approval or changing text)
+    const finalFilename = `voiceover.${ext}`;
     const updateResult = await withProject(project.id, (proj) => {
       if (!proj.voiceoverScriptApproved) {
         return { error: 'Voiceover script approval was reset during generation. Please re-approve and try again.' } as const;
@@ -210,26 +215,31 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
       if (proj.voiceoverScript !== scriptAtGeneration) {
         return { error: 'Voiceover script was modified during generation. Please re-approve and regenerate.' } as const;
       }
-      proj.voiceoverFile = 'montage/voiceover.mp3';
-      proj.voiceoverProvider = 'elevenlabs';
+      proj.voiceoverFile = `montage/${finalFilename}`;
+      proj.voiceoverProvider = requestedProvider;
+      proj.voiceoverVoiceId = requestedVoice;
       return { ok: true } as const;
     });
 
     if ('error' in updateResult) {
-      // Clean up temp file since validation failed
       await fs.unlink(tmpPath).catch(() => {});
       sendApiError(res, 409, updateResult.error);
       return;
     }
 
-    // Promote temp file to final path (atomic on same filesystem)
-    const voiceoverPath = path.join(montageDir, 'voiceover.mp3');
+    // Promote temp file to final path
+    const voiceoverPath = path.join(montageDir, finalFilename);
     await fs.rename(tmpPath, voiceoverPath);
 
-    res.json({ voiceoverFile: 'montage/voiceover.mp3', provider: 'elevenlabs' });
+    res.json({
+      voiceoverFile: `montage/${finalFilename}`,
+      provider: requestedProvider,
+      voiceId: requestedVoice,
+    });
   } catch (err) {
     console.error('Failed to generate voiceover:', err);
-    sendApiError(res, 500, 'Failed to generate voiceover');
+    const msg = err instanceof Error ? err.message : 'Failed to generate voiceover';
+    sendApiError(res, 500, msg);
   }
 });
 
@@ -253,7 +263,9 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
       return;
     }
 
-    res.setHeader('Content-Type', 'audio/mpeg');
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeType = ext === '.wav' ? 'audio/wav' : 'audio/mpeg';
+    res.setHeader('Content-Type', mimeType);
     const stream = fsCb.createReadStream(filePath);
     stream.on('error', (err) => {
       console.error('Stream error:', err);
