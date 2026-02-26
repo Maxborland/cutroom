@@ -7,6 +7,7 @@ import { ScriptView } from './components/ScriptView'
 import { ShotBoard } from './components/ShotBoard'
 import { ReviewView } from './components/ReviewView'
 import { ExportView } from './components/ExportView'
+import { MontageView } from './components/MontageView'
 import { SettingsView } from './components/SettingsView'
 import { DirectorView } from './components/DirectorView'
 import { Toaster } from './components/Toaster'
@@ -123,6 +124,8 @@ function AppShell() {
         return <ShotBoard />
       case 'review':
         return <ReviewView />
+      case 'montage':
+        return <MontageView />
       case 'export':
         return <ExportView />
       case 'settings':

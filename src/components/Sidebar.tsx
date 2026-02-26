@@ -16,11 +16,12 @@ import type { PipelineStage } from '../types'
 import { useProjectStore } from '../stores/projectStore'
 import { motion, AnimatePresence } from 'framer-motion'
 
-const STAGES: { id: PipelineStage; label: string; icon: React.ReactNode }[] = [
+const STAGES: { id: PipelineStage | 'montage'; label: string; icon: React.ReactNode }[] = [
   { id: 'brief', label: 'Бриф', icon: <FileText size={18} /> },
   { id: 'script', label: 'Сценарий', icon: <Film size={18} /> },
   { id: 'shots', label: 'Шоты', icon: <LayoutGrid size={18} /> },
   { id: 'review', label: 'Ревью', icon: <Clapperboard size={18} /> },
+  { id: 'montage', label: 'Монтаж', icon: <Crown size={18} /> },
   { id: 'export', label: 'Экспорт', icon: <Download size={18} /> },
 ]
 
