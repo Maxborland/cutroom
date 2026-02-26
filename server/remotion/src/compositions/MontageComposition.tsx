@@ -66,6 +66,7 @@ export const MontageComposition: React.FC<MontageCompositionProps> = ({ plan }) 
         musicDuckingDb={plan.musicDuckingDb}
         musicDuckFadeMs={plan.musicDuckFadeMs}
         introFrames={plan.introFrames}
+        outroFrames={plan.outroFrames}
         totalDurationFrames={plan.totalDurationFrames}
         fps={plan.fps}
       />

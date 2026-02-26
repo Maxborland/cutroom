@@ -9,8 +9,17 @@ interface AudioMixerProps {
   musicDuckingDb: number;
   musicDuckFadeMs: number;
   introFrames: number;
+  outroFrames: number;
   totalDurationFrames: number;
   fps: number;
+}
+
+/** Convert absolute path to file:// URL for Remotion media */
+function toFileUrl(filePath: string): string {
+  if (!filePath) return filePath;
+  if (filePath.startsWith('file://')) return filePath;
+  if (filePath.startsWith('/')) return `file://${filePath}`;
+  return filePath;
 }
 
 function dbToLinear(db: number): number {
@@ -25,6 +34,7 @@ export const AudioMixer: React.FC<AudioMixerProps> = ({
   musicDuckingDb,
   musicDuckFadeMs,
   introFrames,
+  outroFrames,
   totalDurationFrames,
   fps,
 }) => {
@@ -33,7 +43,7 @@ export const AudioMixer: React.FC<AudioMixerProps> = ({
 
   // Music volume: full during intro/outro, ducked during voiceover
   const voStart = introFrames;
-  const voEnd = totalDurationFrames - Math.round(4 * fps); // outro ~4s
+  const voEnd = totalDurationFrames - outroFrames;
 
   const musicVolumeDb = interpolate(
     frame,
@@ -51,12 +61,12 @@ export const AudioMixer: React.FC<AudioMixerProps> = ({
     <>
       {voiceoverFile && (
         <Sequence from={introFrames}>
-          <Audio src={voiceoverFile} volume={dbToLinear(voiceoverGainDb)} />
+          <Audio src={toFileUrl(voiceoverFile)} volume={dbToLinear(voiceoverGainDb)} />
         </Sequence>
       )}
       {musicFile && (
         <Sequence from={0} durationInFrames={totalDurationFrames}>
-          <Audio src={musicFile} volume={dbToLinear(musicVolumeDb)} loop />
+          <Audio src={toFileUrl(musicFile)} volume={dbToLinear(musicVolumeDb)} loop />
         </Sequence>
       )}
     </>

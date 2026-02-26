@@ -113,12 +113,13 @@ async function doRender(
     inputProps: { plan: resolvedPlan },
   });
 
-  // Override dimensions based on quality
+  // Override dimensions and duration based on quality + plan
   const compositionWithOverrides = {
     ...composition,
     width: config.width,
     height: config.height,
     fps: config.fps,
+    durationInFrames: resolvedPlan.totalDurationFrames,
   };
 
   // Render

@@ -7,8 +7,6 @@ interface TransitionProps {
 }
 
 export const Transition: React.FC<TransitionProps> = ({ transition }) => {
-  const frame = useCurrentFrame();
-
   if (transition.type === 'cut' || transition.durationFrames === 0) {
     return null; // cuts have no visual overlay
   }

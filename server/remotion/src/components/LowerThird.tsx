@@ -9,12 +9,24 @@ interface LowerThirdProps {
 }
 
 export const LowerThirdOverlay: React.FC<LowerThirdProps> = ({ lowerThird, style }) => {
-  const frame = useCurrentFrame();
+  return (
+    <Sequence from={lowerThird.appearAtFrame} durationInFrames={lowerThird.durationFrames}>
+      <LowerThirdInner text={lowerThird.text} durationFrames={lowerThird.durationFrames} style={style} />
+    </Sequence>
+  );
+};
+
+/** Inner component so useCurrentFrame() returns sequence-relative frames */
+const LowerThirdInner: React.FC<{ text: string; durationFrames: number; style: MontagePlan['style'] }> = ({
+  text,
+  durationFrames,
+  style,
+}) => {
+  const frame = useCurrentFrame(); // now relative to Sequence start
   const fadeIn = 8;
   const fadeOut = 8;
-  const dur = lowerThird.durationFrames;
 
-  const opacity = interpolate(frame, [0, fadeIn, dur - fadeOut, dur], [0, 1, 1, 0], {
+  const opacity = interpolate(frame, [0, fadeIn, durationFrames - fadeOut, durationFrames], [0, 1, 1, 0], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
@@ -25,37 +37,35 @@ export const LowerThirdOverlay: React.FC<LowerThirdProps> = ({ lowerThird, style
   });
 
   return (
-    <Sequence from={lowerThird.appearAtFrame} durationInFrames={dur}>
+    <div
+      style={{
+        position: 'absolute',
+        bottom: 120,
+        left: 80,
+        opacity,
+        transform: `translateX(${slideX}px)`,
+        zIndex: 20,
+      }}
+    >
       <div
         style={{
-          position: 'absolute',
-          bottom: 120,
-          left: 80,
-          opacity,
-          transform: `translateX(${slideX}px)`,
-          zIndex: 20,
+          backgroundColor: `${style.primaryColor}CC`,
+          padding: '16px 32px',
+          borderLeft: `4px solid ${style.secondaryColor}`,
         }}
       >
-        <div
+        <span
           style={{
-            backgroundColor: `${style.primaryColor}CC`,
-            padding: '16px 32px',
-            borderLeft: `4px solid ${style.secondaryColor}`,
+            fontFamily: style.fontFamily,
+            fontSize: 42,
+            color: style.textColor,
+            letterSpacing: 2,
+            textTransform: 'uppercase',
           }}
         >
-          <span
-            style={{
-              fontFamily: style.fontFamily,
-              fontSize: 42,
-              color: style.textColor,
-              letterSpacing: 2,
-              textTransform: 'uppercase',
-            }}
-          >
-            {lowerThird.text}
-          </span>
-        </div>
+          {text}
+        </span>
       </div>
-    </Sequence>
+    </div>
   );
 };
