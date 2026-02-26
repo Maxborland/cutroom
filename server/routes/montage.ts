@@ -453,7 +453,41 @@ router.post('/montage/generate-plan', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    const approvedShots = project.shots.filter(s => s.status === 'approved');
+    if (approvedShots.length === 0) {
+      sendApiError(res, 400, 'No approved shots. Approve at least one shot before generating a montage plan.');
+      return;
+    }
+
+    // Determine voiceover duration
+    let voiceoverDurationSec: number;
+
+    if (project.voiceoverFile) {
+      const voPath = resolveProjectPath(project.id, project.voiceoverFile);
+      const { probeDuration } = await import('../lib/normalize.js');
+      voiceoverDurationSec = await probeDuration(voPath);
+    } else {
+      // Estimate from script: ~150 words/min for Russian
+      const wordCount = (project.script || '').split(/\s+/).filter(Boolean).length;
+      voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
+    }
+
+    // Normalize clips
+    const { normalizeClips } = await import('../lib/normalize.js');
+    await normalizeClips(project.id, approvedShots);
+
+    // Generate plan
+    const { generateMontagePlan } = await import('../lib/montage-plan.js');
+    const montagePlan = generateMontagePlan(project, voiceoverDurationSec);
+
+    // Save to project
+    await withProject(project.id, (p) => {
+      p.montagePlan = montagePlan;
+      p.stage = 'montage_draft';
+    });
+
+    res.json({ montagePlan });
   } catch (err) {
     console.error('Failed to generate montage plan:', err);
     sendApiError(res, 500, 'Failed to generate montage plan');
@@ -465,7 +499,24 @@ router.put('/montage/plan', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    const { montagePlan } = req.body;
+    if (!montagePlan) {
+      sendApiError(res, 400, 'montagePlan is required');
+      return;
+    }
+
+    // Validate required fields
+    if (!montagePlan.version || !montagePlan.timeline || !montagePlan.format || !montagePlan.audio || !montagePlan.style) {
+      sendApiError(res, 400, 'Invalid montagePlan: missing required fields (version, timeline, format, audio, style)');
+      return;
+    }
+
+    await withProject(project.id, (p) => {
+      p.montagePlan = montagePlan;
+    });
+
+    res.json({ montagePlan });
   } catch (err) {
     console.error('Failed to update montage plan:', err);
     sendApiError(res, 500, 'Failed to update montage plan');
@@ -477,7 +528,61 @@ router.post('/montage/refine-plan', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
-    sendApiError(res, 501, 'Not implemented yet');
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'No montage plan exists. Generate a plan first.');
+      return;
+    }
+
+    const { feedback } = req.body;
+    if (!feedback || !feedback.trim()) {
+      sendApiError(res, 400, 'feedback is required');
+      return;
+    }
+
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 500, 'OpenRouter API key not configured');
+      return;
+    }
+
+    const systemPrompt = `You are a professional video editor. Given the current montage plan (JSON) and user feedback, output an updated JSON plan. Change only what the feedback asks. Preserve the overall structure. Return ONLY valid JSON, no markdown.`;
+
+    const messages = [
+      { role: 'system' as const, content: systemPrompt },
+      {
+        role: 'user' as const,
+        content: `Current montage plan:\n${JSON.stringify(project.montagePlan, null, 2)}\n\nFeedback: ${feedback}`,
+      },
+    ];
+
+    const settings = await getGlobalSettings();
+    const model = settings.defaultTextModel || 'openai/gpt-4o';
+
+    const llmResponse = await chatCompletion(model, messages);
+
+    // Parse LLM response as JSON
+    let refinedPlan;
+    try {
+      // Strip markdown code fences if present
+      const cleaned = llmResponse.replace(/```json?\n?/g, '').replace(/```\n?/g, '').trim();
+      refinedPlan = JSON.parse(cleaned);
+    } catch {
+      sendApiError(res, 500, 'LLM returned invalid JSON for refined plan');
+      return;
+    }
+
+    // Validate refined plan has required structure
+    if (!refinedPlan.version || !refinedPlan.timeline || !refinedPlan.format || !refinedPlan.audio || !refinedPlan.style) {
+      sendApiError(res, 500, 'LLM returned plan missing required fields');
+      return;
+    }
+
+    await withProject(project.id, (p) => {
+      p.montagePlan = refinedPlan;
+    });
+
+    res.json({ montagePlan: refinedPlan });
   } catch (err) {
     console.error('Failed to refine montage plan:', err);
     sendApiError(res, 500, 'Failed to refine montage plan');
