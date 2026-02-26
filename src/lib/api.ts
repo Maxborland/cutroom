@@ -269,6 +269,7 @@ export const api = {
       return res.json() as Promise<{ musicFile: string; provider: string }>
     },
     musicUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/music`,
+    voiceoverUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/voiceover`,
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
     updatePlan: (projectId: string, plan: MontagePlan) =>
