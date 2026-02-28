@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ShotMeta } from './storage.js';
+import { downloadRemoteToBuffer } from './safe-remote-fetch.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const DOWNLOAD_TIMEOUT_MS = 20000;
@@ -37,40 +38,39 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
+const DEFAULT_MAX_BYTES = 30 * 1024 * 1024; // 30MB
+
 export async function fetchRemoteMediaBuffer(
   url: string,
   maxAttempts = 3,
   timeoutMs = DOWNLOAD_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES,
 ): Promise<Buffer> {
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(timeoutMs),
+      const buffer = await downloadRemoteToBuffer(url, {
+        timeoutMs,
+        maxBytes,
+        maxRedirects: 3,
       });
-
-      if (!response.ok) {
-        if (isRetryableStatus(response.status) && attempt < maxAttempts) {
-          const delay = attempt * 1500;
-          console.warn(`[media] Download HTTP ${response.status} (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`);
-          await sleep(delay);
-          continue;
-        }
-        throw new Error(`Failed to download media: ${response.status}`);
-      }
-
-      const buffer = Buffer.from(await response.arrayBuffer());
       return buffer;
     } catch (err) {
       lastErr = err;
-      const retryable = isRetryableFetchError(err);
+
+      const status = (err as any)?.status;
+      const retryableStatus = typeof status === 'number' && isRetryableStatus(status);
+      const retryable = retryableStatus || isRetryableFetchError(err);
+
       if (retryable && attempt < maxAttempts) {
         const delay = attempt * 1500;
-        console.warn(`[media] Download failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`, (err as any)?.cause?.code || (err as any)?.message || 'unknown');
+        const hint = retryableStatus ? `HTTP ${status}` : ((err as any)?.cause?.code || (err as any)?.message || 'unknown');
+        console.warn(`[media] Download failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`, hint);
         await sleep(delay);
         continue;
       }
+
       throw err;
     }
   }
