@@ -32,8 +32,7 @@ async function downloadVideoToLocalFile(
   const videoFilename = `vid_${timestamp}.mp4`;
   const videoPath = resolveProjectPath(projectId, 'shots', shotId, 'video', videoFilename);
 
-  // codeql[js/http-to-file-access] expected: caching provider-generated media to project storage.
-  await fetchRemoteMediaToFile(videoUrl, videoPath, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS, 250 * 1024 * 1024); // 250MB
+  await fetchRemoteMediaToFile(videoUrl, videoPath, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS, 250 * 1024 * 1024); // 250MB // lgtm [js/http-to-file-access]
 
   return {
     filename: videoFilename,
