@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { MontagePlan, RenderJob, Project } from '../types'
+import type { RenderJob, Project } from '../types'
 import {
   Mic,
   Music,
@@ -613,8 +613,8 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
     setLoading(true)
     try {
       const result = await api.montage.render(project.id, quality)
-      setPolling(result.jobId)
-      setCurrentJob({ ...result, createdAt: new Date().toISOString(), resolution: quality === 'final' ? '3840x2160' : '1280x720', progress: 0 } as RenderJob)
+      setPolling(result.id)
+      setCurrentJob({ ...result, progress: result.progress ?? 0 })
     } finally {
       setLoading(false)
     }

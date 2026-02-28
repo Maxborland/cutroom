@@ -18,7 +18,7 @@ function isPrivateIPv4(ip: string): boolean {
   const parts = ip.split('.').map((n) => Number.parseInt(n, 10));
   if (parts.length !== 4 || parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
 
-  const [a, b] = parts;
+  const [a, b, c, d] = parts;
 
   // 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8
   if (a === 0 || a === 10 || a === 127) return true;
@@ -35,18 +35,39 @@ function isPrivateIPv4(ip: string): boolean {
   // 100.64.0.0/10 (CGNAT)
   if (a === 100 && b >= 64 && b <= 127) return true;
 
+  // 192.0.0.0/24 (IETF protocol assignments)
+  if (a === 192 && b === 0 && c === 0) return true;
+
+  // 198.18.0.0/15 (benchmarking)
+  if (a === 198 && (b === 18 || b === 19)) return true;
+
+  // 224.0.0.0/4 (multicast), 240.0.0.0/4 (reserved), 255.255.255.255 (broadcast)
+  if (a >= 224) return true;
+  if (a === 255 && b === 255 && c === 255 && d === 255) return true;
+
   return false;
 }
 
 function isPrivateIPv6(ip: string): boolean {
   const normalized = ip.toLowerCase();
-  if (normalized === '::1') return true;
+
+  // Loopback + unspecified
+  if (normalized === '::1' || normalized === '::') return true;
+
+  // IPv4-mapped IPv6: ::ffff:0:0/96
+  if (normalized.startsWith('::ffff:')) {
+    const v4part = normalized.slice('::ffff:'.length);
+    return isPrivateIPv4(v4part);
+  }
 
   // Unique local: fc00::/7
   if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
 
   // Link-local: fe80::/10
   if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
+
+  // Multicast: ff00::/8
+  if (normalized.startsWith('ff')) return true;
 
   return false;
 }
@@ -129,6 +150,9 @@ async function safeFetchFollow(url: string, options: SafeRemoteFetchOptions, red
   const parsed = await assertSafeRemoteUrl(url);
   const timeoutMs = options.timeoutMs;
 
+  // NOTE(security): `parsed` is validated by assertSafeRemoteUrl() (protocol allowlist,
+  // DNS resolution, private-range blocking), and redirects are re-validated hop-by-hop.
+  // codeql[js/request-forgery] false positive: URL is validated to prevent SSRF to internal networks.
   const response = await fetch(parsed.toString(), {
     redirect: 'manual',
     signal: typeof timeoutMs === 'number' ? AbortSignal.timeout(timeoutMs) : undefined,
@@ -250,13 +274,25 @@ export async function downloadRemoteToFile(
     },
   });
 
-  const target = fs.createWriteStream(filePath);
+  const tmpPath = `${filePath}.${Date.now().toString(36)}.tmp`;
 
-  if (limiter) {
-    await pipeline(nodeStream, limiter, counter, target);
-  } else {
-    await pipeline(nodeStream, counter, target);
+  try {
+    const target = fs.createWriteStream(tmpPath);
+
+    if (limiter) {
+      await pipeline(nodeStream, limiter, counter, target);
+    } else {
+      await pipeline(nodeStream, counter, target);
+    }
+
+    await fs.promises.rename(tmpPath, filePath);
+    return { bytes };
+  } catch (err) {
+    try {
+      await fs.promises.unlink(tmpPath);
+    } catch {
+      // best-effort cleanup
+    }
+    throw err;
   }
-
-  return { bytes };
 }

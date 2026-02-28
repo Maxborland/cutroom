@@ -1,10 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ShotMeta } from './storage.js';
-import { downloadRemoteToBuffer } from './safe-remote-fetch.js';
+import { downloadRemoteToBuffer, downloadRemoteToFile } from './safe-remote-fetch.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const DOWNLOAD_TIMEOUT_MS = 20000;
+
+function sanitizeLogValue(value: unknown): string {
+  const s = String(value ?? '');
+  // Strip control chars/newlines to prevent log injection / multiline spoofing.
+  return s.replace(/[\r\n\t\x00-\x1f\x7f]/g, ' ').slice(0, 500);
+}
 
 function errorMessageIncludes(err: any, pattern: string): boolean {
   const needle = pattern.toLowerCase();
@@ -65,8 +71,50 @@ export async function fetchRemoteMediaBuffer(
 
       if (retryable && attempt < maxAttempts) {
         const delay = attempt * 1500;
-        const hint = retryableStatus ? `HTTP ${status}` : ((err as any)?.cause?.code || (err as any)?.message || 'unknown');
+        const hintRaw = retryableStatus ? `HTTP ${status}` : ((err as any)?.cause?.code || (err as any)?.message || 'unknown');
+        const hint = sanitizeLogValue(hintRaw);
+        // codeql[js/log-injection] sanitized log value (control chars/newlines removed + length cap)
         console.warn(`[media] Download failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`, hint);
+        await sleep(delay);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  if (lastErr instanceof Error) throw lastErr;
+  throw new Error('Failed to download media');
+}
+
+export async function fetchRemoteMediaToFile(
+  url: string,
+  filePath: string,
+  maxAttempts = 3,
+  timeoutMs = DOWNLOAD_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES,
+): Promise<{ bytes: number }> {
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await downloadRemoteToFile(url, filePath, {
+        timeoutMs,
+        maxBytes,
+        maxRedirects: 3,
+      });
+    } catch (err) {
+      lastErr = err;
+
+      const status = (err as any)?.status;
+      const retryableStatus = typeof status === 'number' && isRetryableStatus(status);
+      const retryable = retryableStatus || isRetryableFetchError(err);
+
+      if (retryable && attempt < maxAttempts) {
+        const delay = attempt * 1500;
+        const hintRaw = retryableStatus ? `HTTP ${status}` : ((err as any)?.cause?.code || (err as any)?.message || 'unknown');
+        const hint = sanitizeLogValue(hintRaw);
+        console.warn(`[media] Download-to-file failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`, hint);
         await sleep(delay);
         continue;
       }
@@ -103,8 +151,9 @@ export async function saveImageResult(resultUrl: string, filePath: string): Prom
     }
     await fs.writeFile(filePath, Buffer.from(base64Data, 'base64'));
   } else if (resultUrl.startsWith('http')) {
-    const buffer = await fetchRemoteMediaBuffer(resultUrl);
-    await fs.writeFile(filePath, buffer);
+    // Download directly to disk (streaming + maxBytes), avoids unbounded buffering.
+    // codeql[js/http-to-file-access] expected: we are saving provider-generated media into project storage.
+    await fetchRemoteMediaToFile(resultUrl, filePath);
   } else {
     await fs.writeFile(filePath, Buffer.from(resultUrl, 'base64'));
   }

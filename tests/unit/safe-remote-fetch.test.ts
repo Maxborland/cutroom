@@ -22,13 +22,23 @@ describe('safe-remote-fetch', () => {
     await expect(assertSafeRemoteUrl('ftp://example.com/a')).rejects.toThrow(/Disallowed URL protocol/i)
   })
 
-  it('rejects localhost hostnames and private IP literals', async () => {
+  it('rejects localhost hostnames and private/reserved IP literals', async () => {
     await expect(assertSafeRemoteUrl('http://localhost:8080/a')).rejects.toThrow(/Disallowed hostname/i)
+
+    // IPv4 private/reserved
     await expect(assertSafeRemoteUrl('http://127.0.0.1:8080/a')).rejects.toThrow(/private ip/i)
     await expect(assertSafeRemoteUrl('http://10.0.0.1/a')).rejects.toThrow(/private ip/i)
     await expect(assertSafeRemoteUrl('http://192.168.1.1/a')).rejects.toThrow(/private ip/i)
     await expect(assertSafeRemoteUrl('http://169.254.10.10/a')).rejects.toThrow(/private ip/i)
+    await expect(assertSafeRemoteUrl('http://224.0.0.1/a')).rejects.toThrow(/private ip/i)
+    await expect(assertSafeRemoteUrl('http://198.18.0.1/a')).rejects.toThrow(/private ip/i)
+    await expect(assertSafeRemoteUrl('http://192.0.0.1/a')).rejects.toThrow(/private ip/i)
+    await expect(assertSafeRemoteUrl('http://255.255.255.255/a')).rejects.toThrow(/private ip/i)
+
+    // IPv6 loopback/unspecified + IPv4-mapped
     await expect(assertSafeRemoteUrl('http://[::1]/a')).rejects.toThrow(/private ip/i)
+    await expect(assertSafeRemoteUrl('http://[::]/a')).rejects.toThrow(/private ip/i)
+    await expect(assertSafeRemoteUrl('http://[::ffff:127.0.0.1]/a')).rejects.toThrow(/private ip/i)
   })
 
   it('rejects hostnames that resolve to private IPs', async () => {
