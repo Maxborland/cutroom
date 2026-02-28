@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -61,6 +61,22 @@ const videoUpload = multer({
         const r = req as Request;
         const projectId = validateProjectId(r.params.id);
         const shotId = r.params.shotId;
+
+        const project = await getProject(projectId);
+        if (!project) {
+          const errNotFound: any = new Error('Project not found');
+          errNotFound.code = 'PROJECT_NOT_FOUND';
+          cb(errNotFound, '');
+          return;
+        }
+        const shot = project.shots.find((s) => s.id === shotId);
+        if (!shot) {
+          const errNotFound: any = new Error('Shot not found');
+          errNotFound.code = 'SHOT_NOT_FOUND';
+          cb(errNotFound, '');
+          return;
+        }
+
         const dir = resolveProjectPath(projectId, 'shots', shotId, 'video');
         await ensureDir(dir);
         cb(null, dir);
@@ -219,7 +235,15 @@ router.put('/:shotId/status', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/shots/:shotId/video — upload video
-router.post('/:shotId/video', videoUpload.single('video'), async (req: Request, res: Response) => {
+router.post('/:shotId/video', (req: Request, res: Response, next: NextFunction) => {
+  videoUpload.single('video')(req, res, (err) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    next();
+  });
+}, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -372,6 +396,25 @@ router.delete('/:shotId/video', async (req: Request, res: Response) => {
     console.error('Failed to delete video:', err);
     sendApiError(res, 500, 'Failed to delete video');
   }
+});
+
+router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  const anyErr = err as any;
+  if (anyErr?.code === 'PROJECT_NOT_FOUND') {
+    sendApiError(res, 404, 'Project not found');
+    return;
+  }
+  if (anyErr?.code === 'SHOT_NOT_FOUND') {
+    sendApiError(res, 404, 'Shot not found');
+    return;
+  }
+  if (anyErr?.code === 'LIMIT_FILE_SIZE') {
+    sendApiError(res, 413, 'Uploaded file is too large');
+    return;
+  }
+
+  // Not an upload-specific error - delegate to the global error handler.
+  next(err);
 });
 
 export default router;

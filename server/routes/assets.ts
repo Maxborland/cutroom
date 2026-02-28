@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'crypto';
@@ -61,6 +61,14 @@ const upload = multer({
     destination: async (req, _file, cb) => {
       try {
         const projectId = validateProjectId((req as Request).params.id);
+        const project = await getProject(projectId);
+        if (!project) {
+          const errNotFound: any = new Error('Project not found');
+          errNotFound.code = 'PROJECT_NOT_FOUND';
+          cb(errNotFound, '');
+          return;
+        }
+
         const dir = getProjectImagesDir(projectId);
         await ensureDir(dir);
         cb(null, dir);
@@ -81,7 +89,15 @@ const upload = multer({
 });
 
 // POST /api/projects/:id/assets - upload files
-router.post('/', upload.array('files', 50), async (req: Request, res: Response) => {
+router.post('/', (req: Request, res: Response, next: NextFunction) => {
+  upload.array('files', 50)(req, res, (err) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    next();
+  });
+}, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -309,6 +325,21 @@ router.post('/describe-all', async (req: Request, res: Response) => {
     console.error('Failed to describe assets:', err);
     sendApiError(res, 500, getErrorMessage(err, 'Failed to describe assets'));
   }
+});
+
+router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  const anyErr = err as any;
+  if (anyErr?.code === 'PROJECT_NOT_FOUND') {
+    sendApiError(res, 404, 'Project not found');
+    return;
+  }
+  if (anyErr?.code === 'LIMIT_FILE_SIZE') {
+    sendApiError(res, 413, 'Uploaded file is too large');
+    return;
+  }
+
+  // Not an upload-specific error - delegate to the global error handler.
+  next(err);
 });
 
 export default router;

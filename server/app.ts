@@ -99,7 +99,19 @@ export function createApp(options: CreateAppOptions = {}): Express {
     next();
   });
 
-  app.use(express.json({ limit: '50mb' }));
+  const jsonDefault = express.json({ limit: '1mb' });
+  const jsonSettings = express.json({ limit: '10mb' });
+
+  // Route-specific payload limits.
+  // Settings can contain long master prompts, so we allow a larger payload.
+  app.use('/api/settings', jsonSettings);
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/settings')) {
+      next();
+      return;
+    }
+    jsonDefault(req, res, next);
+  });
 
   app.use('/api', (req, res, next) => {
     if (req.path === '/health') {
