@@ -68,7 +68,8 @@ export function createApp(options: CreateAppOptions = {}): Express {
   }
 
   const apiAccessKey = (options.apiAccessKey ?? process.env.API_ACCESS_KEY ?? '').trim();
-  const allowMissingApiKey = options.allowMissingApiKey ?? true;
+  // Secure-by-default: in production, require API key unless explicitly allowed.
+  const allowMissingApiKey = options.allowMissingApiKey ?? isDev;
   const rateLimitWindowMs = options.rateLimitWindowMs ?? parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60000);
   const rateLimitMax = options.rateLimitMax ?? parsePositiveInt(process.env.RATE_LIMIT_MAX, 120);
   const rateLimitStore = new Map<string, RateLimitEntry>();

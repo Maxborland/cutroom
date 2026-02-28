@@ -15,19 +15,40 @@ const parseBoolean = (value: string | undefined): boolean | null => {
 };
 
 const PORT = parsePort(process.env.PORT, 3001);
+
+type AuthMode = 'disabled' | 'optional' | 'required';
+
+const parseAuthMode = (value: string | undefined): AuthMode | null => {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'disabled') return 'disabled';
+  if (normalized === 'optional') return 'optional';
+  if (normalized === 'required') return 'required';
+  return null;
+};
+
+const authModeEnv = parseAuthMode(process.env.AUTH_MODE);
 const requireApiAccessKeyEnv = parseBoolean(process.env.REQUIRE_API_ACCESS_KEY);
-const requireApiAccessKey = requireApiAccessKeyEnv ?? false;
+
+const authMode: AuthMode = authModeEnv
+  ?? (requireApiAccessKeyEnv == null
+    ? (process.env.NODE_ENV === 'production' ? 'required' : 'optional')
+    : (requireApiAccessKeyEnv ? 'required' : 'optional'));
+
+const allowMissingApiKey = authMode !== 'required';
+
+if (authMode === 'required' && !process.env.API_ACCESS_KEY) {
+  console.error('[video-pipeline] AUTH_MODE=required but API_ACCESS_KEY is empty');
+  process.exit(1);
+}
 
 const app = createApp({
   apiAccessKey: process.env.API_ACCESS_KEY,
-  allowMissingApiKey: !requireApiAccessKey,
+  allowMissingApiKey,
 });
 
 app.listen(PORT, () => {
-  console.log(`[video-pipeline] API server running on http://localhost:${PORT}`);
-  if (!process.env.API_ACCESS_KEY && requireApiAccessKey) {
-    console.warn('[video-pipeline] API access key is required, but API_ACCESS_KEY is empty');
-  }
+  console.log(`[video-pipeline] API server running on http://localhost:${PORT} (auth=${authMode})`);
 
   void recoverExternalImageReferencesOnStartup()
     .then((summary) => {
