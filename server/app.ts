@@ -68,7 +68,8 @@ export function createApp(options: CreateAppOptions = {}): Express {
   }
 
   const apiAccessKey = (options.apiAccessKey ?? process.env.API_ACCESS_KEY ?? '').trim();
-  const allowMissingApiKey = options.allowMissingApiKey ?? true;
+  // Secure-by-default: in production, require API key unless explicitly allowed.
+  const allowMissingApiKey = options.allowMissingApiKey ?? isDev;
   const rateLimitWindowMs = options.rateLimitWindowMs ?? parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60000);
   const rateLimitMax = options.rateLimitMax ?? parsePositiveInt(process.env.RATE_LIMIT_MAX, 120);
   const rateLimitStore = new Map<string, RateLimitEntry>();
@@ -98,7 +99,19 @@ export function createApp(options: CreateAppOptions = {}): Express {
     next();
   });
 
-  app.use(express.json({ limit: '50mb' }));
+  const jsonDefault = express.json({ limit: '1mb' });
+  const jsonSettings = express.json({ limit: '10mb' });
+
+  // Route-specific payload limits.
+  // Settings can contain long master prompts, so we allow a larger payload.
+  app.use('/api/settings', jsonSettings);
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/settings')) {
+      next();
+      return;
+    }
+    jsonDefault(req, res, next);
+  });
 
   app.use('/api', (req, res, next) => {
     if (req.path === '/health') {
