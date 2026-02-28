@@ -142,10 +142,31 @@ router.put('/:shotId', async (req: Request, res: Response) => {
     const existing = project.shots[shotIndex];
     const updates = req.body;
 
-    // Merge updates, preserving id and order
+    // Allowlist of client-mutable fields. Server-managed fields (id, order,
+    // status, videoFile, generatedImages, enhancedImages) must not be overwritten
+    // by the client to prevent mass-assignment / SSRF via mutable videoFile.
+    const MUTABLE_SHOT_FIELDS = [
+      'scene',
+      'audioDescription',
+      'imagePrompt',
+      'videoPrompt',
+      'duration',
+      'assetRefs',
+      'selectedImage',
+    ] as const;
+
+    type MutableField = typeof MUTABLE_SHOT_FIELDS[number];
+
+    const safeUpdates: Partial<Pick<typeof existing, MutableField>> = {};
+    for (const key of MUTABLE_SHOT_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        (safeUpdates as any)[key] = (updates as any)[key];
+      }
+    }
+
     project.shots[shotIndex] = {
       ...existing,
-      ...updates,
+      ...safeUpdates,
       id: existing.id,
       order: existing.order,
     };

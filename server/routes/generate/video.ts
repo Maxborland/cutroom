@@ -8,7 +8,7 @@ import {
 } from '../../lib/storage.js';
 import { generateVideoFromImage } from '../../lib/generation.js';
 import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generation-models.js';
-import { fetchRemoteMediaBuffer, getBestImageFile, getMimeType } from '../../lib/media-utils.js';
+import { fetchRemoteMediaToFile, getBestImageFile, getMimeType } from '../../lib/media-utils.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
@@ -32,8 +32,7 @@ async function downloadVideoToLocalFile(
   const videoFilename = `vid_${timestamp}.mp4`;
   const videoPath = resolveProjectPath(projectId, 'shots', shotId, 'video', videoFilename);
 
-  const videoBuffer = await fetchRemoteMediaBuffer(videoUrl, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS);
-  await fs.writeFile(videoPath, videoBuffer);
+  await fetchRemoteMediaToFile(videoUrl, videoPath, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS, 250 * 1024 * 1024); // 250MB // lgtm [js/http-to-file-access]
 
   return {
     filename: videoFilename,
