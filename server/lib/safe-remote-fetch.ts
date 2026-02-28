@@ -152,8 +152,7 @@ async function safeFetchFollow(url: string, options: SafeRemoteFetchOptions, red
 
   // NOTE(security): `parsed` is validated by assertSafeRemoteUrl() (protocol allowlist,
   // DNS resolution, private-range blocking), and redirects are re-validated hop-by-hop.
-  const response = await fetch(parsed.toString(), { // lgtm [js/request-forgery]
-
+  const response = await fetch(parsed.toString(), { // codeql[js/request-forgery]
     redirect: 'manual',
     signal: typeof timeoutMs === 'number' ? AbortSignal.timeout(timeoutMs) : undefined,
   });
