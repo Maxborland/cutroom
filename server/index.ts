@@ -37,13 +37,14 @@ const authMode: AuthMode = authModeEnv
 
 const allowMissingApiKey = authMode !== 'required';
 
-if (authMode === 'required' && !process.env.API_ACCESS_KEY) {
+if (authMode === 'required' && !process.env.API_ACCESS_KEY?.trim()) {
   console.error('[video-pipeline] AUTH_MODE=required but API_ACCESS_KEY is empty');
   process.exit(1);
 }
 
 const app = createApp({
-  apiAccessKey: process.env.API_ACCESS_KEY,
+  // AUTH_MODE=disabled should bypass API key checks even if a key is present in env.
+  apiAccessKey: authMode === 'disabled' ? '' : process.env.API_ACCESS_KEY,
   allowMissingApiKey,
 });
 

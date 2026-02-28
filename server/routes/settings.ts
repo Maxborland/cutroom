@@ -48,6 +48,7 @@ export const SETTINGS_ALLOWLIST: ReadonlyMap<string, 'string' | 'number'> = new 
   ['defaultImageGenModel', 'string'],
   ['defaultImageNoRefGenModel', 'string'],
   ['defaultVideoGenModel', 'string'],
+  ['defaultAudioGenModel', 'string'],
 
   // Generation params
   ['imageSize', 'string'],
