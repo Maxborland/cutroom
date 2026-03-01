@@ -7,6 +7,9 @@ import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition } from '@remotion/renderer';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import { createReadStream, statSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import { resolveProjectPath, ensureDir, withProject, getProject, type RenderJob } from './storage.js';
 import { resolvePlan } from '../remotion/src/lib/plan-reader.js';
 import type { MontagePlan } from './storage.js';
@@ -48,6 +51,53 @@ const PRESETS: Record<RenderQuality, RenderConfig> = {
 
 /** Maximum number of completed preview renders to keep per project */
 const MAX_PREVIEW_RENDERS = 3;
+
+/**
+ * Start a temporary HTTP server that serves files from `dir`.
+ * Used by the render worker so Remotion's Chromium can load media via HTTP
+ * instead of file:// URLs (which are blocked from HTTP-served pages).
+ * Listens on 127.0.0.1 with a random port; caller must close() when done.
+ */
+function startMediaServer(dir: string): Promise<{ baseUrl: string; close: () => void }> {
+  const normalizedDir = path.resolve(dir);
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const decoded = decodeURIComponent(req.url?.split('?')[0] || '/');
+      const safePath = path.normalize(decoded);
+      const filePath = path.join(normalizedDir, safePath);
+
+      // Path traversal protection
+      if (!filePath.startsWith(normalizedDir)) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+
+      try {
+        const stat = statSync(filePath);
+        if (!stat.isFile()) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Length': stat.size });
+        createReadStream(filePath).pipe(res);
+      } catch {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as AddressInfo;
+      resolve({
+        baseUrl: `http://127.0.0.1:${addr.port}`,
+        close: () => server.close(),
+      });
+    });
+    server.on('error', reject);
+  });
+}
 
 /**
  * Start a render job. Returns immediately with a jobId.
@@ -108,70 +158,77 @@ async function doRender(
 
   const projectDir = resolveProjectPath(projectId);
 
-  // resolvePlan converts plan paths to absolute file paths for Remotion.
-  // Chromium blocks file:// by default — we pass disableWebSecurity
-  // to renderMedia so local file paths work.
-  const resolvedPlan = resolvePlan(plan, projectDir);
+  // Serve project media via HTTP so Remotion's Chromium can load them.
+  // Chromium blocks file:// URLs from HTTP-served pages (the webpack bundle),
+  // so we spin up a temporary localhost server for the project directory.
+  const mediaServer = await startMediaServer(projectDir);
+  console.log(`[render] Media server for ${projectId} at ${mediaServer.baseUrl}`);
 
-  // Bundle Remotion project
-  let bundled: string;
   try {
-    bundled = await bundle({
-      entryPoint: REMOTION_ENTRY,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Remotion bundle failed: ${msg}`);
-  }
+    const resolvedPlan = resolvePlan(plan, mediaServer.baseUrl);
 
-  // Select composition
-  // disableWebSecurity allows Chromium to load local file:// media
-  const chromiumOptions = { disableWebSecurity: true };
-  let composition;
-  try {
-    composition = await selectComposition({
-      serveUrl: bundled,
-      id: 'Montage',
-      inputProps: { plan: resolvedPlan },
-      chromiumOptions,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Remotion composition select failed: ${msg}`);
-  }
+    // Bundle Remotion project
+    let bundled: string;
+    try {
+      bundled = await bundle({
+        entryPoint: REMOTION_ENTRY,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Remotion bundle failed: ${msg}`);
+    }
 
-  // Override dimensions and duration based on quality + plan
-  const compositionWithOverrides = {
-    ...composition,
-    width: config.width,
-    height: config.height,
-    fps: config.fps,
-    durationInFrames: resolvedPlan.totalDurationFrames,
-  };
+    // Select composition
+    // disableWebSecurity allows cross-origin HTTP loading (bundle port ≠ media port)
+    const chromiumOptions = { disableWebSecurity: true };
+    let composition;
+    try {
+      composition = await selectComposition({
+        serveUrl: bundled,
+        id: 'Montage',
+        inputProps: { plan: resolvedPlan },
+        chromiumOptions,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Remotion composition select failed: ${msg}`);
+    }
 
-  // Render
-  try {
-    await renderMedia({
-      composition: compositionWithOverrides,
-      serveUrl: bundled,
-      codec: config.codec as any,
-      outputLocation: outputFile,
-      inputProps: { plan: resolvedPlan },
-      chromiumOptions,
-      crf: config.crf,
-      concurrency: config.concurrency,
-      onProgress: ({ progress }) => {
-        const pct = Math.round(progress * 100);
-        if (pct % 5 === 0) {
-          updateJob(projectId, jobId, { progress: pct }).catch(() => {});
-        }
-      },
-    });
-  } catch (err) {
-    // Clean up partial output file on failure
-    await fs.unlink(outputFile).catch(() => {});
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Remotion render failed: ${msg}`);
+    // Override dimensions and duration based on quality + plan
+    const compositionWithOverrides = {
+      ...composition,
+      width: config.width,
+      height: config.height,
+      fps: config.fps,
+      durationInFrames: resolvedPlan.totalDurationFrames,
+    };
+
+    // Render
+    try {
+      await renderMedia({
+        composition: compositionWithOverrides,
+        serveUrl: bundled,
+        codec: config.codec as any,
+        outputLocation: outputFile,
+        inputProps: { plan: resolvedPlan },
+        chromiumOptions,
+        crf: config.crf,
+        concurrency: config.concurrency,
+        onProgress: ({ progress }) => {
+          const pct = Math.round(progress * 100);
+          if (pct % 5 === 0) {
+            updateJob(projectId, jobId, { progress: pct }).catch(() => {});
+          }
+        },
+      });
+    } catch (err) {
+      // Clean up partial output file on failure
+      await fs.unlink(outputFile).catch(() => {});
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Remotion render failed: ${msg}`);
+    }
+  } finally {
+    mediaServer.close();
   }
 
   // Mark done
