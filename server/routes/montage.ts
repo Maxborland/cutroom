@@ -408,8 +408,7 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
     }
 
     const ext = path.extname(filePath).toLowerCase();
-    const mimeType = ext === '.wav' ? 'audio/wav' : 'audio/mpeg';
-    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Type', getMimeForExt(ext));
     const stream = fsCb.createReadStream(filePath);
     stream.on('error', (err) => {
       console.error('Stream error:', err);
