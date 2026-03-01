@@ -146,7 +146,9 @@ export async function normalizeClips(
 
     if (shot.videoFile) {
       // Shot has video — probe and potentially normalize
-      const inputPath = resolveProjectPath(projectId, shot.videoFile);
+      // videoFile stores just the filename (e.g. "vid_123.mp4");
+      // actual file lives at shots/<shotId>/video/<filename>
+      const inputPath = resolveProjectPath(projectId, 'shots', shot.id, 'video', shot.videoFile);
       const probe = await probeFile(inputPath);
 
       if (needsNormalization(probe)) {
@@ -159,10 +161,12 @@ export async function normalizeClips(
       result.set(shot.id, outputPath);
     } else {
       // No video — generate from best image
+      // Image filenames are stored without path prefix;
+      // actual files live at shots/<shotId>/generated/<filename>
       const imagePath = shot.selectedImage
-        ? resolveProjectPath(projectId, shot.selectedImage)
+        ? resolveProjectPath(projectId, 'shots', shot.id, 'generated', shot.selectedImage)
         : shot.generatedImages.length > 0
-          ? resolveProjectPath(projectId, shot.generatedImages[0])
+          ? resolveProjectPath(projectId, 'shots', shot.id, 'generated', shot.generatedImages[0])
           : null;
 
       if (imagePath) {
