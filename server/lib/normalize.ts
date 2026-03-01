@@ -146,7 +146,12 @@ export async function normalizeClips(
 
     if (shot.videoFile) {
       // Shot has video — probe and potentially normalize
-      const inputPath = resolveProjectPath(projectId, shot.videoFile);
+      // videoFile is usually a bare filename (e.g. "vid_123.mp4") stored
+      // at shots/<shotId>/video/<filename>. Legacy data may already contain
+      // a path separator — in that case treat it as project-relative.
+      const inputPath = shot.videoFile.includes('/') || shot.videoFile.includes('\\')
+        ? resolveProjectPath(projectId, shot.videoFile)
+        : resolveProjectPath(projectId, 'shots', shot.id, 'video', shot.videoFile);
       const probe = await probeFile(inputPath);
 
       if (needsNormalization(probe)) {
@@ -159,10 +164,17 @@ export async function normalizeClips(
       result.set(shot.id, outputPath);
     } else {
       // No video — generate from best image
+      // Image refs are usually bare filenames at shots/<shotId>/generated/.
+      // Legacy data may store project-relative paths — detect by separator.
+      const resolveImageRef = (ref: string): string =>
+        ref.includes('/') || ref.includes('\\')
+          ? resolveProjectPath(projectId, ref)
+          : resolveProjectPath(projectId, 'shots', shot.id, 'generated', ref);
+
       const imagePath = shot.selectedImage
-        ? resolveProjectPath(projectId, shot.selectedImage)
+        ? resolveImageRef(shot.selectedImage)
         : shot.generatedImages.length > 0
-          ? resolveProjectPath(projectId, shot.generatedImages[0])
+          ? resolveImageRef(shot.generatedImages[0])
           : null;
 
       if (imagePath) {
