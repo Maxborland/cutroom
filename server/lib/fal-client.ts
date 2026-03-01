@@ -164,6 +164,19 @@ function chooseNearestPermittedDuration(
   return best ?? permitted[0];
 }
 
+function normalizeVideoDurationForEndpoint(
+  endpoint: string,
+  requested: unknown,
+): string | number | undefined {
+  const lower = String(endpoint || '').toLowerCase();
+  // veo3 image-to-video expects literal durations like '4s', '6s', '8s'.
+  if (lower.includes('veo3') && lower.includes('image-to-video')) {
+    return chooseNearestPermittedDuration(['4s', '6s', '8s'], requested);
+  }
+
+  return undefined;
+}
+
 async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   if (!signal) {
     await sleep(ms);
@@ -308,7 +321,10 @@ export async function falGenerateVideo(opts: {
     prompt: opts.prompt,
     image_url: imageUrl,
   };
-  if (opts.duration) baseInput.duration = opts.duration;
+  if (opts.duration) {
+    const normalized = normalizeVideoDurationForEndpoint(opts.endpoint, opts.duration);
+    baseInput.duration = normalized ?? opts.duration;
+  }
   const input: Record<string, unknown> = {
     ...baseInput,
     ...(opts.extraInput || {}),
