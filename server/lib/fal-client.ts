@@ -120,6 +120,16 @@ function extractPermittedDurationValues(err: any): Array<string | number> {
   return [];
 }
 
+function isFalNoMediaGeneratedError(err: any): boolean {
+  const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status ?? 0);
+  if (status !== 422) return false;
+
+  const detail = err?.body?.detail;
+  if (!Array.isArray(detail)) return false;
+
+  return detail.some((item) => String(item?.type || '').toLowerCase() === 'no_media_generated');
+}
+
 function toDurationSeconds(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -364,6 +374,26 @@ export async function falGenerateVideo(opts: {
             duration: replacement,
           };
           console.warn(`[fal] video endpoint=${opts.endpoint} adjusted duration to supported value: ${replacement}`);
+          continue;
+        }
+      }
+
+      // Some fal video endpoints return 422 no_media_generated even for valid input.
+      // Treat this as retryable and try enabling auto_fix once.
+      if (isFalNoMediaGeneratedError(err)) {
+        if (currentInput.auto_fix !== true) {
+          currentInput = {
+            ...currentInput,
+            auto_fix: true,
+          };
+          console.warn(`[fal] video endpoint=${opts.endpoint} no_media_generated; retrying with auto_fix=true`);
+          continue;
+        }
+
+        if (attempt < 3) {
+          const delay = attempt * 2000;
+          console.warn(`[fal] video endpoint=${opts.endpoint} no_media_generated; retrying in ${delay / 1000}s...`);
+          await sleepWithAbort(delay, signal);
           continue;
         }
       }
