@@ -679,28 +679,23 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
 
             {/* Current render progress */}
             {currentJob && (currentJob.status === 'queued' || currentJob.status === 'rendering') && (
-              <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Loader2 size={14} className="animate-spin text-sky" />
-                  <span className="font-mono text-xs uppercase text-sky">
-                    {currentJob.status === 'queued' ? 'В очереди...' : `Рендер ${currentJob.progress ?? 0}%`}
-                  </span>
-                </div>
-                <div className="w-full bg-surface-2 rounded-full h-2">
-                  <div
-                    className="bg-sky h-2 rounded-full transition-all duration-500"
-                    style={{ width: `${currentJob.progress ?? 0}%` }}
-                  />
-                </div>
-              </div>
+              <RenderProgress job={currentJob} />
             )}
 
             {currentJob?.status === 'failed' && (
-              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4">
+              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4 space-y-2">
                 <div className="flex items-center gap-2 text-red-400">
                   <X size={14} />
-                  <span className="font-mono text-xs">Ошибка: {currentJob.errorMessage || 'Unknown'}</span>
+                  <span className="font-mono text-xs font-semibold">Ошибка рендера</span>
                 </div>
+                <details className="text-red-400">
+                  <summary className="font-mono text-xs cursor-pointer hover:underline">
+                    Подробности
+                  </summary>
+                  <pre className="mt-2 font-mono text-[10px] whitespace-pre-wrap break-all bg-surface-2 rounded p-2 max-h-40 overflow-auto">
+                    {currentJob.errorMessage || 'Unknown error'}
+                  </pre>
+                </details>
               </div>
             )}
 
@@ -740,6 +735,87 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Render Progress ─────────────────────────────────────────────────
+
+const PHASE_LABELS: Record<string, { label: string; icon: string }> = {
+  bundling: { label: 'Сборка проекта', icon: '📦' },
+  compositing: { label: 'Подготовка композиции', icon: '🎬' },
+  encoding: { label: 'Кодирование видео', icon: '⚙️' },
+  finalizing: { label: 'Финализация', icon: '✨' },
+}
+
+function RenderProgress({ job }: { job: RenderJob }) {
+  const phase = job.phase ? PHASE_LABELS[job.phase] : null
+  const progress = job.progress ?? 0
+
+  // Compute ETA
+  let etaText = ''
+  if (job.frameTotal && job.frameCurrent != null && job.renderFps && job.renderFps > 0) {
+    const remaining = job.frameTotal - job.frameCurrent
+    const etaSec = Math.ceil(remaining / job.renderFps)
+    if (etaSec > 60) {
+      const m = Math.floor(etaSec / 60)
+      const s = etaSec % 60
+      etaText = `~${m}:${s.toString().padStart(2, '0')} осталось`
+    } else if (etaSec > 0) {
+      etaText = `~${etaSec}с осталось`
+    }
+  }
+
+  return (
+    <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4 space-y-3">
+      {/* Phase indicator */}
+      <div className="flex items-center gap-2">
+        {job.status === 'queued' ? (
+          <>
+            <Loader2 size={14} className="animate-spin text-sky" />
+            <span className="font-mono text-xs uppercase text-sky">В очереди...</span>
+          </>
+        ) : (
+          <>
+            <Loader2 size={14} className="animate-spin text-sky" />
+            <span className="font-mono text-xs text-sky">
+              {phase ? `${phase.icon} ${phase.label}` : 'Рендер'}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full bg-surface-2 rounded-full h-2">
+        <div
+          className="bg-sky h-2 rounded-full transition-all duration-500"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      {/* Detail stats */}
+      {job.status === 'rendering' && (
+        <div className="flex items-center gap-4 flex-wrap">
+          <span className="font-mono text-[10px] text-text-muted">
+            {progress}%
+          </span>
+          {job.frameCurrent != null && job.frameTotal != null && (
+            <span className="font-mono text-[10px] text-text-muted">
+              Кадр {job.frameCurrent}/{job.frameTotal}
+            </span>
+          )}
+          {job.renderFps != null && job.renderFps > 0 && (
+            <span className="font-mono text-[10px] text-text-muted">
+              {job.renderFps} fps
+            </span>
+          )}
+          {etaText && (
+            <span className="font-mono text-[10px] text-sky">
+              {etaText}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
