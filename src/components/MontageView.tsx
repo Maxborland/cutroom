@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
 import type { RenderJob, Project } from '../types'
+import { TimelineEditor } from './TimelineEditor'
 import {
   Mic,
   Music,
@@ -21,6 +22,7 @@ import {
   ChevronUp,
   Send,
   AlertCircle,
+  Sliders,
 } from 'lucide-react'
 
 type MontageStep = 'voiceover' | 'music' | 'plan' | 'render'
@@ -473,6 +475,8 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
   const [loading, setLoading] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
+  const [showMixer, setShowMixer] = useState(false)
+  const setMontagePlan = useProjectStore((s) => s.setMontagePlan)
 
   const generatePlan = async () => {
     setLoading(true)
@@ -494,6 +498,10 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
     } finally {
       setLoading(false)
     }
+  }
+
+  const handlePlanUpdated = (plan: import('../types').MontagePlan) => {
+    setMontagePlan(project.id, plan)
   }
 
   const plan = project.montagePlan
@@ -530,37 +538,30 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
               <Stat label="Титры" value={plan.motionGraphics.lowerThirds.length} />
             </div>
 
-            {/* Timeline visual */}
-            <div className="bg-surface-1 border-2 border-border rounded-[5px] p-4">
-              <div className="flex gap-1 h-8">
-                {/* Intro */}
-                <div
-                  className="bg-amber/30 border border-amber rounded-sm flex items-center justify-center"
-                  style={{ flex: plan.motionGraphics.intro?.durationSec ?? 3 }}
-                >
-                  <span className="font-mono text-[8px] text-amber">INTRO</span>
-                </div>
-                {/* Clips */}
-                {plan.timeline.map((entry, i) => (
-                  <div
-                    key={entry.shotId}
-                    className="bg-sky/20 border border-sky rounded-sm flex items-center justify-center overflow-hidden"
-                    style={{ flex: entry.durationSec }}
-                    title={`${entry.shotId}: ${entry.durationSec.toFixed(1)}s`}
-                  >
-                    <span className="font-mono text-[8px] text-sky truncate px-1">
-                      {i + 1}
-                    </span>
-                  </div>
-                ))}
-                {/* Outro */}
-                <div
-                  className="bg-amber/30 border border-amber rounded-sm flex items-center justify-center"
-                  style={{ flex: plan.motionGraphics.outro?.durationSec ?? 4 }}
-                >
-                  <span className="font-mono text-[8px] text-amber">OUTRO</span>
-                </div>
-              </div>
+            {/* Interactive Timeline */}
+            <TimelineEditor
+              projectId={project.id}
+              plan={plan}
+              onPlanUpdated={handlePlanUpdated}
+            />
+
+            {/* Audio Mixer toggle */}
+            <div className="bg-surface-1 border-2 border-border rounded-[5px]">
+              <button
+                onClick={() => setShowMixer(!showMixer)}
+                className="w-full flex items-center gap-2 px-4 py-2.5 font-mono text-xs uppercase tracking-wider text-text-muted hover:text-text-secondary transition-colors"
+              >
+                <Sliders size={14} />
+                Аудио микшер
+                {showMixer ? <ChevronUp size={14} className="ml-auto" /> : <ChevronDown size={14} className="ml-auto" />}
+              </button>
+              {showMixer && (
+                <AudioMixer
+                  projectId={project.id}
+                  plan={plan}
+                  onPlanUpdated={handlePlanUpdated}
+                />
+              )}
             </div>
 
             {/* Refinement */}
@@ -740,6 +741,161 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// ── Audio Mixer ─────────────────────────────────────────────────────
+
+function AudioMixer({
+  projectId,
+  plan,
+  onPlanUpdated,
+}: {
+  projectId: string
+  plan: import('../types').MontagePlan
+  onPlanUpdated: (plan: import('../types').MontagePlan) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef = useRef<Record<string, unknown>>({})
+
+  const update = useCallback((audio: Record<string, unknown>) => {
+    for (const [key, val] of Object.entries(audio)) {
+      pendingRef.current[key] = {
+        ...((pendingRef.current[key] as Record<string, unknown>) || {}),
+        ...((val as Record<string, unknown>) || {}),
+      }
+    }
+
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      const payload = { ...pendingRef.current }
+      pendingRef.current = {}
+
+      setSaving(true)
+      try {
+        const result = await api.montage.updateAudioLevels(projectId, payload)
+        onPlanUpdated(result.montagePlan)
+      } catch (err) {
+        console.error('Audio update failed:', err)
+      } finally {
+        setSaving(false)
+      }
+    }, 400)
+  }, [projectId, onPlanUpdated])
+
+  const voGain = plan.audio.voiceover.gainDb
+  const musicGain = plan.audio.music.gainDb
+  const duckingDb = plan.audio.music.duckingDb
+  const duckFadeMs = plan.audio.music.duckFadeMs
+
+  return (
+    <div className="px-4 pb-4 space-y-4">
+      {/* Voiceover gain */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
+            Озвучка
+          </span>
+          <span className="font-mono text-xs text-text-secondary tabular-nums">
+            {voGain > 0 ? '+' : ''}{voGain}дБ
+          </span>
+        </div>
+        <input
+          type="range"
+          min={-24}
+          max={12}
+          step={1}
+          value={voGain}
+          onChange={(e) => {
+            const v = parseInt(e.target.value)
+            update({ voiceover: { gainDb: v } })
+          }}
+          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-sky"
+        />
+      </div>
+
+      {/* Music gain */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
+            Музыка
+          </span>
+          <span className="font-mono text-xs text-text-secondary tabular-nums">
+            {musicGain > 0 ? '+' : ''}{musicGain}дБ
+          </span>
+        </div>
+        <input
+          type="range"
+          min={-48}
+          max={6}
+          step={1}
+          value={musicGain}
+          onChange={(e) => {
+            const v = parseInt(e.target.value)
+            update({ music: { gainDb: v } })
+          }}
+          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-amber"
+        />
+      </div>
+
+      {/* Ducking */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
+            Даккинг (приглушение под голос)
+          </span>
+          <span className="font-mono text-xs text-text-secondary tabular-nums">
+            {duckingDb}дБ
+          </span>
+        </div>
+        <input
+          type="range"
+          min={-48}
+          max={0}
+          step={1}
+          value={duckingDb}
+          onChange={(e) => {
+            const v = parseInt(e.target.value)
+            update({ music: { duckingDb: v } })
+          }}
+          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-amber"
+        />
+      </div>
+
+      {/* Duck fade */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
+            Скорость даккинга
+          </span>
+          <span className="font-mono text-xs text-text-secondary tabular-nums">
+            {duckFadeMs}мс
+          </span>
+        </div>
+        <input
+          type="range"
+          min={50}
+          max={2000}
+          step={50}
+          value={duckFadeMs}
+          onChange={(e) => {
+            const v = parseInt(e.target.value)
+            update({ music: { duckFadeMs: v } })
+          }}
+          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-amber"
+        />
+      </div>
+
+      {saving && (
+        <div className="flex items-center gap-2 text-text-muted">
+          <Loader2 size={12} className="animate-spin" />
+          <span className="font-mono text-[10px]">Сохранение...</span>
+        </div>
+      )}
     </div>
   )
 }
