@@ -58,6 +58,20 @@ const MAX_PREVIEW_RENDERS = 3;
  * instead of file:// URLs (which are blocked from HTTP-served pages).
  * Listens on 127.0.0.1 with a random port; caller must close() when done.
  */
+/** MIME types needed for Remotion media playback */
+const MIME_TYPES: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.aac': 'audio/aac',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
+
 function startMediaServer(dir: string): Promise<{ baseUrl: string; close: () => void }> {
   const normalizedDir = path.resolve(dir);
   return new Promise((resolve, reject) => {
@@ -73,19 +87,53 @@ function startMediaServer(dir: string): Promise<{ baseUrl: string; close: () => 
         return;
       }
 
+      let stat;
       try {
-        const stat = statSync(filePath);
+        stat = statSync(filePath);
         if (!stat.isFile()) {
           res.writeHead(404);
           res.end();
           return;
         }
-        res.writeHead(200, { 'Content-Length': stat.size });
-        createReadStream(filePath).pipe(res);
       } catch {
         res.writeHead(404);
         res.end();
+        return;
       }
+
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+      const fileSize = stat.size;
+
+      // Range request support — required for Chromium <video>/<audio> playback
+      const rangeHeader = req.headers.range;
+      if (rangeHeader) {
+        const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
+        if (match) {
+          const start = parseInt(match[1], 10);
+          const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+          if (start >= fileSize || end >= fileSize || start > end) {
+            res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
+            res.end();
+            return;
+          }
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': end - start + 1,
+            'Content-Type': contentType,
+          });
+          createReadStream(filePath, { start, end }).pipe(res);
+          return;
+        }
+      }
+
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+      });
+      createReadStream(filePath).pipe(res);
     });
 
     server.listen(0, '127.0.0.1', () => {
