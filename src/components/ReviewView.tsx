@@ -37,6 +37,7 @@ function hasAlternateImage(shot: Shot): boolean {
 export function ReviewView() {
   const project = useProjectStore((s) => s.activeProject())
   const updateShotStatus = useProjectStore((s) => s.updateShotStatus)
+  const generateVideo = useProjectStore((s) => s.generateVideo)
   const enhanceImage = useProjectStore((s) => s.enhanceImage)
   const enhancingShotIds = useProjectStore((s) => s.enhancingShotIds)
 
@@ -90,10 +91,19 @@ export function ReviewView() {
 
   const handleApprove = useCallback(() => {
     if (!currentShot || !project) return
-    updateShotStatus(project.id, currentShot.id, 'approved')
+
+    // Pipeline:
+    // - Approving an image should start video generation.
+    // - Approving a video should mark the shot as final approved.
+    if (currentShot.status === 'img_review') {
+      void generateVideo(currentShot.id)
+    } else {
+      updateShotStatus(project.id, currentShot.id, 'approved')
+    }
+
     setApproveAnim(true)
     setTimeout(() => setApproveAnim(false), 300)
-  }, [currentShot, project, updateShotStatus])
+  }, [currentShot, project, updateShotStatus, generateVideo])
 
   const handleReject = useCallback(() => {
     if (!currentShot || !project) return
