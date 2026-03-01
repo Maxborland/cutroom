@@ -282,6 +282,26 @@ export const api = {
     voiceoverUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/voiceover`,
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
+    reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline`, {
+        method: 'PUT',
+        body: JSON.stringify({ timeline }),
+      }),
+    updateTimelineEntry: (projectId: string, shotId: string, data: { durationSec?: number; trimEndSec?: number; motionEffect?: string | null }) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline/${shotId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    updateTransition: (projectId: string, index: number, data: { type?: string; durationSec?: number }) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/transitions/${index}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    updateAudioLevels: (projectId: string, audio: Record<string, unknown>) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/audio`, {
+        method: 'PUT',
+        body: JSON.stringify({ audio }),
+      }),
     updatePlan: (projectId: string, plan: MontagePlan) =>
       request<Project>(`/projects/${projectId}/montage/plan`, {
         method: 'PUT',

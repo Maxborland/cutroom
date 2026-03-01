@@ -586,6 +586,274 @@ router.put('/montage/plan', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Timeline editing endpoints ─────────────────────────────────────
+
+const VALID_TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide_right', 'zoom_blur', 'wipe'] as const;
+const VALID_MOTION_EFFECTS = ['ken_burns', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right'] as const;
+
+// PUT /api/projects/:id/montage/plan/timeline
+// Reorder timeline + rebuild transitions
+router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const { timeline } = req.body;
+    if (!Array.isArray(timeline)) {
+      sendApiError(res, 400, 'timeline must be an array');
+      return;
+    }
+
+    // Validate: all entries must have shotId and durationSec
+    for (const entry of timeline) {
+      if (!entry.shotId || typeof entry.durationSec !== 'number' || entry.durationSec <= 0) {
+        sendApiError(res, 400, `Invalid timeline entry: shotId and positive durationSec required`);
+        return;
+      }
+    }
+
+    // Validate: incoming shot IDs must match existing plan
+    const existingIds = new Set(project.montagePlan.timeline.map(e => e.shotId));
+    const newIds = new Set(timeline.map((e: any) => e.shotId));
+    for (const id of newIds) {
+      if (!existingIds.has(id)) {
+        sendApiError(res, 400, `Unknown shot ID: ${String(id).slice(0, 50)}`);
+        return;
+      }
+    }
+
+    // Rebuild startSec based on new order
+    const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
+    let cursor = introSec;
+    const reordered = timeline.map((entry: any) => {
+      const existing = project.montagePlan!.timeline.find(e => e.shotId === entry.shotId);
+      const result = {
+        ...existing,
+        ...entry,
+        startSec: cursor,
+      };
+      cursor += result.durationSec;
+      return result;
+    });
+
+    // Rebuild transitions for new order
+    const transitions = [];
+    if (reordered.length > 0 && project.montagePlan.motionGraphics.intro) {
+      transitions.push({
+        fromShotId: 'intro',
+        toShotId: reordered[0].shotId,
+        type: 'fade' as const,
+        durationSec: 0.5,
+      });
+    }
+    for (let i = 0; i < reordered.length - 1; i++) {
+      // Preserve existing transition type if it exists between these shots
+      const existing = project.montagePlan.transitions.find(
+        t => t.fromShotId === reordered[i].shotId && t.toShotId === reordered[i + 1].shotId
+      );
+      transitions.push({
+        fromShotId: reordered[i].shotId,
+        toShotId: reordered[i + 1].shotId,
+        type: existing?.type ?? 'crossfade',
+        durationSec: existing?.durationSec ?? 0.5,
+      });
+    }
+    if (reordered.length > 0 && project.montagePlan.motionGraphics.outro) {
+      transitions.push({
+        fromShotId: reordered[reordered.length - 1].shotId,
+        toShotId: 'outro',
+        type: 'fade' as const,
+        durationSec: 0.5,
+      });
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+      p.montagePlan.timeline = reordered;
+      p.montagePlan.transitions = transitions;
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update timeline:', err);
+    sendApiError(res, 500, 'Failed to update timeline');
+  }
+});
+
+// PUT /api/projects/:id/montage/plan/timeline/:shotId
+// Update individual clip: durationSec, trimEndSec, motionEffect
+router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const { shotId } = req.params;
+    const entry = project.montagePlan.timeline.find(e => e.shotId === shotId);
+    if (!entry) {
+      sendApiError(res, 404, `Shot ${String(shotId).slice(0, 50)} not in timeline`);
+      return;
+    }
+
+    const { durationSec, trimEndSec, motionEffect } = req.body;
+
+    if (durationSec !== undefined) {
+      if (typeof durationSec !== 'number' || durationSec <= 0 || durationSec > 120) {
+        sendApiError(res, 400, 'durationSec must be a number between 0 and 120');
+        return;
+      }
+    }
+
+    if (trimEndSec !== undefined && (typeof trimEndSec !== 'number' || trimEndSec < 0)) {
+      sendApiError(res, 400, 'trimEndSec must be a non-negative number');
+      return;
+    }
+
+    if (motionEffect !== undefined && motionEffect !== null) {
+      if (!VALID_MOTION_EFFECTS.includes(motionEffect)) {
+        sendApiError(res, 400, `Invalid motionEffect. Allowed: ${VALID_MOTION_EFFECTS.join(', ')}`);
+        return;
+      }
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+      const target = p.montagePlan.timeline.find(e => e.shotId === shotId);
+      if (!target) return null;
+
+      if (durationSec !== undefined) target.durationSec = durationSec;
+      if (trimEndSec !== undefined) target.trimEndSec = trimEndSec;
+      if (motionEffect !== undefined) target.motionEffect = motionEffect || undefined;
+
+      // Recalculate startSec for all entries
+      const introSec = p.montagePlan.motionGraphics.intro?.durationSec ?? 0;
+      let cursor = introSec;
+      for (const e of p.montagePlan.timeline) {
+        e.startSec = cursor;
+        cursor += e.durationSec;
+      }
+
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update timeline entry:', err);
+    sendApiError(res, 500, 'Failed to update timeline entry');
+  }
+});
+
+// PUT /api/projects/:id/montage/plan/transitions/:index
+// Update transition type and duration
+router.put('/montage/plan/transitions/:index', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const index = parseInt(req.params.index, 10);
+    if (isNaN(index) || index < 0 || index >= project.montagePlan.transitions.length) {
+      sendApiError(res, 404, 'Transition index out of range');
+      return;
+    }
+
+    const { type, durationSec } = req.body;
+
+    if (type !== undefined) {
+      if (!VALID_TRANSITION_TYPES.includes(type)) {
+        sendApiError(res, 400, `Invalid transition type. Allowed: ${VALID_TRANSITION_TYPES.join(', ')}`);
+        return;
+      }
+    }
+
+    if (durationSec !== undefined) {
+      if (typeof durationSec !== 'number' || durationSec < 0 || durationSec > 5) {
+        sendApiError(res, 400, 'durationSec must be between 0 and 5');
+        return;
+      }
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+      const transition = p.montagePlan.transitions[index];
+      if (!transition) return null;
+
+      if (type !== undefined) transition.type = type;
+      if (durationSec !== undefined) transition.durationSec = durationSec;
+
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update transition:', err);
+    sendApiError(res, 500, 'Failed to update transition');
+  }
+});
+
+// PUT /api/projects/:id/montage/plan/audio
+// Update audio levels
+router.put('/montage/plan/audio', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const { audio } = req.body;
+    if (!audio || typeof audio !== 'object') {
+      sendApiError(res, 400, 'audio object is required');
+      return;
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+
+      // Merge audio levels (partial update)
+      if (audio.voiceover) {
+        if (typeof audio.voiceover.gainDb === 'number') {
+          p.montagePlan.audio.voiceover.gainDb = audio.voiceover.gainDb;
+        }
+      }
+      if (audio.music) {
+        if (typeof audio.music.gainDb === 'number') {
+          p.montagePlan.audio.music.gainDb = audio.music.gainDb;
+        }
+        if (typeof audio.music.duckingDb === 'number') {
+          p.montagePlan.audio.music.duckingDb = audio.music.duckingDb;
+        }
+        if (typeof audio.music.duckFadeMs === 'number') {
+          p.montagePlan.audio.music.duckFadeMs = audio.music.duckFadeMs;
+        }
+      }
+
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update audio levels:', err);
+    sendApiError(res, 500, 'Failed to update audio levels');
+  }
+});
+
 // POST /api/projects/:id/montage/refine-plan
 router.post('/montage/refine-plan', async (req: Request, res: Response) => {
   try {
