@@ -188,6 +188,8 @@ export async function startRender(
     console.error(`[render] Job ${jobId} failed:`, err);
     updateJob(projectId, jobId, {
       status: 'failed',
+      phase: undefined,
+      completedAt: new Date().toISOString(),
       errorMessage: err.message || String(err),
     }).catch(() => {});
   });
@@ -202,7 +204,12 @@ async function doRender(
   outputFile: string,
   config: RenderConfig,
 ): Promise<void> {
-  await updateJob(projectId, jobId, { status: 'rendering', progress: 0 });
+  await updateJob(projectId, jobId, {
+    status: 'rendering',
+    progress: 0,
+    startedAt: new Date().toISOString(),
+    phase: 'bundling',
+  });
 
   const projectDir = resolveProjectPath(projectId);
 
@@ -225,6 +232,8 @@ async function doRender(
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Remotion bundle failed: ${msg}`);
     }
+
+    await updateJob(projectId, jobId, { phase: 'compositing' });
 
     // Select composition
     // disableWebSecurity allows cross-origin HTTP loading (bundle port ≠ media port)
@@ -252,6 +261,16 @@ async function doRender(
     };
 
     // Render
+    const totalFrames = compositionWithOverrides.durationInFrames;
+    await updateJob(projectId, jobId, {
+      phase: 'encoding',
+      frameTotal: totalFrames,
+      frameCurrent: 0,
+    });
+
+    let lastUpdateTime = Date.now();
+    let lastFrameCount = 0;
+
     try {
       await renderMedia({
         composition: compositionWithOverrides,
@@ -262,10 +281,27 @@ async function doRender(
         chromiumOptions,
         crf: config.crf,
         concurrency: config.concurrency,
-        onProgress: ({ progress }) => {
+        onProgress: ({ progress, renderedFrames }) => {
           const pct = Math.round(progress * 100);
-          if (pct % 5 === 0) {
-            updateJob(projectId, jobId, { progress: pct }).catch(() => {});
+          const now = Date.now();
+          const elapsed = (now - lastUpdateTime) / 1000;
+
+          // Calculate render speed (fps)
+          let fps: number | undefined;
+          if (elapsed > 0.5 && renderedFrames > lastFrameCount) {
+            fps = Math.round(((renderedFrames - lastFrameCount) / elapsed) * 10) / 10;
+          }
+
+          // Throttle updates to every ~2% or every 2 seconds
+          if (pct % 2 === 0 || now - lastUpdateTime > 2000) {
+            const update: Partial<RenderJob> = {
+              progress: pct,
+              frameCurrent: renderedFrames,
+            };
+            if (fps !== undefined) update.renderFps = fps;
+            updateJob(projectId, jobId, update).catch(() => {});
+            lastUpdateTime = now;
+            lastFrameCount = renderedFrames;
           }
         },
       });
@@ -279,10 +315,15 @@ async function doRender(
     mediaServer.close();
   }
 
+  // Finalize
+  await updateJob(projectId, jobId, { phase: 'finalizing' });
+
   // Mark done
   await updateJob(projectId, jobId, {
     status: 'done',
     progress: 100,
+    phase: undefined,
+    completedAt: new Date().toISOString(),
     outputFile: `montage/renders/${jobId}.mp4`,
   });
 }

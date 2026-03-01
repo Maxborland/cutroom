@@ -506,12 +506,22 @@ describe('Montage Integration', () => {
         } as any
       })
 
+      const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockResolvedValueOnce({
+        id: 'render-test-job-preview',
+        createdAt: new Date().toISOString(),
+        quality: 'preview',
+        resolution: '1280x720',
+        status: 'queued',
+        progress: 0,
+      })
+
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/render`)
         .send({ quality: 'preview' })
         .expect(200)
 
-      expect(res.body.jobId).toBe('render-test-job-preview')
+      expect(res.body.id).toBe('render-test-job-preview')
       expect(res.body.status).toBe('queued')
       expect(res.body.quality).toBe('preview')
     })

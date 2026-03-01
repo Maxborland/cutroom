@@ -665,10 +665,17 @@ router.post('/montage/render', async (req: Request, res: Response) => {
 
     const quality = req.body.quality === 'final' ? 'final' : 'preview';
 
-    const { startRender } = await import('../lib/render-worker.js');
+    const { startRender, getRenderJob } = await import('../lib/render-worker.js');
     const jobId = await startRender(project.id, project.montagePlan, quality);
 
-    res.json({ jobId, status: 'queued', quality });
+    const job = await getRenderJob(project.id, jobId);
+    if (!job) {
+      // Fallback (shouldn't happen)
+      res.json({ id: jobId, createdAt: new Date().toISOString(), quality, resolution: quality === 'final' ? '3840x2160' : '1280x720', status: 'queued', progress: 0 });
+      return;
+    }
+
+    res.json(job);
   } catch (err) {
     console.error('Failed to start render:', err);
     sendApiError(res, 500, 'Failed to start render');
