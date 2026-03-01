@@ -170,6 +170,12 @@ export interface RenderJob {
   durationSec?: number
   errorMessage?: string
   logFile?: string
+  phase?: 'bundling' | 'compositing' | 'encoding' | 'finalizing'
+  startedAt?: string
+  completedAt?: string
+  frameCurrent?: number
+  frameTotal?: number
+  renderFps?: number
 }
 
 // ── Creative Director ────────────────────────────────────────────────

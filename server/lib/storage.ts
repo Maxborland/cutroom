@@ -153,6 +153,12 @@ export interface RenderJob {
   resolution: string;
   status: 'queued' | 'rendering' | 'done' | 'failed';
   progress?: number;
+  phase?: 'bundling' | 'compositing' | 'encoding' | 'finalizing';
+  startedAt?: string;
+  completedAt?: string;
+  frameCurrent?: number;
+  frameTotal?: number;
+  renderFps?: number;
   outputFile?: string;
   durationSec?: number;
   errorMessage?: string;

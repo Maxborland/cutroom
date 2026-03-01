@@ -202,13 +202,16 @@ async function doRender(
   outputFile: string,
   config: RenderConfig,
 ): Promise<void> {
-  await updateJob(projectId, jobId, { status: 'rendering', progress: 0 });
+  await updateJob(projectId, jobId, {
+    status: 'rendering',
+    progress: 0,
+    phase: 'bundling',
+    startedAt: new Date().toISOString(),
+  });
 
   const projectDir = resolveProjectPath(projectId);
 
   // Serve project media via HTTP so Remotion's Chromium can load them.
-  // Chromium blocks file:// URLs from HTTP-served pages (the webpack bundle),
-  // so we spin up a temporary localhost server for the project directory.
   const mediaServer = await startMediaServer(projectDir);
   console.log(`[render] Media server for ${projectId} at ${mediaServer.baseUrl}`);
 
@@ -226,8 +229,9 @@ async function doRender(
       throw new Error(`Remotion bundle failed: ${msg}`);
     }
 
+    await updateJob(projectId, jobId, { phase: 'compositing' });
+
     // Select composition
-    // disableWebSecurity allows cross-origin HTTP loading (bundle port ≠ media port)
     const chromiumOptions = { disableWebSecurity: true };
     let composition;
     try {
@@ -252,6 +256,10 @@ async function doRender(
     };
 
     // Render
+    const totalFrames = resolvedPlan.totalDurationFrames;
+    await updateJob(projectId, jobId, { phase: 'encoding', frameTotal: totalFrames });
+    let lastProgressUpdate = 0;
+
     try {
       await renderMedia({
         composition: compositionWithOverrides,
@@ -262,10 +270,20 @@ async function doRender(
         chromiumOptions,
         crf: config.crf,
         concurrency: config.concurrency,
-        onProgress: ({ progress }) => {
+        onProgress: ({ progress, renderedFrames, renderedDoneIn }) => {
           const pct = Math.round(progress * 100);
-          if (pct % 5 === 0) {
-            updateJob(projectId, jobId, { progress: pct }).catch(() => {});
+          const now = Date.now();
+          // Update at most every 2 seconds to avoid thrashing disk
+          if (now - lastProgressUpdate > 2000 || pct === 100) {
+            lastProgressUpdate = now;
+            const elapsed = (now - new Date(job.createdAt).getTime()) / 1000;
+            const fps = elapsed > 0 ? (renderedFrames ?? 0) / elapsed : 0;
+            updateJob(projectId, jobId, {
+              progress: pct,
+              frameCurrent: renderedFrames,
+              frameTotal: totalFrames,
+              renderFps: Math.round(fps * 10) / 10,
+            }).catch(() => {});
           }
         },
       });
@@ -275,6 +293,8 @@ async function doRender(
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Remotion render failed: ${msg}`);
     }
+
+    await updateJob(projectId, jobId, { phase: 'finalizing' });
   } finally {
     mediaServer.close();
   }
@@ -283,6 +303,8 @@ async function doRender(
   await updateJob(projectId, jobId, {
     status: 'done',
     progress: 100,
+    phase: undefined,
+    completedAt: new Date().toISOString(),
     outputFile: `montage/renders/${jobId}.mp4`,
   });
 }

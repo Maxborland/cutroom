@@ -278,6 +278,18 @@ export const api = {
       if (!res.ok) await throwRequestError(res, path)
       return res.json() as Promise<{ musicFile: string; provider: string }>
     },
+    deleteVoiceover: (projectId: string) =>
+      request<{ deleted: boolean }>(`/projects/${projectId}/montage/voiceover`, { method: 'DELETE' }),
+    uploadVoiceover: async (projectId: string, file: File) => {
+      const form = new FormData();
+      form.append('voiceover', file);
+      const path = `/projects/${projectId}/montage/upload-voiceover`;
+      const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form });
+      if (!res.ok) await throwRequestError(res, path);
+      return res.json() as Promise<{ voiceoverFile: string; provider: string }>;
+    },
+    deleteMusic: (projectId: string) =>
+      request<{ deleted: boolean }>(`/projects/${projectId}/montage/music`, { method: 'DELETE' }),
     musicUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/music`,
     voiceoverUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/voiceover`,
     generatePlan: (projectId: string) =>
