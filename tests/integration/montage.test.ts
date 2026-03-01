@@ -553,6 +553,28 @@ describe('Montage Integration', () => {
         .expect(400)
     })
 
+    it('returns 400 when timeline omits an existing shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
+            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
+          ],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline`)
+        .send({ timeline: [{ shotId: 'shot-1', durationSec: 5 }] })
+        .expect(400)
+    })
+
     it('returns 400 when no plan exists', async () => {
       await request(app)
         .put(`/api/projects/${projectId}/montage/plan/timeline`)

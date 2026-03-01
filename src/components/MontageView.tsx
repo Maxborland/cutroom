@@ -760,13 +760,24 @@ function AudioMixer({
 }) {
   const [saving, setSaving] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef = useRef<Record<string, unknown>>({})
 
   const update = useCallback((audio: Record<string, unknown>) => {
+    for (const [key, val] of Object.entries(audio)) {
+      pendingRef.current[key] = {
+        ...((pendingRef.current[key] as Record<string, unknown>) || {}),
+        ...((val as Record<string, unknown>) || {}),
+      }
+    }
+
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(async () => {
+      const payload = { ...pendingRef.current }
+      pendingRef.current = {}
+
       setSaving(true)
       try {
-        const result = await api.montage.updateAudioLevels(projectId, audio)
+        const result = await api.montage.updateAudioLevels(projectId, payload)
         onPlanUpdated(result.montagePlan)
       } catch (err) {
         console.error('Audio update failed:', err)

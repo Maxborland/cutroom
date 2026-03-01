@@ -627,6 +627,11 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       }
     }
 
+    if (timeline.length !== project.montagePlan.timeline.length || newIds.size !== existingIds.size) {
+      sendApiError(res, 400, 'Timeline must contain all existing shots exactly once');
+      return;
+    }
+
     // Rebuild startSec based on new order
     const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
     let cursor = introSec;
