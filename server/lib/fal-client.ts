@@ -139,7 +139,7 @@ function toDurationSeconds(value: unknown): number | undefined {
   return Number.isFinite(plain) ? plain : undefined;
 }
 
-function chooseNearestPermittedDuration(
+function chooseRoundedUpPermittedDuration(
   permitted: Array<string | number>,
   requested: unknown,
 ): string | number | undefined {
@@ -148,20 +148,18 @@ function chooseNearestPermittedDuration(
   const requestedSec = toDurationSeconds(requested);
   if (requestedSec === undefined) return permitted[0];
 
-  let best: string | number | undefined;
-  let bestDelta = Number.POSITIVE_INFINITY;
+  const candidates = permitted
+    .map((value) => ({ value, sec: toDurationSeconds(value) }))
+    .filter((item): item is { value: string | number; sec: number } => typeof item.sec === 'number' && Number.isFinite(item.sec))
+    .sort((a, b) => a.sec - b.sec);
 
-  for (const candidate of permitted) {
-    const sec = toDurationSeconds(candidate);
-    if (sec === undefined) continue;
-    const delta = Math.abs(sec - requestedSec);
-    if (delta < bestDelta) {
-      bestDelta = delta;
-      best = candidate;
-    }
-  }
+  if (candidates.length === 0) return permitted[0];
 
-  return best ?? permitted[0];
+  const ceiling = candidates.find((c) => c.sec >= requestedSec);
+  if (ceiling) return ceiling.value;
+
+  // If requested is above the max permitted value, clamp to max.
+  return candidates[candidates.length - 1].value;
 }
 
 function normalizeVideoDurationForEndpoint(
@@ -171,7 +169,7 @@ function normalizeVideoDurationForEndpoint(
   const lower = String(endpoint || '').toLowerCase();
   // veo3 image-to-video expects literal durations like '4s', '6s', '8s'.
   if (lower.includes('veo3') && lower.includes('image-to-video')) {
-    return chooseNearestPermittedDuration(['4s', '6s', '8s'], requested);
+    return chooseRoundedUpPermittedDuration(['4s', '6s', '8s'], requested);
   }
 
   return undefined;
@@ -352,7 +350,7 @@ export async function falGenerateVideo(opts: {
 
       const permittedDurations = extractPermittedDurationValues(err);
       if (!adjustedDuration && permittedDurations.length > 0) {
-        const replacement = chooseNearestPermittedDuration(
+        const replacement = chooseRoundedUpPermittedDuration(
           permittedDurations,
           currentInput.duration ?? opts.duration,
         );
