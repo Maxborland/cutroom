@@ -1,12 +1,12 @@
 import React from 'react';
 import { AbsoluteFill } from 'remotion';
-import type { ResolvedPlan } from '../lib/plan-reader.js';
-import { VideoClip } from '../components/VideoClip.js';
-import { Transition } from '../components/Transition.js';
-import { Intro } from '../components/Intro.js';
-import { Outro } from '../components/Outro.js';
-import { LowerThirdOverlay } from '../components/LowerThird.js';
-import { AudioMixer } from '../components/AudioMixer.js';
+import type { ResolvedPlan } from '../lib/plan-reader';
+import { VideoClip } from '../components/VideoClip';
+import { Transition } from '../components/Transition';
+import { Intro } from '../components/Intro';
+import { Outro } from '../components/Outro';
+import { LowerThirdOverlay } from '../components/LowerThird';
+import { AudioMixer } from '../components/AudioMixer';
 
 interface MontageCompositionProps {
   plan: ResolvedPlan;

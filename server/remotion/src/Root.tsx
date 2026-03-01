@@ -1,7 +1,7 @@
 import React from 'react';
 import { Composition, registerRoot } from 'remotion';
-import { MontageComposition } from './compositions/MontageComposition.js';
-import type { ResolvedPlan } from './lib/plan-reader.js';
+import { MontageComposition } from './compositions/MontageComposition';
+import type { ResolvedPlan } from './lib/plan-reader';
 
 const RemotionRoot: React.FC = () => {
   return (

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Sequence, interpolate, useCurrentFrame } from 'remotion';
-import type { ResolvedTransition } from '../lib/plan-reader.js';
+import type { ResolvedTransition } from '../lib/plan-reader';
 
 interface TransitionProps {
   transition: ResolvedTransition;

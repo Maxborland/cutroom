@@ -2,7 +2,7 @@
  * plan-reader.ts — Parse MontagePlan JSON into Remotion-friendly data structures.
  */
 
-import type { MontagePlan, TimelineEntry, TransitionEntry, LowerThird } from '../../../lib/storage.js';
+import type { MontagePlan, TimelineEntry, TransitionEntry, LowerThird } from '../../../lib/storage';
 
 export interface ResolvedClip {
   shotId: string;

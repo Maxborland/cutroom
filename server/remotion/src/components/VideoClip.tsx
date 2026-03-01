@@ -1,6 +1,6 @@
 import React from 'react';
 import { Sequence, Video, Img } from 'remotion';
-import type { ResolvedClip } from '../lib/plan-reader.js';
+import type { ResolvedClip } from '../lib/plan-reader';
 
 /** Convert absolute path to file:// URL for Remotion media */
 function toFileUrl(filePath: string): string {

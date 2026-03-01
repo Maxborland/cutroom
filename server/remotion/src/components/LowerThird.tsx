@@ -1,7 +1,7 @@
 import React from 'react';
 import { Sequence, useCurrentFrame, interpolate } from 'remotion';
-import type { ResolvedLowerThird } from '../lib/plan-reader.js';
-import type { MontagePlan } from '../../../lib/storage.js';
+import type { ResolvedLowerThird } from '../lib/plan-reader';
+import type { MontagePlan } from '../../../lib/storage';
 
 interface LowerThirdProps {
   lowerThird: ResolvedLowerThird;

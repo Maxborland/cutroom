@@ -1,6 +1,6 @@
 import React from 'react';
 import { Sequence, useCurrentFrame, interpolate } from 'remotion';
-import type { MontagePlan } from '../../../lib/storage.js';
+import type { MontagePlan } from '../../../lib/storage';
 
 interface IntroProps {
   title: string;
