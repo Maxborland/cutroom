@@ -1,5 +1,5 @@
 import React from 'react';
-import { OffthreadAudio, Sequence, interpolate, useCurrentFrame } from 'remotion';
+import { Audio, Sequence, interpolate, useCurrentFrame } from 'remotion';
 
 interface AudioMixerProps {
   voiceoverFile: string;
@@ -53,12 +53,12 @@ export const AudioMixer: React.FC<AudioMixerProps> = ({
     <>
       {voiceoverFile && (
         <Sequence from={introFrames}>
-          <OffthreadAudio src={voiceoverFile} volume={dbToLinear(voiceoverGainDb)} />
+          <Audio src={voiceoverFile} volume={dbToLinear(voiceoverGainDb)} />
         </Sequence>
       )}
       {musicFile && (
         <Sequence from={0} durationInFrames={totalDurationFrames}>
-          <OffthreadAudio src={musicFile} volume={dbToLinear(musicVolumeDb)} loop />
+          <Audio src={musicFile} volume={dbToLinear(musicVolumeDb)} loop />
         </Sequence>
       )}
     </>
