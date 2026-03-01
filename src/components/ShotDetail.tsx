@@ -157,11 +157,14 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     setSavingVideoTweaks(true)
     try {
       if (hasChanges) {
-        await api.shots.update(project.id, shot.id, {
+        const shotId = shot.id
+        await api.shots.update(project.id, shotId, {
           duration: safeDuration,
           videoPrompt: nextPrompt,
         })
         await loadProject(project.id)
+        // Restore active shot after loadProject resets activeShotId
+        setActiveShotId(shotId)
         setVideoEditHint('')
       }
 
@@ -635,16 +638,16 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
           <>
             <div className="flex flex-col gap-2 flex-1">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Edit hint</span>
+                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Подсказка</span>
                 <input
                   value={videoEditHint}
                   onChange={(e) => setVideoEditHint(e.target.value)}
-                  placeholder="e.g. slower camera, less shake, more natural motion"
+                  placeholder="напр. медленнее камера, меньше тряски, плавнее движение"
                   className="flex-1 brutal-input px-2 py-1 text-xs font-mono"
                 />
               </div>
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Duration</span>
+                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Длительность</span>
                 <input
                   type="number"
                   min={1}
@@ -660,7 +663,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                       key={v}
                       onClick={() => setDurationDraft(v)}
                       className="px-2 py-1 rounded-[4px] border-2 border-border text-[10px] font-mono text-text-muted hover:text-text-primary hover:bg-surface-2"
-                      title={`Set duration to ${v}s`}
+                      title={`Установить ${v} сек`}
                       type="button"
                     >
                       {v}s
@@ -672,12 +675,12 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
 
             <button
               onClick={() => void handleApplyTweaksAndRegenerate()}
-              disabled={savingVideoTweaks || generatingVideo}
+              disabled={savingVideoTweaks || generatingVideo || shot.generatedImages.length === 0}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-violet text-white text-xs font-bold uppercase brutal-btn disabled:opacity-50"
-              title="Apply hint/duration and regenerate video"
+              title="Применить и перегенерировать видео"
             >
               {savingVideoTweaks || generatingVideo ? <Loader2 size={12} className="animate-spin" /> : <Film size={12} />}
-              {savingVideoTweaks || generatingVideo ? 'Генерация...' : 'Apply + Regenerate'}
+              {savingVideoTweaks || generatingVideo ? 'Генерация...' : 'Перегенерировать'}
             </button>
 
             <button
