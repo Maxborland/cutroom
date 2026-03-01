@@ -1,5 +1,5 @@
 import React from 'react';
-import { Audio, Sequence, interpolate, useCurrentFrame } from 'remotion';
+import { OffthreadAudio, Sequence, interpolate, useCurrentFrame } from 'remotion';
 
 interface AudioMixerProps {
   voiceoverFile: string;
@@ -12,14 +12,6 @@ interface AudioMixerProps {
   outroFrames: number;
   totalDurationFrames: number;
   fps: number;
-}
-
-/** Convert absolute path to file:// URL for Remotion media */
-function toFileUrl(filePath: string): string {
-  if (!filePath) return filePath;
-  if (filePath.startsWith('file://')) return filePath;
-  if (filePath.startsWith('/')) return `file://${filePath}`;
-  return filePath;
 }
 
 function dbToLinear(db: number): number {
@@ -61,12 +53,12 @@ export const AudioMixer: React.FC<AudioMixerProps> = ({
     <>
       {voiceoverFile && (
         <Sequence from={introFrames}>
-          <Audio src={toFileUrl(voiceoverFile)} volume={dbToLinear(voiceoverGainDb)} />
+          <OffthreadAudio src={voiceoverFile} volume={dbToLinear(voiceoverGainDb)} />
         </Sequence>
       )}
       {musicFile && (
         <Sequence from={0} durationInFrames={totalDurationFrames}>
-          <Audio src={toFileUrl(musicFile)} volume={dbToLinear(musicVolumeDb)} loop />
+          <OffthreadAudio src={musicFile} volume={dbToLinear(musicVolumeDb)} loop />
         </Sequence>
       )}
     </>

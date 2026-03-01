@@ -1,13 +1,6 @@
 import React from 'react';
-import { Sequence, Video, Img } from 'remotion';
+import { Sequence, OffthreadVideo, Img } from 'remotion';
 import type { ResolvedClip } from '../lib/plan-reader';
-
-/** Convert absolute path to file:// URL for Remotion media */
-function toFileUrl(filePath: string): string {
-  if (filePath.startsWith('file://')) return filePath;
-  if (filePath.startsWith('/')) return `file://${filePath}`;
-  return filePath;
-}
 
 interface VideoClipProps {
   clip: ResolvedClip;
@@ -16,16 +9,23 @@ interface VideoClipProps {
   height: number;
 }
 
+/**
+ * Renders a single clip (video or image) within the montage timeline.
+ *
+ * Uses <OffthreadVideo> instead of <Video> for server-side rendering:
+ * - Extracts frames via ffmpeg, not HTML5 <video> element
+ * - Handles seeking past video end gracefully (shows last frame)
+ * - More reliable and memory-efficient in renderMedia()
+ */
 export const VideoClip: React.FC<VideoClipProps> = ({ clip, fps, width, height }) => {
   const isImage = clip.file.match(/\.(jpg|jpeg|png|webp)$/i);
-  const src = toFileUrl(clip.file);
 
   return (
     <Sequence from={clip.startFrame} durationInFrames={clip.durationFrames}>
       <div style={{ width, height, position: 'relative', overflow: 'hidden' }}>
         {isImage ? (
           <Img
-            src={src}
+            src={clip.file}
             style={{
               width: '100%',
               height: '100%',
@@ -33,8 +33,8 @@ export const VideoClip: React.FC<VideoClipProps> = ({ clip, fps, width, height }
             }}
           />
         ) : (
-          <Video
-            src={src}
+          <OffthreadVideo
+            src={clip.file}
             style={{
               width: '100%',
               height: '100%',
