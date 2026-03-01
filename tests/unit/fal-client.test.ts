@@ -92,6 +92,21 @@ describe('fal-client image generation', () => {
     expect(subscribeMock).toHaveBeenCalledTimes(2)
   })
 
+  it('normalizes duration for veo3 image-to-video endpoints before subscribe', async () => {
+    subscribeMock.mockResolvedValueOnce({ data: { video: { url: 'https://example.com/video.mp4' } } })
+
+    const url = await falGenerateVideo({
+      endpoint: 'fal-ai/veo3.1/fast/image-to-video',
+      prompt: 'test',
+      sourceImageUrl: 'https://example.com/input.jpg',
+      duration: 3,
+    })
+
+    expect(url).toBe('https://example.com/video.mp4')
+    expect(subscribeMock).toHaveBeenCalledTimes(1)
+    expect(subscribeMock.mock.calls[0][1].input.duration).toBe('4s')
+  })
+
   it('adjusts duration to nearest permitted value when fal returns duration validation error', async () => {
     const validationError: any = new Error('ValidationError: Unprocessable Entity')
     validationError.status = 422
@@ -111,7 +126,8 @@ describe('fal-client image generation', () => {
       .mockResolvedValueOnce({ data: { video: { url: 'https://example.com/video.mp4' } } })
 
     const url = await falGenerateVideo({
-      endpoint: 'fal-ai/veo3.1/fast/image-to-video',
+      // Use an endpoint that is not pre-normalized by heuristics so the retry path is exercised.
+      endpoint: 'fal-ai/unknown/image-to-video',
       prompt: 'test',
       sourceImageUrl: 'https://example.com/input.jpg',
       duration: 3,
