@@ -99,12 +99,13 @@ describe('fal-client image generation', () => {
       endpoint: 'fal-ai/veo3.1/fast/image-to-video',
       prompt: 'test',
       sourceImageUrl: 'https://example.com/input.jpg',
-      duration: 3,
+      duration: 5,
     })
 
     expect(url).toBe('https://example.com/video.mp4')
     expect(subscribeMock).toHaveBeenCalledTimes(1)
-    expect(subscribeMock.mock.calls[0][1].input.duration).toBe('4s')
+    // veo3 supports only 4s/6s/8s; we round up (5s -> 6s)
+    expect(subscribeMock.mock.calls[0][1].input.duration).toBe('6s')
   })
 
   it('adjusts duration to nearest permitted value when fal returns duration validation error', async () => {
