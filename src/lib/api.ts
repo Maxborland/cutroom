@@ -253,6 +253,11 @@ export const api = {
         providers: { id: string; name: string; configured: boolean }[];
         voices: { id: string; name: string; gender: string; language: string; provider: string }[];
       }>(`/projects/${projectId}/montage/voices`),
+    normalizeVoText: (projectId: string, text?: string) =>
+      request<{ normalizedText: string }>(`/projects/${projectId}/montage/normalize-vo-text`, {
+        method: 'POST',
+        body: JSON.stringify(text !== undefined ? { text } : {}),
+      }),
     generateVoiceover: (projectId: string, options?: { provider?: string; voiceId?: string }) =>
       request<{ voiceoverFile: string; provider: string; voiceId: string }>(`/projects/${projectId}/montage/generate-voiceover`, {
         method: 'POST',

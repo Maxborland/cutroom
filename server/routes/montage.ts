@@ -7,6 +7,7 @@ import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/s
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
+import { normalizeVoiceoverText } from '../lib/tts-utils.js';
 
 const router = Router({ mergeParams: true });
 
@@ -142,6 +143,30 @@ router.get('/montage/voices', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /api/projects/:id/montage/normalize-vo-text
+// Preview endpoint for text normalization before TTS generation
+router.post('/montage/normalize-vo-text', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const sourceText = typeof req.body?.text === 'string'
+      ? req.body.text
+      : (project.voiceoverScript || '');
+
+    if (!sourceText.trim()) {
+      sendApiError(res, 400, 'Text is required for normalization');
+      return;
+    }
+
+    const normalizedText = normalizeVoiceoverText(sourceText);
+    res.json({ normalizedText });
+  } catch (err) {
+    console.error('Failed to normalize voiceover text:', err);
+    sendApiError(res, 500, 'Failed to normalize voiceover text');
+  }
+});
+
 // POST /api/projects/:id/montage/generate-voiceover
 router.post('/montage/generate-voiceover', async (req: Request, res: Response) => {
   try {
@@ -155,6 +180,12 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
 
     // Capture the script text at generation time for TOCTOU comparison
     const scriptAtGeneration = project.voiceoverScript || '';
+    const normalizedScript = normalizeVoiceoverText(scriptAtGeneration);
+
+    if (!normalizedScript.trim()) {
+      sendApiError(res, 400, 'Voiceover text is empty after normalization');
+      return;
+    }
 
     // Determine provider and voice from request body → project → settings → defaults
     const settings = await getGlobalSettings();
@@ -193,8 +224,8 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
       return;
     }
 
-    // Generate speech
-    const result = await generateSpeech(scriptAtGeneration, requestedProvider, requestedVoice);
+    // Generate speech using normalized text for better TTS prosody
+    const result = await generateSpeech(normalizedScript, requestedProvider, requestedVoice);
 
     // Validate audio content type before writing to disk
     const allowedAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/wave', 'audio/x-wav'];

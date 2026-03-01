@@ -195,6 +195,19 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
     }
   }
 
+  const normalizeScript = async () => {
+    if (!script.trim()) return
+
+    setLoading(true)
+    try {
+      const result = await api.montage.normalizeVoText(project.id, script)
+      setScript(result.normalizedText)
+      setEditing(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const generateAudio = async () => {
     setLoading(true)
     try {
@@ -249,6 +262,9 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
             <div className="flex gap-2">
               {editing ? (
                 <>
+                  <button onClick={normalizeScript} disabled={loading || !script.trim()} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-amber rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
+                    <Wand2 size={14} /> Нормализовать
+                  </button>
                   <button onClick={saveScript} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
                     <Check size={14} /> Сохранить
                   </button>
@@ -260,6 +276,9 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                 <>
                   <button onClick={() => setEditing(true)} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
                     <Edit3 size={14} /> Редактировать
+                  </button>
+                  <button onClick={normalizeScript} disabled={loading || !script.trim()} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-amber rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
+                    <Wand2 size={14} /> Нормализовать
                   </button>
                   {!project.voiceoverScriptApproved && (
                     <button onClick={approveScript} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
