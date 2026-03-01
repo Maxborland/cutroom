@@ -107,6 +107,10 @@ async function doRender(
   await updateJob(projectId, jobId, { status: 'rendering', progress: 0 });
 
   const projectDir = resolveProjectPath(projectId);
+
+  // resolvePlan converts plan paths to absolute file paths for Remotion.
+  // Chromium blocks file:// by default — we pass disableWebSecurity
+  // to renderMedia so local file paths work.
   const resolvedPlan = resolvePlan(plan, projectDir);
 
   // Bundle Remotion project
@@ -121,12 +125,15 @@ async function doRender(
   }
 
   // Select composition
+  // disableWebSecurity allows Chromium to load local file:// media
+  const chromiumOptions = { disableWebSecurity: true };
   let composition;
   try {
     composition = await selectComposition({
       serveUrl: bundled,
       id: 'Montage',
       inputProps: { plan: resolvedPlan },
+      chromiumOptions,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -150,6 +157,7 @@ async function doRender(
       codec: config.codec as any,
       outputLocation: outputFile,
       inputProps: { plan: resolvedPlan },
+      chromiumOptions,
       crf: config.crf,
       concurrency: config.concurrency,
       onProgress: ({ progress }) => {
