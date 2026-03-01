@@ -46,6 +46,11 @@ function errorMessageIncludes(err: any, pattern: string): boolean {
   return message.includes(needle);
 }
 
+/** Strip newlines/control chars from a string before logging (prevent log injection). */
+function safeLogValue(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n\t\x00-\x1f]/g, ' ').slice(0, 200);
+}
+
 function isRetryableFalError(err: any): boolean {
   const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status ?? 0);
   if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) {
@@ -118,6 +123,16 @@ function extractPermittedDurationValues(err: any): Array<string | number> {
   }
 
   return [];
+}
+
+function isFalNoMediaGeneratedError(err: any): boolean {
+  const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status ?? 0);
+  if (status !== 422) return false;
+
+  const detail = err?.body?.detail;
+  if (!Array.isArray(detail)) return false;
+
+  return detail.some((item) => String(item?.type || '').toLowerCase() === 'no_media_generated');
 }
 
 function toDurationSeconds(value: unknown): number | undefined {
@@ -328,14 +343,17 @@ export async function falGenerateVideo(opts: {
     ...(opts.extraInput || {}),
   };
 
-  console.log(`[fal] video endpoint=${opts.endpoint} params=${Object.keys(input).join(',')}`);
+  const safeEndpoint = safeLogValue(opts.endpoint);
+  console.log(`[fal] video endpoint=${safeEndpoint} params=${Object.keys(input).join(',')}`);
 
   let result: any;
   let currentInput: Record<string, unknown> = input;
   let droppedExtraInput = false;
   let adjustedDuration = false;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Up to 5 outer attempts to allow multiple recovery strategies
+  // (drop extraInput, adjust duration, enable auto_fix, delayed retry).
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       result = await falSubscribeWithRetry(opts.endpoint, currentInput, signal);
       break;
@@ -344,7 +362,7 @@ export async function falGenerateVideo(opts: {
       if (!droppedExtraInput && isFalInputValidationError(err, extraKeys)) {
         droppedExtraInput = true;
         currentInput = { ...baseInput };
-        console.warn(`[fal] video endpoint=${opts.endpoint} rejected optional params (${extraKeys.join(',')}); retrying without them`);
+        console.warn(`[fal] video endpoint=${safeEndpoint} rejected optional params (${extraKeys.join(',')}); retrying without them`);
         continue;
       }
 
@@ -361,7 +379,27 @@ export async function falGenerateVideo(opts: {
             ...currentInput,
             duration: replacement,
           };
-          console.warn(`[fal] video endpoint=${opts.endpoint} adjusted duration to supported value: ${replacement}`);
+          console.warn(`[fal] video endpoint=${safeEndpoint} adjusted duration to supported value: ${replacement}`);
+          continue;
+        }
+      }
+
+      // Some fal video endpoints return 422 no_media_generated even for valid input.
+      // Treat this as retryable: enable auto_fix once, then retry with delay.
+      if (isFalNoMediaGeneratedError(err)) {
+        if (currentInput.auto_fix !== true) {
+          currentInput = {
+            ...currentInput,
+            auto_fix: true,
+          };
+          console.warn(`[fal] video endpoint=${safeEndpoint} no_media_generated; retrying with auto_fix=true`);
+          continue;
+        }
+
+        if (attempt < 5) {
+          const delay = attempt * 2000;
+          console.warn(`[fal] video endpoint=${safeEndpoint} no_media_generated; retrying in ${delay / 1000}s...`);
+          await sleepWithAbort(delay, signal);
           continue;
         }
       }
