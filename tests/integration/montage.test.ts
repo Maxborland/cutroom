@@ -203,12 +203,38 @@ describe('Montage Integration', () => {
     })
   })
 
-  describe('POST /montage/generate-voiceover', () => {
-    it('generates voiceover via TTS provider and saves audio', async () => {
+  describe('POST /montage/normalize-vo-text', () => {
+    it('returns normalized voiceover text preview', async () => {
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({ text: 'ул. Ленина, д. 12 — 40 кв.м.... (пауза)' })
+        .expect(200)
+
+      expect(res.body).toEqual({
+        normalizedText: 'улица Ленина, дом двенадцать, сорок квадратных метров,.',
+      })
+    })
+
+    it('returns 400 when no text provided and project script is empty', async () => {
       await withProject(projectId, (proj) => {
-        proj.voiceoverScript = 'Script for TTS'
+        proj.voiceoverScript = ''
+      })
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({})
+        .expect(400)
+    })
+  })
+
+  describe('POST /montage/generate-voiceover', () => {
+    it('generates voiceover via TTS provider, normalizes script text and saves audio', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = 'ул. Ленина, д. 7 — 42 кв.м.... [камера едет]'
         proj.voiceoverScriptApproved = true
       })
+
+      const { generateSpeech } = await import('../../server/lib/tts-providers.js')
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
@@ -218,6 +244,11 @@ describe('Montage Integration', () => {
       expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
       expect(res.body.provider).toBe('elevenlabs-fal')
       expect(res.body.voiceId).toBe('Aria')
+      expect(generateSpeech).toHaveBeenCalledWith(
+        'улица Ленина, дом семь, сорок два квадратных метров,.',
+        'elevenlabs-fal',
+        'Aria',
+      )
     })
 
     it('returns 400 when script not approved', async () => {
