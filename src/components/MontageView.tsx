@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronUp,
   Send,
+  Trash2,
   AlertCircle,
 } from 'lucide-react'
 
@@ -133,11 +134,14 @@ interface ProviderInfo {
 
 function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false)
+  const [loadingAction, setLoadingAction] = useState('')
+  const [error, setError] = useState('')
   const [script, setScript] = useState(project.voiceoverScript || '')
   const [editing, setEditing] = useState(false)
   const [voices, setVoices] = useState<VoiceInfo[]>([])
   const [activeProvider, setActiveProvider] = useState('')
   const [selectedVoice, setSelectedVoice] = useState(project.voiceoverVoiceId || '')
+  const voUploadRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setScript(project.voiceoverScript || '')
@@ -147,11 +151,9 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
   useEffect(() => {
     api.montage.getVoices(project.id).then((data) => {
       setVoices(data.voices)
-      // The first configured provider is the active one (set in Settings)
       const configured = data.providers.find((p: ProviderInfo) => p.configured)
       const providerId = configured?.id || ''
       setActiveProvider(providerId)
-      // Set default voice for provider if not already set
       if (project.voiceoverVoiceId) {
         setSelectedVoice(project.voiceoverVoiceId)
       } else {
@@ -163,62 +165,65 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
 
   const filteredVoices = voices.filter((v) => v.provider === activeProvider)
 
-  const generateScript = async () => {
+  const withLoading = async (action: string, fn: () => Promise<void>) => {
     setLoading(true)
+    setLoadingAction(action)
+    setError('')
     try {
-      const result = await api.montage.generateVoScript(project.id)
-      setScript(result.voiceoverScript)
-      onRefresh()
+      await fn()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(msg)
     } finally {
       setLoading(false)
+      setLoadingAction('')
     }
   }
 
-  const saveScript = async () => {
-    setLoading(true)
-    try {
-      await api.montage.updateVoScript(project.id, script)
-      setEditing(false)
-      onRefresh()
-    } finally {
-      setLoading(false)
-    }
-  }
+  const generateScript = () => withLoading('Генерация скрипта...', async () => {
+    const result = await api.montage.generateVoScript(project.id)
+    setScript(result.voiceoverScript)
+    onRefresh()
+  })
 
-  const approveScript = async () => {
-    setLoading(true)
-    try {
-      await api.montage.approveVoScript(project.id)
-      onRefresh()
-    } finally {
-      setLoading(false)
-    }
-  }
+  const saveScript = () => withLoading('Сохранение...', async () => {
+    await api.montage.updateVoScript(project.id, script)
+    setEditing(false)
+    onRefresh()
+  })
+
+  const approveScript = () => withLoading('Утверждение...', async () => {
+    await api.montage.approveVoScript(project.id)
+    onRefresh()
+  })
 
   const normalizeScript = async () => {
     if (!script.trim()) return
-
-    setLoading(true)
-    try {
+    await withLoading('Нормализация текста...', async () => {
       const result = await api.montage.normalizeVoText(project.id, script)
       setScript(result.normalizedText)
       setEditing(true)
-    } finally {
-      setLoading(false)
-    }
+    })
   }
 
-  const generateAudio = async () => {
-    setLoading(true)
-    try {
-      await api.montage.generateVoiceover(project.id, {
-        voiceId: selectedVoice,
-      })
+  const generateAudio = () => {
+    const providerName = activeProvider || 'tts'
+    withLoading(`Генерация через ${providerName}...`, async () => {
+      await api.montage.generateVoiceover(project.id, { voiceId: selectedVoice })
       onRefresh()
-    } finally {
-      setLoading(false)
-    }
+    })
   }
+
+  const deleteVoiceover = () => withLoading('Удаление...', async () => {
+    if (!window.confirm('Удалить файл озвучки?')) return
+    await api.montage.deleteVoiceover(project.id)
+    onRefresh()
+  })
+
+  const uploadVoiceover = (file: File) => withLoading('Загрузка файла...', async () => {
+    await api.montage.uploadVoiceover(project.id, file)
+    onRefresh()
+  })
 
   return (
     <div className="space-y-4">
@@ -227,6 +232,17 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
           <Mic size={18} />
           Скрипт озвучки
         </h3>
+
+        {/* Error alert */}
+        {error && (
+          <div className="flex items-start gap-2 bg-surface-1 border-2 border-red-500 rounded-[5px] p-3 mb-4">
+            <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+            <span className="font-mono text-xs text-red-400 flex-1">{error}</span>
+            <button onClick={() => setError('')} className="text-red-400 hover:text-red-300">
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         {!script && !loading && (
           <button
@@ -241,7 +257,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
         {loading && (
           <div className="flex items-center gap-2 text-text-muted">
             <Loader2 size={16} className="animate-spin" />
-            <span className="font-mono text-xs">Обработка...</span>
+            <span className="font-mono text-xs">{loadingAction || 'Обработка...'}</span>
           </div>
         )}
 
@@ -259,7 +275,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
               </div>
             )}
 
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               {editing ? (
                 <>
                   <button onClick={normalizeScript} disabled={loading || !script.trim()} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-amber rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
@@ -299,7 +315,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                   <span className="font-mono text-xs text-emerald uppercase">Скрипт утверждён</span>
                 </div>
 
-                {/* Voice selection — provider comes from Settings */}
+                {/* Voice selection */}
                 <div>
                   <label className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
                     Голос
@@ -322,18 +338,63 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                   )}
                 </div>
 
+                {/* Hidden upload input */}
+                <input
+                  ref={voUploadRef}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(e) => e.target.files?.[0] && uploadVoiceover(e.target.files[0])}
+                />
+
                 {project.voiceoverFile ? (
-                  <div className="flex items-center gap-3">
-                    <audio controls src={api.montage.voiceoverUrl(project.id)} className="flex-1" />
-                    <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
-                      <RefreshCw size={14} />
-                    </button>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <audio controls src={api.montage.voiceoverUrl(project.id)} className="flex-1" />
+                      <button
+                        onClick={() => voUploadRef.current?.click()}
+                        disabled={loading}
+                        title="Загрузить файл"
+                        className="flex items-center gap-2 px-3 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                      >
+                        <Upload size={14} />
+                      </button>
+                      <button
+                        onClick={generateAudio}
+                        disabled={loading}
+                        title="Перегенерировать"
+                        className="flex items-center gap-2 px-3 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                      >
+                        <RefreshCw size={14} />
+                      </button>
+                      <button
+                        onClick={deleteVoiceover}
+                        disabled={loading}
+                        title="Удалить озвучку"
+                        className="flex items-center gap-2 px-3 py-2 bg-surface-1 text-red-400 rounded-[5px] border-2 border-red-500 font-mono text-xs uppercase tracking-wider hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 ) : (
-                  <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
-                    {loading ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
-                    Сгенерировать аудио
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={generateAudio}
+                      disabled={loading}
+                      className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
+                    >
+                      {loading ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
+                      Сгенерировать аудио
+                    </button>
+                    <button
+                      onClick={() => voUploadRef.current?.click()}
+                      disabled={loading}
+                      className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                    >
+                      <Upload size={14} /> Загрузить файл
+                    </button>
+                  </div>
                 )}
               </div>
             )}
@@ -348,6 +409,8 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
 
 function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false)
+  const [loadingAction, setLoadingAction] = useState('')
+  const [error, setError] = useState('')
   const [prompt, setPrompt] = useState(project.musicPrompt || '')
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -355,36 +418,42 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
     setPrompt(project.musicPrompt || '')
   }, [project.musicPrompt])
 
-  const generatePrompt = async () => {
+  const withLoading = async (action: string, fn: () => Promise<void>) => {
     setLoading(true)
+    setLoadingAction(action)
+    setError('')
     try {
-      const result = await api.montage.generateMusicPrompt(project.id)
-      setPrompt(result.musicPrompt)
-      onRefresh()
+      await fn()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(msg)
     } finally {
       setLoading(false)
+      setLoadingAction('')
     }
   }
 
-  const savePrompt = async () => {
-    setLoading(true)
-    try {
-      await api.montage.updateMusicPrompt(project.id, prompt)
-      onRefresh()
-    } finally {
-      setLoading(false)
-    }
-  }
+  const generatePrompt = () => withLoading('Генерация промпта...', async () => {
+    const result = await api.montage.generateMusicPrompt(project.id)
+    setPrompt(result.musicPrompt)
+    onRefresh()
+  })
 
-  const uploadMusic = async (file: File) => {
-    setLoading(true)
-    try {
-      await api.montage.uploadMusic(project.id, file)
-      onRefresh()
-    } finally {
-      setLoading(false)
-    }
-  }
+  const savePrompt = () => withLoading('Сохранение...', async () => {
+    await api.montage.updateMusicPrompt(project.id, prompt)
+    onRefresh()
+  })
+
+  const uploadMusic = (file: File) => withLoading('Загрузка...', async () => {
+    await api.montage.uploadMusic(project.id, file)
+    onRefresh()
+  })
+
+  const deleteMusic = () => withLoading('Удаление...', async () => {
+    if (!window.confirm('Удалить музыкальный трек?')) return
+    await api.montage.deleteMusic(project.id)
+    onRefresh()
+  })
 
   return (
     <div className="space-y-4">
@@ -393,6 +462,17 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
           <Music size={18} />
           Музыка
         </h3>
+
+        {/* Error alert */}
+        {error && (
+          <div className="flex items-start gap-2 bg-surface-1 border-2 border-red-500 rounded-[5px] p-3 mb-4">
+            <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+            <span className="font-mono text-xs text-red-400 flex-1">{error}</span>
+            <button onClick={() => setError('')} className="text-red-400 hover:text-red-300">
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         {/* Prompt section */}
         <div className="space-y-3 mb-4">
@@ -440,8 +520,20 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
               </div>
               <div className="flex items-center gap-3">
                 <audio controls src={api.montage.musicUrl(project.id)} className="flex-1" />
-                <button onClick={() => fileRef.current?.click()} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
                   <Upload size={14} /> Заменить
+                </button>
+                <button
+                  onClick={deleteMusic}
+                  disabled={loading}
+                  title="Удалить музыку"
+                  className="flex items-center gap-2 px-3 py-2 bg-surface-1 text-red-400 rounded-[5px] border-2 border-red-500 font-mono text-xs uppercase tracking-wider hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                >
+                  <Trash2 size={14} />
                 </button>
               </div>
             </div>
@@ -458,7 +550,7 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
           {loading && (
             <div className="flex items-center gap-2 text-text-muted mt-2">
               <Loader2 size={16} className="animate-spin" />
-              <span className="font-mono text-xs">Загрузка...</span>
+              <span className="font-mono text-xs">{loadingAction || 'Загрузка...'}</span>
             </div>
           )}
         </div>
@@ -602,10 +694,34 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
 
 // ── Render Step ─────────────────────────────────────────────────────
 
+function phaseLabel(phase: string | undefined): string {
+  switch (phase) {
+    case 'bundling': return 'Сборка...'
+    case 'compositing': return 'Подготовка...'
+    case 'encoding': return 'Кодирование...'
+    case 'finalizing': return 'Финализация...'
+    default: return ''
+  }
+}
+
+function formatEta(frameCurrent: number, frameTotal: number, renderFps: number): string {
+  if (!renderFps || renderFps <= 0 || frameCurrent >= frameTotal) return ''
+  const remaining = (frameTotal - frameCurrent) / renderFps
+  const mm = Math.floor(remaining / 60)
+  const ss = Math.floor(remaining % 60)
+  return `~${mm}:${ss.toString().padStart(2, '0')} осталось`
+}
+
+function formatTs(ts: string | undefined): string {
+  if (!ts) return '—'
+  return new Date(ts).toLocaleString('ru')
+}
+
 function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false)
   const [polling, setPolling] = useState<string | null>(null)
   const [currentJob, setCurrentJob] = useState<RenderJob | null>(null)
+  const [showErrorDetails, setShowErrorDetails] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Poll render status
@@ -630,6 +746,7 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
 
   const startRender = async (quality: 'preview' | 'final') => {
     setLoading(true)
+    setShowErrorDetails(false)
     try {
       const result = await api.montage.render(project.id, quality)
       setPolling(result.id)
@@ -679,12 +796,21 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
 
             {/* Current render progress */}
             {currentJob && (currentJob.status === 'queued' || currentJob.status === 'rendering') && (
-              <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4">
-                <div className="flex items-center gap-2 mb-2">
+              <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4 space-y-2">
+                <div className="flex items-center gap-2">
                   <Loader2 size={14} className="animate-spin text-sky" />
                   <span className="font-mono text-xs uppercase text-sky">
-                    {currentJob.status === 'queued' ? 'В очереди...' : `Рендер ${currentJob.progress ?? 0}%`}
+                    {currentJob.status === 'queued'
+                      ? 'В очереди...'
+                      : currentJob.phase
+                        ? phaseLabel(currentJob.phase)
+                        : `Рендер ${currentJob.progress ?? 0}%`}
                   </span>
+                  {currentJob.status === 'rendering' && currentJob.phase && (
+                    <span className="font-mono text-xs text-text-muted">
+                      {currentJob.progress ?? 0}%
+                    </span>
+                  )}
                 </div>
                 <div className="w-full bg-surface-2 rounded-full h-2">
                   <div
@@ -692,15 +818,64 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
                     style={{ width: `${currentJob.progress ?? 0}%` }}
                   />
                 </div>
+                {/* Frame progress + FPS + ETA */}
+                {currentJob.status === 'rendering' && (
+                  <div className="flex items-center gap-4 font-mono text-[11px] text-text-muted">
+                    {currentJob.frameCurrent !== undefined && currentJob.frameTotal !== undefined && (
+                      <span>Кадр {currentJob.frameCurrent}/{currentJob.frameTotal}</span>
+                    )}
+                    {currentJob.renderFps !== undefined && currentJob.renderFps > 0 && (
+                      <span>{currentJob.renderFps} fps</span>
+                    )}
+                    {currentJob.frameCurrent !== undefined &&
+                      currentJob.frameTotal !== undefined &&
+                      currentJob.renderFps !== undefined && (
+                        <span className="text-amber">
+                          {formatEta(currentJob.frameCurrent, currentJob.frameTotal, currentJob.renderFps)}
+                        </span>
+                      )}
+                  </div>
+                )}
+                {/* Timestamps */}
+                {currentJob.startedAt && (
+                  <div className="font-mono text-[10px] text-text-muted">
+                    Начало: {formatTs(currentJob.startedAt)}
+                  </div>
+                )}
               </div>
             )}
 
+            {/* Failed render */}
             {currentJob?.status === 'failed' && (
-              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4">
+              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4 space-y-2">
                 <div className="flex items-center gap-2 text-red-400">
                   <X size={14} />
-                  <span className="font-mono text-xs">Ошибка: {currentJob.errorMessage || 'Unknown'}</span>
+                  <span className="font-mono text-xs font-semibold">Рендер завершился с ошибкой</span>
                 </div>
+                {currentJob.startedAt && (
+                  <div className="font-mono text-[10px] text-text-muted">
+                    Начало: {formatTs(currentJob.startedAt)}
+                    {currentJob.completedAt && (
+                      <> · Конец: {formatTs(currentJob.completedAt)}</>
+                    )}
+                  </div>
+                )}
+                {currentJob.errorMessage && (
+                  <div>
+                    <button
+                      onClick={() => setShowErrorDetails(!showErrorDetails)}
+                      className="flex items-center gap-1 font-mono text-[11px] text-red-400 hover:text-red-300"
+                    >
+                      {showErrorDetails ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                      {showErrorDetails ? 'Скрыть детали' : 'Показать детали'}
+                    </button>
+                    {showErrorDetails && (
+                      <pre className="mt-2 bg-surface-2 border border-red-500/30 rounded-[5px] p-3 font-mono text-[11px] text-red-300 whitespace-pre-wrap break-all overflow-auto max-h-64">
+                        {currentJob.errorMessage}
+                      </pre>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -724,6 +899,11 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
                         <span className="font-mono text-[10px] text-text-muted">
                           {new Date(render.createdAt).toLocaleString('ru')}
                         </span>
+                        {render.startedAt && render.completedAt && (
+                          <span className="font-mono text-[10px] text-text-muted">
+                            {formatTs(render.startedAt)} → {formatTs(render.completedAt)}
+                          </span>
+                        )}
                       </div>
                       <a
                         href={api.montage.getRenderDownloadUrl(project.id, render.id)}

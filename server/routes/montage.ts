@@ -318,6 +318,73 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/projects/:id/montage/voiceover
+router.delete('/montage/voiceover', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.voiceoverFile) {
+      sendApiError(res, 404, 'No voiceover to delete');
+      return;
+    }
+
+    const filePath = resolveProjectPath(project.id, project.voiceoverFile);
+    await fs.unlink(filePath).catch(() => {});
+
+    await withProject(project.id, (proj) => {
+      proj.voiceoverFile = undefined;
+      proj.voiceoverProvider = undefined;
+      proj.voiceoverVoiceId = undefined;
+    });
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Failed to delete voiceover:', err);
+    sendApiError(res, 500, 'Failed to delete voiceover');
+  }
+});
+
+// POST /api/projects/:id/montage/upload-voiceover
+router.post('/montage/upload-voiceover', async (req: Request, res: Response) => {
+  const project = await loadProject(req, res);
+  if (!project) return;
+
+  musicUpload.single('voiceover')(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        sendApiError(res, 400, multerErr.message);
+        return;
+      }
+
+      if (!req.file) {
+        sendApiError(res, 400, 'No voiceover file provided');
+        return;
+      }
+
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const montageDir = resolveProjectPath(project.id, 'montage');
+      await ensureDir(montageDir);
+
+      const filename = `voiceover${ext}`;
+      const filePath = path.join(montageDir, filename);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      const voiceoverFile = `montage/${filename}`;
+      await withProject(project.id, (proj) => {
+        proj.voiceoverFile = voiceoverFile;
+        proj.voiceoverProvider = 'manual';
+        proj.voiceoverVoiceId = undefined;
+      });
+
+      res.json({ voiceoverFile, provider: 'manual' });
+    } catch (err) {
+      console.error('Failed to upload voiceover:', err);
+      sendApiError(res, 500, 'Failed to upload voiceover');
+    }
+  });
+});
+
 // ─── Music helpers ──────────────────────────────────────────────────
 
 const AUDIO_MIME_TYPES: Record<string, string> = {
@@ -447,6 +514,32 @@ router.post('/montage/upload-music', async (req: Request, res: Response) => {
       sendApiError(res, 500, 'Failed to upload music');
     }
   });
+});
+
+// DELETE /api/projects/:id/montage/music
+router.delete('/montage/music', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.musicFile) {
+      sendApiError(res, 404, 'No music to delete');
+      return;
+    }
+
+    const filePath = resolveProjectPath(project.id, project.musicFile);
+    await fs.unlink(filePath).catch(() => {});
+
+    await withProject(project.id, (proj) => {
+      proj.musicFile = undefined;
+      proj.musicProvider = undefined;
+    });
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Failed to delete music:', err);
+    sendApiError(res, 500, 'Failed to delete music');
+  }
 });
 
 // GET /api/projects/:id/montage/music
