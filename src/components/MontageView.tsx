@@ -754,7 +754,7 @@ function RenderProgress({ job }: { job: RenderJob }) {
 
   // Compute ETA
   let etaText = ''
-  if (job.frameTotal && job.frameCurrent && job.renderFps && job.renderFps > 0) {
+  if (job.frameTotal && job.frameCurrent != null && job.renderFps && job.renderFps > 0) {
     const remaining = job.frameTotal - job.frameCurrent
     const etaSec = Math.ceil(remaining / job.renderFps)
     if (etaSec > 60) {

@@ -269,7 +269,8 @@ async function doRender(
     });
 
     let lastUpdateTime = Date.now();
-    let lastFrameCount = 0;
+    let lastFpsSampleTime = Date.now();
+    let lastFpsSampleFrames = 0;
 
     try {
       await renderMedia({
@@ -284,12 +285,18 @@ async function doRender(
         onProgress: ({ progress, renderedFrames }) => {
           const pct = Math.round(progress * 100);
           const now = Date.now();
-          const elapsed = (now - lastUpdateTime) / 1000;
+          const sampleElapsed = (now - lastFpsSampleTime) / 1000;
 
-          // Calculate render speed (fps)
+          // Calculate render speed (fps) from an independent sampling window
           let fps: number | undefined;
-          if (elapsed > 0.5 && renderedFrames > lastFrameCount) {
-            fps = Math.round(((renderedFrames - lastFrameCount) / elapsed) * 10) / 10;
+          if (sampleElapsed > 0.5 && renderedFrames > lastFpsSampleFrames) {
+            fps = Math.round(((renderedFrames - lastFpsSampleFrames) / sampleElapsed) * 10) / 10;
+          }
+
+          // Reset fps sample window every ~2 seconds
+          if (sampleElapsed >= 2) {
+            lastFpsSampleTime = now;
+            lastFpsSampleFrames = renderedFrames;
           }
 
           // Throttle updates to every ~2% or every 2 seconds
@@ -301,7 +308,6 @@ async function doRender(
             if (fps !== undefined) update.renderFps = fps;
             updateJob(projectId, jobId, update).catch(() => {});
             lastUpdateTime = now;
-            lastFrameCount = renderedFrames;
           }
         },
       });
