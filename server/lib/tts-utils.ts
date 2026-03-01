@@ -18,7 +18,10 @@ const SCALES: Array<{ value: number; forms: [string, string, string]; female: bo
   { value: 1_000, forms: ['тысяча', 'тысячи', 'тысяч'], female: true },
 ]
 
-const NUMBER_TOKEN = /(?<![\p{L}\p{N}_])(\d+(?:[.,]\d+)?)(?![\p{L}\p{N}_])/gu
+// Matches standalone numbers with optional sign and one decimal separator.
+// Lookbehind (?<!\d[.,]) and lookahead (?![.,]\d) prevent matching tokens
+// inside dotted sequences like dates (01.02.2025) or versions (2.1.3).
+const NUMBER_TOKEN = /(?<![\p{L}\p{N}_])(?<!\d[.,])(-?\d+(?:[.,]\d+)?)(?![.,]\d)(?![\p{L}\p{N}_])/gu
 
 function removeStageDirections(text: string): string {
   let result = text
@@ -141,15 +144,32 @@ function decimalToRussianWords(raw: string): string {
   return `${numberToRussianWords(intPart)} запятая ${fracWords}`
 }
 
+function looksLikeDateOrVersion(token: string): boolean {
+  // Multiple separators: 01.02.2025, 1.2.3, 192.168.1.1
+  const separatorCount = (token.match(/[.,]/g) || []).length;
+  if (separatorCount > 1) return true;
+  // Date-like: DD.MM.YYYY or YYYY.MM.DD (2-4 digits, dot, 2 digits, dot, 2-4 digits)
+  if (/^\d{2,4}[.,]\d{2}[.,]\d{2,4}$/.test(token)) return true;
+  return false;
+}
+
 function convertNumbersToWords(text: string): string {
   return text.replace(NUMBER_TOKEN, (token) => {
-    if (token.includes('.') || token.includes(',')) {
-      return decimalToRussianWords(token)
+    // Skip dates, versions, IPs
+    if (looksLikeDateOrVersion(token)) return token;
+
+    // Handle sign prefix
+    const negative = token.startsWith('-');
+    const unsigned = negative ? token.slice(1) : token;
+
+    if (unsigned.includes('.') || unsigned.includes(',')) {
+      const words = decimalToRussianWords(unsigned);
+      return negative ? `минус ${words}` : words;
     }
 
-    const parsed = Number.parseInt(token, 10)
-    if (!Number.isFinite(parsed)) return token
-    return numberToRussianWords(parsed)
+    const parsed = Number.parseInt(unsigned, 10);
+    if (!Number.isFinite(parsed)) return token;
+    return numberToRussianWords(negative ? -parsed : parsed);
   })
 }
 
@@ -197,7 +217,9 @@ function splitLongSentences(text: string): string {
   const processedParagraphs: string[] = []
 
   for (const paragraph of paragraphs) {
-    const sentences = paragraph.match(/[^.!?]+[.!?]*/g) ?? [paragraph]
+    // Split on sentence-ending punctuation, but NOT dots inside dates/versions
+    // (dot followed by a digit is part of a number, not a sentence boundary)
+    const sentences = paragraph.match(/(?:[^.!?]|\.(?=\d))+[.!?]*/g) ?? [paragraph]
     const rebuiltParts: string[] = []
 
     for (const sentence of sentences) {

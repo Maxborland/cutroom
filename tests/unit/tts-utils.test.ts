@@ -43,6 +43,26 @@ describe('normalizeVoiceoverText', () => {
     expect(normalized).not.toContain('...')
   })
 
+  it('preserves dates and version-like patterns', () => {
+    const input = 'Проект сдан 01.02.2025, версия 2.1.3 этапа.'
+
+    const normalized = normalizeVoiceoverText(input)
+
+    expect(normalized).toContain('01.02.2025')
+    expect(normalized).toContain('2.1.3')
+  })
+
+  it('handles negative numbers with sign', () => {
+    const input = 'Парковка на -1 этаже, температура -5 градусов.'
+
+    const normalized = normalizeVoiceoverText(input)
+
+    expect(normalized).toContain('минус один')
+    expect(normalized).toContain('минус пять')
+    expect(normalized).not.toContain('-1')
+    expect(normalized).not.toContain('-5')
+  })
+
   it('splits very long sentences into paragraph breaks', () => {
     const input = 'Этот комплекс расположен в тихом районе рядом с набережной, где каждое утро начинается с мягкого света и вида на воду, а вечером пространство наполняется теплым свечением города, и каждая деталь — от лобби до террасы — подчеркивает статус и комфорт будущих жителей без лишней вычурности.'
 
