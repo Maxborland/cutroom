@@ -18,7 +18,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import type { ShotStatus } from '../types'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLightboxStore } from '../stores/lightboxStore'
 
 interface ShotDetailProps {
@@ -54,6 +54,16 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   const [cachingVideo, setCachingVideo] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const videoInputRef = useRef<HTMLInputElement>(null)
+
+  const [videoEditHint, setVideoEditHint] = useState('')
+  const [durationDraft, setDurationDraft] = useState<number>(shot?.duration ?? 4)
+  const [savingVideoTweaks, setSavingVideoTweaks] = useState(false)
+
+  useEffect(() => {
+    if (!shot) return
+    setVideoEditHint('')
+    setDurationDraft(shot.duration)
+  }, [shot?.id])
 
   if (!project || !shot) return null
 
@@ -119,6 +129,47 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
       console.error('Video cache failed:', err)
     } finally {
       setCachingVideo(false)
+    }
+  }
+
+  const applyVideoEditHint = (basePrompt: string, hint: string): string => {
+    const trimmedHint = hint.trim()
+    if (!trimmedHint) return basePrompt
+
+    const marker = '\n\nEDIT:'
+    const idx = basePrompt.lastIndexOf(marker)
+    const withoutPrev = idx >= 0 ? basePrompt.slice(0, idx) : basePrompt
+
+    return `${withoutPrev}${marker}\n${trimmedHint}`
+  }
+
+  const handleApplyTweaksAndRegenerate = async () => {
+    if (savingVideoTweaks || generatingVideo) return
+
+    const nextDuration = Number.isFinite(durationDraft) ? Math.round(durationDraft) : shot.duration
+    const safeDuration = Math.max(2, Math.min(12, nextDuration))
+
+    const hint = videoEditHint.trim()
+    const nextPrompt = hint ? applyVideoEditHint(shot.videoPrompt, hint) : shot.videoPrompt
+
+    const hasChanges = safeDuration !== shot.duration || nextPrompt !== shot.videoPrompt
+
+    setSavingVideoTweaks(true)
+    try {
+      if (hasChanges) {
+        await api.shots.update(project.id, shot.id, {
+          duration: safeDuration,
+          videoPrompt: nextPrompt,
+        })
+        await loadProject(project.id)
+        setVideoEditHint('')
+      }
+
+      await generateVideoAction(shot.id)
+    } catch (err) {
+      console.error('Apply tweaks + regenerate failed:', err)
+    } finally {
+      setSavingVideoTweaks(false)
     }
   }
 
@@ -582,6 +633,53 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
         )}
         {shot.status === 'vid_review' && (
           <>
+            <div className="flex flex-col gap-2 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Edit hint</span>
+                <input
+                  value={videoEditHint}
+                  onChange={(e) => setVideoEditHint(e.target.value)}
+                  placeholder="e.g. slower camera, less shake, more natural motion"
+                  className="flex-1 brutal-input px-2 py-1 text-xs font-mono"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Duration</span>
+                <input
+                  type="number"
+                  min={2}
+                  max={12}
+                  step={1}
+                  value={durationDraft}
+                  onChange={(e) => setDurationDraft(Number(e.target.value))}
+                  className="w-16 brutal-input px-2 py-1 text-xs font-mono"
+                />
+                <div className="flex items-center gap-1">
+                  {[4, 6, 8].map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setDurationDraft(v)}
+                      className="px-2 py-1 rounded-[4px] border-2 border-border text-[10px] font-mono text-text-muted hover:text-text-primary hover:bg-surface-2"
+                      title={`Set duration to ${v}s`}
+                      type="button"
+                    >
+                      {v}s
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => void handleApplyTweaksAndRegenerate()}
+              disabled={savingVideoTweaks || generatingVideo}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-violet text-white text-xs font-bold uppercase brutal-btn disabled:opacity-50"
+              title="Apply hint/duration and regenerate video"
+            >
+              {savingVideoTweaks || generatingVideo ? <Loader2 size={12} className="animate-spin" /> : <Film size={12} />}
+              {savingVideoTweaks || generatingVideo ? 'Генерация...' : 'Apply + Regenerate'}
+            </button>
+
             <button
               onClick={() => updateShotStatus(project.id, shot.id, 'approved')}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-emerald text-black text-xs font-bold uppercase brutal-btn"
