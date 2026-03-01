@@ -258,6 +258,16 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(text !== undefined ? { text } : {}),
       }),
+    deleteVoiceover: (projectId: string) =>
+      request<{ deleted: boolean }>(`/projects/${projectId}/montage/voiceover`, { method: 'DELETE' }),
+    uploadVoiceover: async (projectId: string, file: File) => {
+      const form = new FormData()
+      form.append('voiceover', file)
+      const path = `/projects/${projectId}/montage/upload-voiceover`
+      const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form })
+      if (!res.ok) await throwRequestError(res, path)
+      return res.json() as Promise<{ voiceoverFile: string; provider: string }>
+    },
     generateVoiceover: (projectId: string, options?: { provider?: string; voiceId?: string }) =>
       request<{ voiceoverFile: string; provider: string; voiceId: string }>(`/projects/${projectId}/montage/generate-voiceover`, {
         method: 'POST',
@@ -270,6 +280,8 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ musicPrompt }),
       }),
+    deleteMusic: (projectId: string) =>
+      request<{ deleted: boolean }>(`/projects/${projectId}/montage/music`, { method: 'DELETE' }),
     uploadMusic: async (projectId: string, file: File) => {
       const form = new FormData()
       form.append('music', file)

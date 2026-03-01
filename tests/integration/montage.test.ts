@@ -10,6 +10,7 @@ import { createApp } from './setup.js'
 import {
   createProject,
   deleteProject,
+  getProject,
   withProject,
   resolveProjectPath,
   ensureDir,
@@ -284,6 +285,69 @@ describe('Montage Integration', () => {
     })
   })
 
+  describe('DELETE /montage/voiceover', () => {
+    it('deletes voiceover file and clears project field', async () => {
+      const montageDir = resolveProjectPath(projectId, 'montage')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'voiceover.mp3'), 'audio-bytes')
+      await withProject(projectId, (proj) => {
+        proj.voiceoverFile = 'montage/voiceover.mp3'
+        proj.voiceoverProvider = 'elevenlabs-fal'
+        proj.voiceoverVoiceId = 'Aria'
+      })
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/montage/voiceover`)
+        .expect(200)
+
+      expect(res.body.deleted).toBe(true)
+
+      // Verify project fields cleared
+      const updated = await getProject(projectId)
+      expect(updated!.voiceoverFile).toBeUndefined()
+      expect(updated!.voiceoverProvider).toBeUndefined()
+      expect(updated!.voiceoverVoiceId).toBeUndefined()
+    })
+
+    it('returns 404 when no voiceover exists', async () => {
+      await request(app)
+        .delete(`/api/projects/${projectId}/montage/voiceover`)
+        .expect(404)
+    })
+  })
+
+  describe('POST /montage/upload-voiceover', () => {
+    it('uploads custom voiceover audio file', async () => {
+      const audioBuf = Buffer.from('fake-voiceover-audio')
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/upload-voiceover`)
+        .attach('voiceover', audioBuf, { filename: 'my-voice.mp3', contentType: 'audio/mpeg' })
+        .expect(200)
+
+      expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
+      expect(res.body.provider).toBe('manual')
+    })
+
+    it('rejects non-audio file', async () => {
+      const textBuf = Buffer.from('not audio')
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/upload-voiceover`)
+        .attach('voiceover', textBuf, { filename: 'file.txt', contentType: 'text/plain' })
+        .expect(400)
+    })
+
+    it('returns 404 for non-existent project', async () => {
+      const audioBuf = Buffer.from('fake-audio')
+
+      await request(app)
+        .post('/api/projects/nonexistent/montage/upload-voiceover')
+        .attach('voiceover', audioBuf, { filename: 'voice.mp3', contentType: 'audio/mpeg' })
+        .expect(404)
+    })
+  })
+
   describe('GET /montage/voiceover', () => {
     it('streams voiceover file', async () => {
       const montageDir = resolveProjectPath(projectId, 'montage')
@@ -360,6 +424,37 @@ describe('Montage Integration', () => {
         .post(`/api/projects/${projectId}/montage/upload-music`)
         .attach('music', textBuf, { filename: 'file.txt', contentType: 'text/plain' })
         .expect(400)
+    })
+  })
+
+  describe('DELETE /montage/music', () => {
+    it('deletes music file and clears project fields', async () => {
+      const montageDir = resolveProjectPath(projectId, 'montage')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'music.mp3'), 'music-bytes')
+      await withProject(projectId, (proj) => {
+        proj.musicFile = 'montage/music.mp3'
+        proj.musicProvider = 'manual'
+        proj.musicPrompt = 'some prompt'
+      })
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/montage/music`)
+        .expect(200)
+
+      expect(res.body.deleted).toBe(true)
+
+      // Verify project fields cleared
+      const updated = await getProject(projectId)
+      expect(updated!.musicFile).toBeUndefined()
+      expect(updated!.musicProvider).toBeUndefined()
+      // musicPrompt should be preserved (useful for re-generation)
+    })
+
+    it('returns 404 when no music exists', async () => {
+      await request(app)
+        .delete(`/api/projects/${projectId}/montage/music`)
+        .expect(404)
     })
   })
 
