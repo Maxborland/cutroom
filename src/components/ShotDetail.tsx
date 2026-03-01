@@ -147,7 +147,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     if (savingVideoTweaks || generatingVideo) return
 
     const nextDuration = Number.isFinite(durationDraft) ? Math.round(durationDraft) : shot.duration
-    const safeDuration = Math.max(2, Math.min(12, nextDuration))
+    const safeDuration = Math.max(1, nextDuration)
 
     const hint = videoEditHint.trim()
     const nextPrompt = hint ? applyVideoEditHint(shot.videoPrompt, hint) : shot.videoPrompt
@@ -647,8 +647,8 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                 <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted shrink-0">Duration</span>
                 <input
                   type="number"
-                  min={2}
-                  max={12}
+                  min={1}
+                  max={60}
                   step={1}
                   value={durationDraft}
                   onChange={(e) => setDurationDraft(Number(e.target.value))}
