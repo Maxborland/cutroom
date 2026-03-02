@@ -323,21 +323,24 @@ router.delete('/montage/voiceover', async (req: Request, res: Response) => {
     const project = await loadProject(req, res);
     if (!project) return;
 
-    if (!project.voiceoverFile) {
+    // Atomic: check + clear inside withProject to prevent race with concurrent upload
+    const deletedFile = await withProject(project.id, (proj) => {
+      if (!proj.voiceoverFile) return null;
+      const file = proj.voiceoverFile;
+      delete proj.voiceoverFile;
+      delete proj.voiceoverProvider;
+      delete proj.voiceoverVoiceId;
+      return file;
+    });
+
+    if (!deletedFile) {
       sendApiError(res, 404, 'No voiceover to delete');
       return;
     }
 
-    // Remove file from disk
-    const filePath = resolveProjectPath(project.id, project.voiceoverFile);
+    // Remove file after clearing reference (safe even if file missing)
+    const filePath = resolveProjectPath(project.id, deletedFile);
     await fs.unlink(filePath).catch(() => {});
-
-    // Clear project fields
-    await withProject(project.id, (proj) => {
-      delete proj.voiceoverFile;
-      delete proj.voiceoverProvider;
-      delete proj.voiceoverVoiceId;
-    });
 
     res.json({ deleted: true });
   } catch (err) {
@@ -527,20 +530,24 @@ router.delete('/montage/music', async (req: Request, res: Response) => {
     const project = await loadProject(req, res);
     if (!project) return;
 
-    if (!project.musicFile) {
+    // Atomic: check + clear inside withProject to prevent race with concurrent upload
+    const deletedFile = await withProject(project.id, (proj) => {
+      if (!proj.musicFile) return null;
+      const file = proj.musicFile;
+      delete proj.musicFile;
+      delete proj.musicProvider;
+      // Keep musicPrompt for re-generation convenience
+      return file;
+    });
+
+    if (!deletedFile) {
       sendApiError(res, 404, 'No music to delete');
       return;
     }
 
-    // Remove file from disk
-    const filePath = resolveProjectPath(project.id, project.musicFile);
+    // Remove file after clearing reference
+    const filePath = resolveProjectPath(project.id, deletedFile);
     await fs.unlink(filePath).catch(() => {});
-
-    // Clear project fields (keep musicPrompt for re-generation convenience)
-    await withProject(project.id, (proj) => {
-      delete proj.musicFile;
-      delete proj.musicProvider;
-    });
 
     res.json({ deleted: true });
   } catch (err) {
