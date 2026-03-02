@@ -18,7 +18,7 @@ import {
   Loader2,
 } from 'lucide-react'
 
-const TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'wipe'] as const
+const TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide_right', 'zoom_blur', 'wipe'] as const
 const TRANSITION_LABELS: Record<string, string> = {
   cut: 'Резка',
   fade: 'Затухание',
@@ -316,11 +316,15 @@ function ClipEditor({
   const [trim, setTrim] = useState(entry.trimEndSec ?? 0)
   const [motion, setMotion] = useState(entry.motionEffect || '')
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef = useRef<Record<string, unknown>>({})
 
   const debouncedUpdate = useCallback((data: Record<string, unknown>) => {
+    Object.assign(pendingRef.current, data)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      onUpdate(data as any)
+      const payload = { ...pendingRef.current }
+      pendingRef.current = {}
+      onUpdate(payload as any)
     }, 500)
   }, [onUpdate])
 
@@ -340,7 +344,7 @@ function ClipEditor({
         <input
           type="range"
           min={0.5}
-          max={30}
+          max={120}
           step={0.5}
           value={dur}
           onChange={(e) => {
