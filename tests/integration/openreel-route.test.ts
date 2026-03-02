@@ -59,7 +59,7 @@ describe('OpenReel route integration', () => {
     expect(response.body.project.timeline.tracks).toBeInstanceOf(Array);
     expect(response.body.mediaManifest).toBeDefined();
     expect(response.body.mediaManifest['media-shot-shot-1'].url)
-      .toBe(`/api/projects/${projectId}/shots/shot-1/video`);
+      .toMatch(new RegExp(`/api/projects/${projectId}/shots/shot-1/video/.+`));
   });
 
   it('GET /openreel-project returns 404 for non-existent project', async () => {

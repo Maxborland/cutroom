@@ -217,10 +217,11 @@ describe('buildOpenReelBundle()', () => {
     const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
 
     expect(bundle.mediaManifest['media-shot-shot-42']).toMatchObject({
-      url: '/api/projects/project-1/shots/shot-42/video',
       kind: 'shot',
       shotId: 'shot-42',
     });
+    expect(bundle.mediaManifest['media-shot-shot-42'].url)
+      .toMatch(/\/api\/projects\/project-1\/shots\/shot-42\/video\/.+/);
     expect(bundle.mediaManifest['media-voiceover']).toMatchObject({
       url: '/api/projects/project-1/montage/voiceover',
       kind: 'voiceover',

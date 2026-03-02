@@ -229,6 +229,8 @@ function createClip(params: {
   trackId: string;
   startTime: number;
   duration: number;
+  inPoint?: number;
+  outPoint?: number;
   volume?: number;
 }): OpenReelClip {
   const duration = clampPositiveNumber(params.duration, DEFAULT_VIDEO_DURATION_SEC);
@@ -238,8 +240,8 @@ function createClip(params: {
     trackId: params.trackId,
     startTime: Math.max(params.startTime, 0),
     duration,
-    inPoint: 0,
-    outPoint: duration,
+    inPoint: params.inPoint ?? 0,
+    outPoint: params.outPoint ?? duration,
     effects: [],
     audioEffects: [],
     transform: DEFAULT_TRANSFORM,
@@ -412,26 +414,47 @@ export async function buildOpenReelBundle(
   const orderedShots = getOrderedApprovedShots(project);
   const shotClipIds = new Map<string, string>();
 
+  // Build timeline entry lookup for user-edited durations/trims
+  const timelineEntryByShotId = new Map<string, { durationSec: number; trimStartSec?: number; trimEndSec?: number }>();
+  if (project.montagePlan?.timeline?.length) {
+    for (const entry of project.montagePlan.timeline) {
+      timelineEntryByShotId.set(entry.shotId, {
+        durationSec: entry.durationSec,
+        trimStartSec: entry.trimStartSec,
+        trimEndSec: entry.trimEndSec,
+      });
+    }
+  }
+
   let videoCursor = 0;
   for (const shot of orderedShots) {
     const mediaId = `media-shot-${shot.id}`;
     const clipId = `clip-shot-${shot.id}`;
     const fallbackDuration = clampPositiveNumber(shot.duration, DEFAULT_VIDEO_DURATION_SEC);
     const shotPath = resolveShotVideoPath(project.id, shot);
-    const duration = await readDurationOrFallback(shotPath, fallbackDuration);
+    const sourceDuration = await readDurationOrFallback(shotPath, fallbackDuration);
+
+    // Prefer user-edited timeline entry duration over raw source duration
+    const tlEntry = timelineEntryByShotId.get(shot.id);
+    const clipDuration = tlEntry?.durationSec && Number.isFinite(tlEntry.durationSec) && tlEntry.durationSec > 0
+      ? tlEntry.durationSec
+      : sourceDuration;
+    const inPoint = tlEntry?.trimStartSec && Number.isFinite(tlEntry.trimStartSec) ? tlEntry.trimStartSec : 0;
+    const outPoint = inPoint + clipDuration;
 
     mediaItems.push(createMediaItem({
       id: mediaId,
       name: `${shot.id}${path.extname(shot.videoFile ?? '') || '.mp4'}`,
       type: 'video',
-      duration,
+      duration: sourceDuration, // source media duration (full file)
       width,
       height,
       frameRate,
     }));
 
+    const videoFilename = shot.videoFile ? path.basename(shot.videoFile) : `${shot.id}.mp4`;
     mediaManifest[mediaId] = {
-      url: `${cleanedBaseUrl}/shots/${encodeURIComponent(shot.id)}/video`,
+      url: `${cleanedBaseUrl}/shots/${encodeURIComponent(shot.id)}/video/${encodeURIComponent(videoFilename)}`,
       mimeType: guessMimeType(shot.videoFile ?? undefined, 'video'),
       kind: 'shot',
       shotId: shot.id,
@@ -442,12 +465,14 @@ export async function buildOpenReelBundle(
       mediaId,
       trackId: videoTrack.id,
       startTime: videoCursor,
-      duration,
+      duration: clipDuration,
+      inPoint,
+      outPoint,
       volume: 1,
     }));
 
     shotClipIds.set(shot.id, clipId);
-    videoCursor += duration;
+    videoCursor += clipDuration;
   }
 
   if (project.montagePlan?.transitions?.length) {
