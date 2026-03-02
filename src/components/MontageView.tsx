@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
 import type { RenderJob, Project } from '../types'
@@ -32,6 +33,7 @@ export function MontageView() {
   const project = useProjectStore((s) => s.activeProject())
   const refreshProject = useProjectStore((s) => s.loadProject)
   const [activeStep, setActiveStep] = useState<MontageStep>('voiceover')
+  const navigate = useNavigate()
 
   if (!project) return null
 
@@ -109,7 +111,11 @@ export function MontageView() {
           <MusicStep project={project} onRefresh={() => refreshProject(project.id)} />
         )}
         {activeStep === 'plan' && (
-          <PlanStep project={project} onRefresh={() => refreshProject(project.id)} />
+          <PlanStep
+            project={project}
+            onRefresh={() => refreshProject(project.id)}
+            onOpenEditor={() => navigate(`/editor/${project.id}`)}
+          />
         )}
         {activeStep === 'render' && (
           <RenderStep project={project} onRefresh={() => refreshProject(project.id)} />
@@ -575,7 +581,15 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
 
 // ── Plan Step ───────────────────────────────────────────────────────
 
-function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
+function PlanStep({
+  project,
+  onRefresh,
+  onOpenEditor,
+}: {
+  project: Project
+  onRefresh: () => void
+  onOpenEditor: () => void
+}) {
   const [loading, setLoading] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
@@ -617,6 +631,16 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
           <Film size={18} />
           План монтажа
         </h3>
+
+        <div className="mb-4">
+          <button
+            onClick={onOpenEditor}
+            className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+          >
+            <Clapperboard size={14} />
+            Открыть в редакторе
+          </button>
+        </div>
 
         {!plan && (
           <button onClick={generatePlan} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">

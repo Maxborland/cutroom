@@ -13,6 +13,7 @@ import { DirectorView } from './components/DirectorView'
 import { Toaster } from './components/Toaster'
 import { Lightbox } from './components/Lightbox'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { OpenReelEditorPage } from './routes/OpenReelEditorPage'
 import { useProjectStore } from './stores/projectStore'
 import type { PipelineStage } from './types'
 import { Clapperboard, Plus, Loader2 } from 'lucide-react'
@@ -221,6 +222,7 @@ function App() {
       <Route path="/" element={<AppShell />} />
       <Route path="/projects/:projectId" element={<AppShell />} />
       <Route path="/projects/:projectId/:view" element={<AppShell />} />
+      <Route path="/editor/:projectId" element={<OpenReelEditorPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

@@ -10,6 +10,7 @@ import type {
   MontagePlan,
   RenderJob,
 } from '../types/index'
+import type { OpenReelBundle } from './openreel-bridge'
 
 const BASE = '/api'
 
@@ -237,6 +238,15 @@ export const api = {
   export: {
     zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,
     promptsUrl: (projectId: string) => `${BASE}/projects/${projectId}/export/prompts`,
+  },
+  openreel: {
+    getProject: (projectId: string) =>
+      request<OpenReelBundle>(`/projects/${projectId}/openreel-project`),
+    saveProject: (projectId: string, data: { version: string; project: unknown }) =>
+      request<{ saved: boolean; modifiedAt: number }>(`/projects/${projectId}/openreel-project`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
   },
   montage: {
     generateVoScript: (projectId: string) =>
