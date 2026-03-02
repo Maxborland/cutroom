@@ -8,7 +8,6 @@ import {
   withProject,
 } from './storage.js';
 import { saveImageResult } from './media-utils.js';
-import { safeLogValue } from './safe-log.js';
 
 const externalImageCacheJobs = new Map<string, Promise<string | null>>();
 
@@ -81,7 +80,7 @@ export async function cacheExternalImageReference(
     try {
       await saveImageResult(externalRef, filePath);
     } catch (err) {
-      console.warn('[external-cache] Failed to cache external image:', safeLogValue((err as any)?.message || err));
+      console.warn('[external-cache] Failed to cache external image');
       return null;
     }
 
