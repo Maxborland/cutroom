@@ -1,3 +1,11 @@
+export interface NormalizeVoiceoverOptions {
+  pass?: number
+  provider?: 'elevenlabs-fal' | 'elevenlabs' | 'kokoro'
+}
+
+type TtsNormalizationProvider = NonNullable<NormalizeVoiceoverOptions['provider']>
+type PauseDuration = '200ms' | '300ms' | '600ms' | '800ms' | '1.2s' | '1.5s'
+
 const ABBREVIATION_RULES: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /(?<!\p{L})кв\.\s*м\.(?!\p{L})/giu, replacement: 'квадратных метров' },
   { pattern: /(?<!\p{L})ул\.(?!\p{L})/giu, replacement: 'улица' },
@@ -5,6 +13,18 @@ const ABBREVIATION_RULES: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /(?<!\p{L})пр\.(?!\p{L})/giu, replacement: 'проспект' },
   { pattern: /(?<!\p{L})пос\.(?!\p{L})/giu, replacement: 'поселок' },
 ]
+
+const STAGE_DIRECTION_MAP: Record<string, string> = {
+  // Pauses
+  'пауза': '<break time="600ms"/>',
+  'короткая пауза': '<break time="300ms"/>',
+  'длинная пауза': '<break time="1.5s"/>',
+  'долгая пауза': '<break time="1.5s"/>',
+  'pause': '<break time="600ms"/>',
+  'short pause': '<break time="300ms"/>',
+  'long pause': '<break time="1.5s"/>',
+  // Unknown directions are preserved as-is
+}
 
 const ONES_MALE = ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']
 const ONES_FEMALE = ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']
@@ -23,18 +43,75 @@ const SCALES: Array<{ value: number; forms: [string, string, string]; female: bo
 // inside dotted sequences like dates (01.02.2025) or versions (2.1.3).
 const NUMBER_TOKEN = /(?<![\p{L}\p{N}_])(?<!\d[.,])(-?\d+(?:[.,]\d+)?)(?![.,]\d)(?![\p{L}\p{N}_])/gu
 
-function removeStageDirections(text: string): string {
-  let result = text
-  let prev = ''
-
-  while (result !== prev) {
-    prev = result
-    result = result
-      .replace(/\[[^[\]]*\]/g, ' ')
-      .replace(/\([^()]*\)/g, ' ')
+function getPauseToken(duration: PauseDuration, provider: TtsNormalizationProvider): string {
+  if (provider !== 'kokoro') {
+    return `<break time="${duration}"/>`
   }
 
-  return result
+  switch (duration) {
+    case '200ms':
+      return ','
+    case '300ms':
+      return ', ...'
+    case '600ms':
+      return '...'
+    case '800ms':
+      return '... ...'
+    case '1.2s':
+      return '... ...'
+    case '1.5s':
+      return '... ... ...'
+    default:
+      return '...'
+  }
+}
+
+function breakTagToPlainPause(tag: string): string {
+  const duration = tag.match(/time="([^"]+)"/)?.[1] as PauseDuration | undefined
+  if (!duration) return '...'
+  return getPauseToken(duration, 'kokoro')
+}
+
+function convertStageDirections(text: string, provider: TtsNormalizationProvider): string {
+  return text.replace(/(\(([^()]*)\)|\[([^\[\]]*)\])/giu, (fullMatch, _wrapped, parenInner, squareInner) => {
+    const direction = String(parenInner ?? squareInner ?? '').trim()
+    if (!direction) return fullMatch
+
+    const key = direction.toLowerCase().replace(/\s+/g, ' ')
+    const mapped = STAGE_DIRECTION_MAP[key]
+
+    if (!mapped) {
+      return fullMatch
+    }
+
+    if (provider === 'kokoro') {
+      return breakTagToPlainPause(mapped)
+    }
+
+    return mapped
+  })
+}
+
+function addExpressivenessHints(text: string, provider: TtsNormalizationProvider): string {
+  const exclamationPause = getPauseToken('200ms', provider)
+  const questionPause = getPauseToken('300ms', provider)
+  const paragraphPause = getPauseToken('800ms', provider)
+  const dialogPause = getPauseToken('200ms', provider)
+
+  let result = text
+
+  // Add short beats after exclamation and question sentences
+  result = result.replace(/!+(?=\s|$)/g, (token) => `${token}${exclamationPause}`)
+  result = result.replace(/\?+(?=\s|$)/g, (token) => `${token}${questionPause}`)
+
+  // Add a stronger break after paragraph boundaries
+  result = result.replace(/\n{2,}/g, (separator) => `${paragraphPause}${separator}`)
+
+  // Add a slight pre-roll before opening quotes and dialog lines
+  result = result.replace(/(^|[\s\n])([«"„“])/g, (_full, prefix: string, quote: string) => `${prefix}${dialogPause} ${quote}`)
+  result = result.replace(/(^|\n)(\s*[—-]\s+)/g, (_full, prefix: string, dialogStart: string) => `${prefix}${dialogPause} ${dialogStart}`)
+
+  return cleanupExpressivenessSpacing(result)
 }
 
 function expandAbbreviations(text: string): string {
@@ -64,6 +141,15 @@ function cleanupSpacing(text: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/ *\n */g, '\n')
     .replace(/ {2,}/g, ' ')
+    .trim()
+}
+
+function cleanupExpressivenessSpacing(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
@@ -146,30 +232,30 @@ function decimalToRussianWords(raw: string): string {
 
 function looksLikeDateOrVersion(token: string): boolean {
   // Multiple separators: 01.02.2025, 1.2.3, 192.168.1.1
-  const separatorCount = (token.match(/[.,]/g) || []).length;
-  if (separatorCount > 1) return true;
+  const separatorCount = (token.match(/[.,]/g) || []).length
+  if (separatorCount > 1) return true
   // Date-like: DD.MM.YYYY or YYYY.MM.DD (2-4 digits, dot, 2 digits, dot, 2-4 digits)
-  if (/^\d{2,4}[.,]\d{2}[.,]\d{2,4}$/.test(token)) return true;
-  return false;
+  if (/^\d{2,4}[.,]\d{2}[.,]\d{2,4}$/.test(token)) return true
+  return false
 }
 
 function convertNumbersToWords(text: string): string {
   return text.replace(NUMBER_TOKEN, (token) => {
     // Skip dates, versions, IPs
-    if (looksLikeDateOrVersion(token)) return token;
+    if (looksLikeDateOrVersion(token)) return token
 
     // Handle sign prefix
-    const negative = token.startsWith('-');
-    const unsigned = negative ? token.slice(1) : token;
+    const negative = token.startsWith('-')
+    const unsigned = negative ? token.slice(1) : token
 
     if (unsigned.includes('.') || unsigned.includes(',')) {
-      const words = decimalToRussianWords(unsigned);
-      return negative ? `минус ${words}` : words;
+      const words = decimalToRussianWords(unsigned)
+      return negative ? `минус ${words}` : words
     }
 
-    const parsed = Number.parseInt(unsigned, 10);
-    if (!Number.isFinite(parsed)) return token;
-    return numberToRussianWords(negative ? -parsed : parsed);
+    const parsed = Number.parseInt(unsigned, 10)
+    if (!Number.isFinite(parsed)) return token
+    return numberToRussianWords(negative ? -parsed : parsed)
   })
 }
 
@@ -241,16 +327,21 @@ function splitLongSentences(text: string): string {
   return processedParagraphs.join('\n\n')
 }
 
-export function normalizeVoiceoverText(text: string): string {
+export function normalizeVoiceoverText(text: string, opts: NormalizeVoiceoverOptions = {}): string {
   if (!text || typeof text !== 'string') return ''
+
+  const provider: TtsNormalizationProvider = opts.provider ?? 'elevenlabs-fal'
+  const pass = typeof opts.pass === 'number' && Number.isFinite(opts.pass)
+    ? Math.max(1, Math.floor(opts.pass))
+    : 1
 
   const trailingPunctuation = text.trim().match(/[.!?]$/)?.[0]
 
   let normalized = text
-  normalized = removeStageDirections(normalized)
   normalized = expandAbbreviations(normalized)
   normalized = normalizeDashes(normalized)
   normalized = fixEllipsis(normalized)
+  normalized = convertStageDirections(normalized, provider)
   normalized = convertNumbersToWords(normalized)
   normalized = cleanupSpacing(normalized)
   normalized = splitLongSentences(normalized)
@@ -258,6 +349,10 @@ export function normalizeVoiceoverText(text: string): string {
 
   if (normalized && trailingPunctuation && !/[.!?]$/.test(normalized)) {
     normalized = `${normalized}${trailingPunctuation}`
+  }
+
+  if (pass >= 2) {
+    normalized = addExpressivenessHints(normalized, provider)
   }
 
   return normalized

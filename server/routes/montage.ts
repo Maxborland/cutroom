@@ -150,8 +150,9 @@ router.post('/montage/normalize-vo-text', async (req: Request, res: Response) =>
     const project = await loadProject(req, res);
     if (!project) return;
 
-    const sourceText = typeof req.body?.text === 'string'
-      ? req.body.text
+    const { text, pass } = req.body ?? {};
+    const sourceText = typeof text === 'string'
+      ? text
       : (project.voiceoverScript || '');
 
     if (!sourceText.trim()) {
@@ -159,7 +160,13 @@ router.post('/montage/normalize-vo-text', async (req: Request, res: Response) =>
       return;
     }
 
-    const normalizedText = normalizeVoiceoverText(sourceText);
+    const parsedPass = typeof pass === 'number'
+      ? pass
+      : Number.parseInt(String(pass ?? ''), 10);
+
+    const normalizedText = normalizeVoiceoverText(sourceText, {
+      pass: Number.isFinite(parsedPass) && parsedPass > 0 ? parsedPass : 1,
+    });
     res.json({ normalizedText });
   } catch (err) {
     console.error('Failed to normalize voiceover text:', err);
@@ -180,12 +187,6 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
 
     // Capture the script text at generation time for TOCTOU comparison
     const scriptAtGeneration = project.voiceoverScript || '';
-    const normalizedScript = normalizeVoiceoverText(scriptAtGeneration);
-
-    if (!normalizedScript.trim()) {
-      sendApiError(res, 400, 'Voiceover text is empty after normalization');
-      return;
-    }
 
     // Determine provider and voice from request body → project → settings → defaults
     const settings = await getGlobalSettings();
@@ -204,6 +205,16 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const validProviders: TtsProvider[] = ['kokoro', 'elevenlabs-fal', 'elevenlabs'];
     if (!validProviders.includes(requestedProvider)) {
       sendApiError(res, 400, `Unknown TTS provider: ${String(requestedProvider).slice(0, 50)}`);
+      return;
+    }
+
+    const normalizedScript = normalizeVoiceoverText(scriptAtGeneration, {
+      provider: requestedProvider,
+      pass: 1,
+    });
+
+    if (!normalizedScript.trim()) {
+      sendApiError(res, 400, 'Voiceover text is empty after normalization');
       return;
     }
 
