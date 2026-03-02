@@ -104,10 +104,14 @@ export async function prepareBriefReference(
   const filePath = resolveProjectPath(projectId, 'brief', 'images', filename);
   const mimeType = getMimeType(filename);
 
+  // Read file first to avoid TOCTOU race between stat() and readFile()
+  let buffer: Buffer;
   let stat: { size: number; mtimeMs: number };
   try {
+    buffer = await fs.readFile(filePath);
+    // Stat after read to get mtime for cache key; file is already loaded so race is harmless
     const fsStat = await fs.stat(filePath);
-    stat = { size: fsStat.size, mtimeMs: fsStat.mtimeMs };
+    stat = { size: buffer.length, mtimeMs: fsStat.mtimeMs };
   } catch {
     return {
       filename,
@@ -126,7 +130,6 @@ export async function prepareBriefReference(
   }
 
   try {
-    const buffer = await fs.readFile(filePath);
     const bytes = buffer.length;
     const isSvg = mimeType === 'image/svg+xml';
 
