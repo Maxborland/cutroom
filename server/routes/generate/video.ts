@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
+import { readLimiter, generationLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
   saveProject,
@@ -250,7 +251,7 @@ router.post('/shots/:shotId/cache-video', async (req: Request, res: Response) =>
 });
 
 // GET /api/projects/:id/shots/:shotId/video/:filename
-router.get('/shots/:shotId/video/:filename', async (req: Request, res: Response) => {
+router.get('/shots/:shotId/video/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -282,7 +283,7 @@ router.get('/shots/:shotId/video/:filename', async (req: Request, res: Response)
 });
 
 // POST /api/projects/:id/generate-all-videos
-router.post('/generate-all-videos', async (req: Request, res: Response) => {
+router.post('/generate-all-videos', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {

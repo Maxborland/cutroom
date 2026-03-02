@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -278,7 +279,7 @@ router.post('/:shotId/video', (req: Request, res: Response, next: NextFunction) 
 });
 
 // GET /api/projects/:id/shots/:shotId/video/:filename — serve video file
-router.get('/:shotId/video/:filename', async (req: Request, res: Response) => {
+router.get('/:shotId/video/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -310,7 +311,7 @@ router.get('/:shotId/video/:filename', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/projects/:id/shots/:shotId/image/:filename — delete a generated/enhanced image
-router.delete('/:shotId/image/:filename', async (req: Request, res: Response) => {
+router.delete('/:shotId/image/:filename', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -355,7 +356,7 @@ router.delete('/:shotId/image/:filename', async (req: Request, res: Response) =>
 });
 
 // DELETE /api/projects/:id/shots/:shotId/video — delete the shot video
-router.delete('/:shotId/video', async (req: Request, res: Response) => {
+router.delete('/:shotId/video', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {

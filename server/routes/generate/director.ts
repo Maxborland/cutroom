@@ -390,7 +390,7 @@ function markImageFeedbackHandled(
 
   if (review.shotVerdicts && typeof review.shotVerdicts === 'object') {
     for (const id of handled) {
-      if (review.shotVerdicts[id]) {
+      if (Object.prototype.hasOwnProperty.call(review.shotVerdicts, id) && review.shotVerdicts[id]) {
         review.shotVerdicts[id] = 'approve';
       }
     }

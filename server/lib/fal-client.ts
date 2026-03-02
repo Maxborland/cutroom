@@ -301,7 +301,7 @@ export async function falGenerateImage(opts: {
     input.resolution = opts.resolution;
   }
 
-  console.log(`[fal] image endpoint=${opts.endpoint} params=${Object.keys(input).join(',')}`);
+  console.log('[fal] image request');
 
   const result = await falSubscribeWithRetry(opts.endpoint, input, signal);
 

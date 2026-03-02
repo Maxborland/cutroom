@@ -111,7 +111,7 @@ export async function cacheExternalImageReference(
       return null;
     }
 
-    console.log(`[external-cache] Cached ${projectId}/${shotId} external image -> ${filename}`);
+    console.log('[external-cache] Cached external image');
     return filename;
   })().finally(() => {
     externalImageCacheJobs.delete(cacheKey);

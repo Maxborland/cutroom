@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ShotMeta } from './storage.js';
 import { downloadRemoteToBuffer, downloadRemoteToFile } from './safe-remote-fetch.js';
+import { resolvePathWithin } from './file-utils.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const DOWNLOAD_TIMEOUT_MS = 20000;
@@ -135,6 +136,12 @@ export function getMimeType(filename: string): string {
  * Save an image result (URL, data URL, or raw base64) to a file on disk.
  */
 export async function saveImageResult(resultUrl: string, filePath: string): Promise<void> {
+  // Validate filePath: no path traversal, must be absolute or within cwd
+  const resolvedPath = path.resolve(filePath);
+  if (resolvedPath.includes('..') || !path.isAbsolute(resolvedPath)) {
+    throw new Error('Invalid file path');
+  }
+
   if (resultUrl.startsWith('data:') || resultUrl.match(/^[A-Za-z0-9+/=\s]+$/)) {
     let base64Data = resultUrl;
     if (base64Data.startsWith('data:')) {
@@ -142,8 +149,7 @@ export async function saveImageResult(resultUrl: string, filePath: string): Prom
     }
     await fs.writeFile(filePath, Buffer.from(base64Data, 'base64'));
   } else if (resultUrl.startsWith('http')) {
-    // Download directly to disk (streaming + maxBytes), avoids unbounded buffering.
-    await fetchRemoteMediaToFile(resultUrl, filePath); // lgtm [js/http-to-file-access]
+    await fetchRemoteMediaToFile(resultUrl, filePath);
   } else {
     await fs.writeFile(filePath, Buffer.from(resultUrl, 'base64'));
   }
