@@ -391,9 +391,7 @@ function markImageFeedbackHandled(
   if (review.shotVerdicts && typeof review.shotVerdicts === 'object') {
     const verdicts: Record<string, string> = Object.create(null);
     for (const [k, v] of Object.entries(review.shotVerdicts)) {
-      if (typeof k === 'string' && /^[\w-]+$/.test(k)) {
-        verdicts[k] = String(v);
-      }
+      verdicts[k] = String(v);
     }
     for (const id of handled) {
       // Validate shot id format (UUID or simple alphanumeric)

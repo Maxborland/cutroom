@@ -1,4 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import projectRoutes from './routes/projects.js';
 import settingsRoutes from './routes/settings.js';
@@ -93,9 +95,14 @@ export function createApp(options: CreateAppOptions = {}): Express {
     }),
   );
 
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    // Allow OpenReel editor to be embedded in our own iframe
+    if (req.path.startsWith('/openreel')) {
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    } else {
+      res.setHeader('X-Frame-Options', 'DENY');
+    }
     res.setHeader('Referrer-Policy', 'no-referrer');
     next();
   });
@@ -170,6 +177,18 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
     sendApiError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
   });
+
+  // Serve OpenReel editor: wrapper + bridge at /openreel/, built app at /openreel/app/
+  const serverDir = path.dirname(fileURLToPath(import.meta.url));
+  const openreelWrapper = path.resolve(serverDir, 'static', 'openreel');
+  const openreelDist = path.resolve(serverDir, '..', 'vendor', 'openreel-video', 'apps', 'web', 'dist');
+  const coopHeaders = (_res: Response) => {
+    // Required for SharedArrayBuffer (ffmpeg/WebCodecs)
+    _res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    _res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  };
+  app.use('/openreel/app', express.static(openreelDist, { setHeaders: coopHeaders }));
+  app.use('/openreel', express.static(openreelWrapper, { setHeaders: coopHeaders }));
 
   app.use('/api/projects', projectRoutes);
   app.use('/api/settings', settingsRoutes);

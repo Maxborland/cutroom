@@ -13,11 +13,12 @@ if (!existsSync(openreelDir)) {
   process.exit(1)
 }
 
-function runStep(command, args, label) {
+function runStep(command, args, label, env = {}) {
   const result = spawnSync(command, args, {
     cwd: openreelDir,
     stdio: 'inherit',
     shell: process.platform === 'win32',
+    env: { ...process.env, ...env },
   })
 
   if (result.error) {
@@ -32,6 +33,7 @@ function runStep(command, args, label) {
 }
 
 runStep('pnpm', ['install'], 'dependency install')
-runStep('pnpm', ['build'], 'build')
+// Build only the web app with /openreel/app/ base path for iframe embedding
+runStep('pnpm', ['--filter', '@openreel/web', 'build', '--', '--base', '/openreel/app/'], 'build')
 
 console.log('OpenReel build completed successfully.')
