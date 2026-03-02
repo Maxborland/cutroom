@@ -1,0 +1,292 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Project } from '../../server/lib/storage.js';
+
+vi.mock('../../server/lib/normalize.js', () => ({
+  probeDuration: vi.fn(),
+}));
+
+import { probeDuration } from '../../server/lib/normalize.js';
+import { buildOpenReelBundle, mapCutRoomTransition } from '../../server/lib/openreel-exporter.js';
+
+const mockedProbeDuration = vi.mocked(probeDuration);
+
+function makeProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'project-1',
+    name: 'OpenReel Export Test',
+    created: '2026-03-02T00:00:00.000Z',
+    updated: '2026-03-02T00:00:00.000Z',
+    stage: 'montage_draft',
+    settings: {
+      scriptwriterPrompt: '',
+      shotSplitterPrompt: '',
+      model: 'test-model',
+      temperature: 0.5,
+    },
+    brief: {
+      text: 'brief',
+      assets: [],
+      targetDuration: 30,
+    },
+    script: 'script',
+    shots: [],
+    ...overrides,
+  };
+}
+
+describe('buildOpenReelBundle()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedProbeDuration.mockRejectedValue(new Error('ffprobe unavailable in test'));
+  });
+
+  it('maps approved shots with video files to media library and video track clips', async () => {
+    mockedProbeDuration.mockImplementation(async (filePath: string) => {
+      if (filePath.includes('shot-1')) return 5;
+      if (filePath.includes('shot-2')) return 7;
+      throw new Error('missing');
+    });
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-1',
+          order: 0,
+          scene: 'Scene A',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'a.mp4',
+        },
+        {
+          id: 'shot-2',
+          order: 1,
+          scene: 'Scene B',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'b.mp4',
+        },
+      ],
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+
+    expect(bundle.version).toBe('1.0.0');
+    expect(bundle.project.mediaLibrary.items).toHaveLength(2);
+
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+    expect(videoTrack).toBeDefined();
+    expect(videoTrack!.clips).toHaveLength(2);
+    expect(videoTrack!.clips[0].startTime).toBe(0);
+    expect(videoTrack!.clips[0].duration).toBe(5);
+    expect(videoTrack!.clips[1].startTime).toBe(5);
+    expect(videoTrack!.clips[1].duration).toBe(7);
+  });
+
+  it('maps voiceover to an audio track with a clip starting at zero', async () => {
+    mockedProbeDuration.mockResolvedValue(12);
+
+    const project = makeProject({
+      voiceoverFile: 'montage/voiceover.mp3',
+      shots: [],
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const voiceTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Voiceover');
+
+    expect(voiceTrack).toBeDefined();
+    expect(voiceTrack!.type).toBe('audio');
+    expect(voiceTrack!.clips).toHaveLength(1);
+    expect(voiceTrack!.clips[0].startTime).toBe(0);
+    expect(voiceTrack!.clips[0].duration).toBe(12);
+  });
+
+  it('maps music to an audio track with volume derived from montagePlan gainDb', async () => {
+    mockedProbeDuration.mockResolvedValue(15);
+
+    const project = makeProject({
+      musicFile: 'montage/music.mp3',
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: '', gainDb: 0 },
+          music: { file: 'montage/music.mp3', gainDb: -6, duckingDb: -10, duckFadeMs: 500 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      },
+      shots: [],
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const musicTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Music');
+
+    expect(musicTrack).toBeDefined();
+    expect(musicTrack!.clips).toHaveLength(1);
+    expect(musicTrack!.clips[0].volume).toBeCloseTo(0.501, 2);
+  });
+
+  it.each([
+    ['cut', null],
+    ['crossfade', 'crossfade'],
+    ['fade', 'dipToBlack'],
+    ['slide_left', 'slide'],
+    ['slide_right', 'slide'],
+    ['zoom_blur', 'zoom'],
+    ['wipe', 'wipe'],
+  ] as const)('maps transition type %s correctly', async (sourceType, expectedTargetType) => {
+    const mapped = mapCutRoomTransition(sourceType);
+
+    if (expectedTargetType === null) {
+      expect(mapped).toBeNull();
+      return;
+    }
+
+    expect(mapped).not.toBeNull();
+    expect(mapped!.type).toBe(expectedTargetType);
+  });
+
+  it('generates subtitles from voiceover script and fits them to voiceover duration', async () => {
+    mockedProbeDuration.mockResolvedValue(9);
+
+    const project = makeProject({
+      voiceoverFile: 'montage/voiceover.mp3',
+      voiceoverScript: 'Первая фраза. Вторая фраза! Третья фраза?',
+      shots: [],
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const subtitles = bundle.project.timeline.subtitles;
+
+    expect(subtitles).toHaveLength(3);
+    expect(subtitles[0].startTime).toBe(0);
+    expect(subtitles[2].endTime).toBeCloseTo(9, 5);
+  });
+
+  it('builds mediaManifest URLs using CutRoom API paths', async () => {
+    mockedProbeDuration.mockImplementation(async (filePath: string) => {
+      if (filePath.includes('voiceover')) return 8;
+      if (filePath.includes('music')) return 8;
+      return 5;
+    });
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-42',
+          order: 0,
+          scene: '',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'shot42.mp4',
+        },
+      ],
+      voiceoverFile: 'montage/voiceover.mp3',
+      musicFile: 'montage/music.mp3',
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+
+    expect(bundle.mediaManifest['media-shot-shot-42']).toMatchObject({
+      url: '/api/projects/project-1/shots/shot-42/video',
+      kind: 'shot',
+      shotId: 'shot-42',
+    });
+    expect(bundle.mediaManifest['media-voiceover']).toMatchObject({
+      url: '/api/projects/project-1/montage/voiceover',
+      kind: 'voiceover',
+    });
+    expect(bundle.mediaManifest['media-music']).toMatchObject({
+      url: '/api/projects/project-1/montage/music',
+      kind: 'music',
+    });
+  });
+
+  it('returns a valid empty timeline when there are no approved shots', async () => {
+    const project = makeProject({ shots: [] });
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+
+    expect(bundle.project.timeline.tracks).toHaveLength(0);
+    expect(bundle.project.timeline.duration).toBe(0);
+    expect(bundle.project.mediaLibrary.items).toHaveLength(0);
+  });
+
+  it('uses shot order when montagePlan is missing', async () => {
+    mockedProbeDuration.mockImplementation(async (filePath: string) => {
+      if (filePath.includes('first.mp4')) return 3;
+      if (filePath.includes('second.mp4')) return 4;
+      return 4;
+    });
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'late',
+          order: 10,
+          scene: '',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'second.mp4',
+        },
+        {
+          id: 'early',
+          order: 1,
+          scene: '',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'first.mp4',
+        },
+      ],
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+
+    expect(videoTrack).toBeDefined();
+    expect(videoTrack!.clips[0].id).toBe('clip-shot-early');
+    expect(videoTrack!.clips[1].id).toBe('clip-shot-late');
+  });
+});

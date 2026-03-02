@@ -8,6 +8,7 @@ import generateRoutes from './routes/generate/index.js';
 import shotRoutes from './routes/shots.js';
 import exportRoutes from './routes/export.js';
 import montageRoutes from './routes/montage.js';
+import openreelRoutes from './routes/openreel.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
 
 interface CreateAppOptions {
@@ -178,6 +179,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   app.use('/api/projects/:id/shots', shotRoutes);
   app.use('/api/projects/:id', exportRoutes);
   app.use('/api/projects/:id', montageRoutes);
+  app.use('/api/projects/:id', openreelRoutes);
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
