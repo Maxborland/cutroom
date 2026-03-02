@@ -14,6 +14,7 @@ import { prepareBriefReferences } from '../../lib/reference-media.js';
 import { cacheExternalImageReference, isExternalMediaRef } from '../../lib/external-image-cache.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
+import { safeLogValue } from '../../lib/safe-log.js';
 
 const router = Router({ mergeParams: true });
 
@@ -131,7 +132,7 @@ async function toLocalReferenceImage(projectId: string, shotId: string, sourceIm
     const mimeType = getMimeType(sourceImage);
     return { base64: buffer.toString('base64'), mimeType };
   } catch (err) {
-    console.warn('[external-cache] Failed to fetch external image for local fallback:', (err as any)?.message || err);
+    console.warn('[external-cache] Failed to fetch external image for local fallback:', safeLogValue((err as any)?.message || err));
     return null;
   }
 }
@@ -239,7 +240,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
 
         if (!noRefModelId) {
           console.warn(
-            `[generate-image] Model ${modelId} requires reference image, but shot has no references. Falling back to OpenRouter.`,
+            `[generate-image] Model ${safeLogValue(modelId)} requires reference image, but shot has no references. Falling back to OpenRouter.`,
           );
           resultUrl = await generateViaOpenRouter(fallbackModelId);
         } else {
@@ -307,7 +308,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
         }
       }
     } else {
-      console.log(`[generate-image] Model ${modelId} not in registry, using OpenRouter`);
+      console.log(`[generate-image] Model ${safeLogValue(modelId)} not in registry, using OpenRouter`);
       resultUrl = await generateViaOpenRouter(fallbackModelId);
     }
 
@@ -536,7 +537,7 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
       quality: effective.enhanceQuality,
     };
 
-    console.log(`[enhance-image] model=${enhanceModel}, source=${sourceImage}, size=${enhanceOptions.size}, quality=${enhanceOptions.quality}`);
+    console.log(`[enhance-image] model=${safeLogValue(enhanceModel)}, source=${safeLogValue(sourceImage)}, size=${enhanceOptions.size}, quality=${enhanceOptions.quality}`);
 
     let result: string;
     try {
@@ -703,7 +704,7 @@ router.post('/shots/:shotId/ai-review', async (req: Request, res: Response) => {
       return;
     }
 
-    console.log(`[ai-review] model=${effective.reviewModel}, shot=${shotId}`);
+    console.log(`[ai-review] model=${safeLogValue(effective.reviewModel)}, shot=${safeLogValue(shotId)}`);
 
     const reviewMessages = [
       {
