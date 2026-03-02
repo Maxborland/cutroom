@@ -240,7 +240,8 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
 
         if (!noRefModelId) {
           console.warn(
-            `[generate-image] Model ${safeLogValue(modelId)} requires reference image, but shot has no references. Falling back to OpenRouter.`,
+            '[generate-image] Model %s requires reference image, but shot has no references. Falling back to OpenRouter.',
+            safeLogValue(modelId),
           );
           resultUrl = await generateViaOpenRouter(fallbackModelId);
         } else {
@@ -308,7 +309,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
         }
       }
     } else {
-      console.log(`[generate-image] Model ${safeLogValue(modelId)} not in registry, using OpenRouter`);
+      console.log('[generate-image] Model %s not in registry, using OpenRouter', safeLogValue(modelId));
       resultUrl = await generateViaOpenRouter(fallbackModelId);
     }
 
@@ -537,7 +538,7 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
       quality: effective.enhanceQuality,
     };
 
-    console.log(`[enhance-image] model=${safeLogValue(enhanceModel)}, source=${safeLogValue(sourceImage)}, size=${enhanceOptions.size}, quality=${enhanceOptions.quality}`);
+    console.log('[enhance-image] model=%s, source=%s, size=%s, quality=%s', safeLogValue(enhanceModel), safeLogValue(sourceImage), enhanceOptions.size, enhanceOptions.quality);
 
     let result: string;
     try {
@@ -704,7 +705,7 @@ router.post('/shots/:shotId/ai-review', async (req: Request, res: Response) => {
       return;
     }
 
-    console.log(`[ai-review] model=${safeLogValue(effective.reviewModel)}, shot=${safeLogValue(shotId)}`);
+    console.log('[ai-review] model=%s, shot=%s', safeLogValue(effective.reviewModel), safeLogValue(shotId));
 
     const reviewMessages = [
       {
