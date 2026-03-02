@@ -205,15 +205,31 @@ describe('Montage Integration', () => {
   })
 
   describe('POST /montage/normalize-vo-text', () => {
-    it('returns normalized voiceover text preview', async () => {
+    it('returns pass=1 normalized voiceover text preview', async () => {
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
-        .send({ text: 'ул. Ленина, д. 12 — 40 кв.м.... (пауза)' })
+        .send({ text: 'Светлая гостиная (пауза)', pass: 1 })
         .expect(200)
 
       expect(res.body).toEqual({
-        normalizedText: 'улица Ленина, дом двенадцать, сорок квадратных метров,.',
+        normalizedText: 'Светлая гостиная <break time="600ms"/>',
       })
+    })
+
+    it('returns richer expressiveness for pass=2 than pass=1', async () => {
+      const pass1 = await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({ text: 'Вы готовы? Поехали!', pass: 1 })
+        .expect(200)
+
+      const pass2 = await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({ text: 'Вы готовы? Поехали!', pass: 2 })
+        .expect(200)
+
+      expect(pass1.body.normalizedText).toBe('Вы готовы? Поехали!')
+      expect(pass2.body.normalizedText).toBe('Вы готовы?<break time="300ms"/> Поехали!<break time="200ms"/>')
+      expect(pass2.body.normalizedText).not.toBe(pass1.body.normalizedText)
     })
 
     it('returns 400 when no text provided and project script is empty', async () => {
@@ -231,7 +247,7 @@ describe('Montage Integration', () => {
   describe('POST /montage/generate-voiceover', () => {
     it('generates voiceover via TTS provider, normalizes script text and saves audio', async () => {
       await withProject(projectId, (proj) => {
-        proj.voiceoverScript = 'ул. Ленина, д. 7 — 42 кв.м.... [камера едет]'
+        proj.voiceoverScript = 'ул. Ленина, д. 7 — 42 кв.м.... (пауза)'
         proj.voiceoverScriptApproved = true
       })
 
@@ -246,7 +262,7 @@ describe('Montage Integration', () => {
       expect(res.body.provider).toBe('elevenlabs-fal')
       expect(res.body.voiceId).toBe('Aria')
       expect(generateSpeech).toHaveBeenCalledWith(
-        'улица Ленина, дом семь, сорок два квадратных метров,.',
+        'улица Ленина, дом семь, сорок два квадратных метров,. <break time="600ms"/>',
         'elevenlabs-fal',
         'Aria',
       )

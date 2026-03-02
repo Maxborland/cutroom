@@ -18,12 +18,49 @@ describe('normalizeVoiceoverText', () => {
     expect(normalized).toBe('В доме один подъезд, двенадцать этажей и сто двадцать пять квартир.')
   })
 
-  it('removes stage directions in brackets and parentheses', () => {
-    const input = 'Светлая гостиная [камера медленно едет] с панорамой (пауза) на парк.'
+  it('converts known stage directions in parentheses to ElevenLabs break tags', () => {
+    const input = 'Светлая гостиная (пауза) с панорамой на парк.'
 
     const normalized = normalizeVoiceoverText(input)
 
-    expect(normalized).toBe('Светлая гостиная с панорамой на парк.')
+    expect(normalized).toBe('Светлая гостиная <break time="600ms"/> с панорамой на парк.')
+  })
+
+  it('converts known stage directions in brackets to ElevenLabs break tags', () => {
+    const input = 'Премиальная кухня [длинная пауза] с островом.'
+
+    const normalized = normalizeVoiceoverText(input)
+
+    expect(normalized).toBe('Премиальная кухня <break time="1.5s"/> с островом.')
+  })
+
+  it('keeps unknown stage directions as-is', () => {
+    const input = 'Светлая гостиная (тише) с панорамой на парк.'
+
+    const normalized = normalizeVoiceoverText(input)
+
+    expect(normalized).toContain('(тише)')
+  })
+
+  it('adds extra expressiveness on pass=2 compared to pass=1', () => {
+    const input = 'Вы готовы? Поехали!'
+
+    const pass1 = normalizeVoiceoverText(input, { pass: 1 })
+    const pass2 = normalizeVoiceoverText(input, { pass: 2 })
+
+    expect(pass1).toBe('Вы готовы? Поехали!')
+    expect(pass2).toBe('Вы готовы?<break time="300ms"/> Поехали!<break time="200ms"/>')
+    expect(pass2).not.toBe(pass1)
+  })
+
+  it('uses plain-text pauses for kokoro provider instead of XML break tags', () => {
+    const input = 'Поехали! (пауза)'
+
+    const normalized = normalizeVoiceoverText(input, { provider: 'kokoro', pass: 2 })
+
+    expect(normalized).not.toContain('<break')
+    expect(normalized).toContain('...')
+    expect(normalized).toContain(',')
   })
 
   it('normalizes dashes into comma pauses', () => {
