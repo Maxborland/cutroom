@@ -11,6 +11,7 @@ import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generatio
 import { fetchRemoteMediaToFile, getBestImageFile, getMimeType } from '../../lib/media-utils.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
+import { safeLogValue } from '../../lib/safe-log.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DOWNLOAD_ATTEMPTS = 5;
@@ -75,9 +76,9 @@ async function cacheExternalVideoInBackground(
     refreshedShot.videoFile = local.filename;
     refreshedShot.status = 'vid_review';
     await saveProject(refreshed);
-    console.log(`[video-cache] Cached external video for shot ${shotId}: ${local.filename}`);
+    console.log(`[video-cache] Cached external video for shot ${safeLogValue(shotId)}: ${safeLogValue(local.filename)}`);
   } catch (err) {
-    console.warn(`[video-cache] Background cache failed for shot ${shotId}:`, err);
+    console.warn(`[video-cache] Background cache failed for shot ${safeLogValue(shotId)}:`, safeLogValue((err as any)?.message || err));
   }
 }
 
@@ -178,7 +179,7 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
           appliedQualityParam,
         };
       } catch (downloadErr) {
-        console.warn(`[generate-video] Local download failed for shot ${shotId}; keeping external URL`, downloadErr);
+        console.warn(`[generate-video] Local download failed for shot ${safeLogValue(shotId)}; keeping external URL`, safeLogValue((downloadErr as any)?.message || downloadErr));
         await setShotVideoFile(project.id, shotId, videoUrl);
         // Try to recover local cache asynchronously without blocking user flow.
         void cacheExternalVideoInBackground(project.id, shotId, videoUrl);

@@ -1,4 +1,5 @@
 import Replicate from 'replicate';
+import { safeLogValue } from './safe-log.js';
 
 function isReplicateInputValidationError(err: unknown, inputKeys: string[]): boolean {
   if (inputKeys.length === 0) return false;
@@ -91,7 +92,7 @@ export async function replicateGenerateVideo(opts: {
       throw err;
     }
 
-    console.warn(`[replicate] video endpoint=${opts.endpoint} rejected optional params (${extraKeys.join(',')}); retrying without them`);
+    console.warn(`[replicate] video endpoint=${safeLogValue(opts.endpoint)} rejected optional params (${extraKeys.join(',')}); retrying without them`);
     output = await replicate.run(opts.endpoint as `${string}/${string}`, { input: baseInput, signal });
   }
 

@@ -1,4 +1,5 @@
 import { fal } from '@fal-ai/client';
+import { safeLogValue } from './safe-log.js';
 
 let _configured = false;
 let _lastKey = '';
@@ -47,9 +48,6 @@ function errorMessageIncludes(err: any, pattern: string): boolean {
 }
 
 /** Strip newlines/control chars from a string before logging (prevent log injection). */
-function safeLogValue(value: unknown): string {
-  return String(value ?? '').replace(/[\r\n\t\x00-\x1f]/g, ' ').slice(0, 200);
-}
 
 function isRetryableFalError(err: any): boolean {
   const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status ?? 0);
@@ -344,7 +342,7 @@ export async function falGenerateVideo(opts: {
   };
 
   const safeEndpoint = safeLogValue(opts.endpoint);
-  console.log(`[fal] video endpoint=${safeEndpoint} params=${Object.keys(input).join(',')}`);
+  console.log(`[fal] video endpoint=${safeEndpoint} params=${safeLogValue(Object.keys(input).join(','))}`);
 
   let result: any;
   let currentInput: Record<string, unknown> = input;
