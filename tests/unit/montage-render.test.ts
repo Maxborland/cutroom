@@ -116,17 +116,26 @@ describe('Montage Render (Phase 5)', () => {
       expect(res.body.error).toMatch(/plan/i)
     })
 
-    it('should start a render job and return jobId', async () => {
+    it('should start a render job and return job', async () => {
       const plan = makePlan()
       const projectId = await setupProject(plan)
       createdIds.push(projectId)
+
+      mockGetRenderJob.mockResolvedValueOnce({
+        id: 'render-test-123-preview',
+        createdAt: '2026-03-01T00:00:00Z',
+        quality: 'preview',
+        resolution: '1280x720',
+        status: 'queued',
+        progress: 0,
+      })
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/render`)
         .send({ quality: 'preview' })
         .expect(200)
 
-      expect(res.body.jobId).toBe('render-test-123-preview')
+      expect(res.body.id).toBe('render-test-123-preview')
       expect(res.body.status).toBe('queued')
       expect(res.body.quality).toBe('preview')
       expect(mockStartRender).toHaveBeenCalledWith(projectId, plan, 'preview')
