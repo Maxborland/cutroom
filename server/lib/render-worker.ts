@@ -269,6 +269,7 @@ async function doRender(
     });
 
     let lastUpdateTime = Date.now();
+    let lastWrittenPct = -1;
     let lastFpsSampleTime = Date.now();
     let lastFpsSampleFrames = 0;
 
@@ -300,7 +301,8 @@ async function doRender(
           }
 
           // Throttle updates to every ~2% or every 2 seconds
-          if (pct % 2 === 0 || now - lastUpdateTime > 2000) {
+          if ((pct !== lastWrittenPct && pct % 2 === 0) || now - lastUpdateTime > 2000) {
+            lastWrittenPct = pct;
             const update: Partial<RenderJob> = {
               progress: pct,
               frameCurrent: renderedFrames,
