@@ -150,7 +150,7 @@ router.post('/montage/normalize-vo-text', async (req: Request, res: Response) =>
     const project = await loadProject(req, res);
     if (!project) return;
 
-    const { text, pass } = req.body ?? {};
+    const { text, pass, provider } = req.body ?? {};
     const sourceText = typeof text === 'string'
       ? text
       : (project.voiceoverScript || '');
@@ -164,8 +164,12 @@ router.post('/montage/normalize-vo-text', async (req: Request, res: Response) =>
       ? pass
       : Number.parseInt(String(pass ?? ''), 10);
 
+    const validProviders = ['elevenlabs-fal', 'elevenlabs', 'kokoro'] as const;
+    const resolvedProvider = validProviders.includes(provider) ? provider : undefined;
+
     const normalizedText = normalizeVoiceoverText(sourceText, {
       pass: Number.isFinite(parsedPass) && parsedPass > 0 ? parsedPass : 1,
+      provider: resolvedProvider,
     });
     res.json({ normalizedText });
   } catch (err) {

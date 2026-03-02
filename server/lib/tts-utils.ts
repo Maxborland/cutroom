@@ -101,8 +101,9 @@ function addExpressivenessHints(text: string, provider: TtsNormalizationProvider
   let result = text
 
   // Add short beats after exclamation and question sentences
-  result = result.replace(/!+(?=\s|$)/g, (token) => `${token}${exclamationPause}`)
-  result = result.replace(/\?+(?=\s|$)/g, (token) => `${token}${questionPause}`)
+  // Limit repeated punctuation to avoid polynomial regex on untrusted input
+  result = result.replace(/!{1,3}(?=\s|$)/g, (token) => `${token}${exclamationPause}`)
+  result = result.replace(/\?{1,3}(?=\s|$)/g, (token) => `${token}${questionPause}`)
 
   // Add a stronger break after paragraph boundaries
   result = result.replace(/\n{2,}/g, (separator) => `${paragraphPause}${separator}`)
