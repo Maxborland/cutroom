@@ -16,7 +16,10 @@
     "test:integration": "vitest run tests/integration",
     "test:components": "vitest run tests/components",
     "test:e2e": "npx playwright test",
-    "test:all": "vitest run && npx playwright test"
+    "test:all": "vitest run && npx playwright test",
+    "openreel:sync": "node scripts/openreel/sync.mjs",
+    "openreel:build": "node scripts/openreel/build.mjs",
+    "openreel:update": "node scripts/openreel/sync.mjs && node scripts/openreel/build.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

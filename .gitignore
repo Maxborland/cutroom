@@ -6,3 +6,7 @@ data/
 test-results/
 playwright-report/
 .worktrees/
+vendor/openreel-video/node_modules/
+vendor/openreel-video/dist/
+vendor/openreel-video/apps/*/dist/
+vendor/openreel-video/packages/*/dist/
