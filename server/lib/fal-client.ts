@@ -342,7 +342,7 @@ export async function falGenerateVideo(opts: {
   };
 
   const safeEndpoint = safeLogValue(opts.endpoint);
-  console.log(`[fal] video endpoint=${safeEndpoint} params=${safeLogValue(Object.keys(input).join(','))}`);
+  console.log('[fal] video endpoint=%s params=%s', safeEndpoint, safeLogValue(Object.keys(input).join(',')));
 
   let result: any;
   let currentInput: Record<string, unknown> = input;
@@ -360,7 +360,7 @@ export async function falGenerateVideo(opts: {
       if (!droppedExtraInput && isFalInputValidationError(err, extraKeys)) {
         droppedExtraInput = true;
         currentInput = { ...baseInput };
-        console.warn(`[fal] video endpoint=${safeEndpoint} rejected optional params (${extraKeys.join(',')}); retrying without them`);
+        console.warn('[fal] video endpoint=%s rejected optional params (%s); retrying without them', safeEndpoint, extraKeys.join(','));
         continue;
       }
 
@@ -377,7 +377,7 @@ export async function falGenerateVideo(opts: {
             ...currentInput,
             duration: replacement,
           };
-          console.warn(`[fal] video endpoint=${safeEndpoint} adjusted duration to supported value: ${replacement}`);
+          console.warn('[fal] video endpoint=%s adjusted duration to supported value: %s', safeEndpoint, replacement);
           continue;
         }
       }
@@ -390,13 +390,13 @@ export async function falGenerateVideo(opts: {
             ...currentInput,
             auto_fix: true,
           };
-          console.warn(`[fal] video endpoint=${safeEndpoint} no_media_generated; retrying with auto_fix=true`);
+          console.warn('[fal] video endpoint=%s no_media_generated; retrying with auto_fix=true', safeEndpoint);
           continue;
         }
 
         if (attempt < 5) {
           const delay = attempt * 2000;
-          console.warn(`[fal] video endpoint=${safeEndpoint} no_media_generated; retrying in ${delay / 1000}s...`);
+          console.warn('[fal] video endpoint=%s no_media_generated; retrying in %ss...', safeEndpoint, delay / 1000);
           await sleepWithAbort(delay, signal);
           continue;
         }

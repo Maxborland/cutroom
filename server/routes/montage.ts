@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import fsCb from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
+import { rateLimit } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
@@ -333,7 +334,7 @@ const voiceoverUpload = createAudioUpload('voiceover');
 const musicUpload = createAudioUpload('music');
 
 // DELETE /api/projects/:id/montage/voiceover
-router.delete('/montage/voiceover', async (req: Request, res: Response) => {
+router.delete('/montage/voiceover', rateLimit('montage-del-vo', { max: 30, windowMs: 60_000 }), async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -383,6 +384,12 @@ router.post('/montage/upload-voiceover', async (req: Request, res: Response) => 
       }
 
       const ext = path.extname(req.file.originalname).toLowerCase();
+      const ALLOWED_AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm']);
+      if (!ALLOWED_AUDIO_EXTS.has(ext)) {
+        sendApiError(res, 400, `Unsupported audio format: ${ext}`);
+        return;
+      }
+
       const montageDir = resolveProjectPath(project.id, 'montage');
       await ensureDir(montageDir);
 
@@ -540,7 +547,7 @@ router.post('/montage/upload-music', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/projects/:id/montage/music
-router.delete('/montage/music', async (req: Request, res: Response) => {
+router.delete('/montage/music', rateLimit('montage-del-music', { max: 30, windowMs: 60_000 }), async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;

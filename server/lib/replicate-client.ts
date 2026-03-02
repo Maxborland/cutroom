@@ -92,7 +92,7 @@ export async function replicateGenerateVideo(opts: {
       throw err;
     }
 
-    console.warn(`[replicate] video endpoint=${safeLogValue(opts.endpoint)} rejected optional params (${extraKeys.join(',')}); retrying without them`);
+    console.warn('[replicate] video endpoint=%s rejected optional params (%s); retrying without them', safeLogValue(opts.endpoint), extraKeys.join(','));
     output = await replicate.run(opts.endpoint as `${string}/${string}`, { input: baseInput, signal });
   }
 

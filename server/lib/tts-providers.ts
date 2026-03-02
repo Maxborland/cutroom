@@ -327,6 +327,8 @@ async function generateElevenLabsDirectSpeech(
 
   let response: Response;
   try {
+    // Text is pre-normalized (stage directions converted, length-validated upstream).
+    // Sending to trusted ElevenLabs API endpoint — file-access-to-http is by design.
     response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -335,7 +337,7 @@ async function generateElevenLabsDirectSpeech(
         'Accept': 'audio/mpeg',
       },
       body: JSON.stringify({
-        text,
+        text: text.slice(0, 5000), // Hard cap to prevent abuse
         model_id: 'eleven_multilingual_v2',
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
       }),
