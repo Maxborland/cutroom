@@ -2,7 +2,7 @@
  * Rate limiting middleware using express-rate-limit.
  * Recognized by CodeQL as a proper rate-limiting solution.
  */
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 /**
  * Creates a rate limiter for file-system or mutation endpoints.
@@ -16,10 +16,14 @@ export function createRateLimit(max = 60, windowMs = 60_000) {
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => {
-      // Support proxied deployments (x-forwarded-for) and direct connections
+      // Support proxied deployments (x-forwarded-for) and direct connections.
+      // Extract client IP, then normalize IPv6 via express-rate-limit helper.
       const forwarded = req.headers['x-forwarded-for'];
-      if (typeof forwarded === 'string') return forwarded.split(',')[0].trim();
-      return req.ip ?? '127.0.0.1';
+      const clientIp = typeof forwarded === 'string'
+        ? forwarded.split(',')[0].trim()
+        : (req.ip ?? '127.0.0.1');
+      // ipKeyGenerator normalizes IPv6 (e.g. ::ffff:127.0.0.1 → 127.0.0.1)
+      return ipKeyGenerator({ ip: clientIp } as any);
     },
     message: { error: 'Too many requests, please try again later' },
   });

@@ -83,7 +83,7 @@ async function cacheExternalVideoInBackground(
 }
 
 // POST /api/projects/:id/shots/:shotId/generate-video
-router.post('/shots/:shotId/generate-video', async (req: Request, res: Response) => {
+router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {

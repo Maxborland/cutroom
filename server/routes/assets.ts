@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'crypto';
 import {
@@ -130,7 +131,7 @@ router.post('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /api/projects/:id/assets/file/:filename - serve a file
-router.get('/file/:filename', async (req: Request, res: Response) => {
+router.get('/file/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -162,7 +163,7 @@ router.get('/file/:filename', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/projects/:id/assets/:assetId - remove asset
-router.delete('/:assetId', async (req: Request, res: Response) => {
+router.delete('/:assetId', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
