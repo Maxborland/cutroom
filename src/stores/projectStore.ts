@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Project, Shot, ShotStatus, PipelineStage, BriefAsset, DirectorReviewStage } from '../types'
+import type { Project, Shot, ShotStatus, PipelineStage, BriefAsset, DirectorReviewStage, MontagePlan } from '../types'
 import { api } from '../lib/api'
 import { useToastStore } from './toastStore'
 
@@ -68,6 +68,7 @@ interface ProjectState {
   updateAssetLabel: (projectId: string, assetId: string, label: string) => void
   deleteShotImage: (projectId: string, shotId: string, filename: string) => void
   deleteShotVideo: (projectId: string, shotId: string) => void
+  setMontagePlan: (projectId: string, plan: MontagePlan) => void
   clearError: () => void
 
   // Director actions
@@ -100,6 +101,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const project = get().activeProject()
     if (!project) return null
     return project.shots.find((s) => s.id === get().activeShotId) ?? null
+  },
+
+  setMontagePlan: (projectId, plan) => {
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === projectId ? { ...p, montagePlan: plan } : p
+      ),
+    }))
   },
 
   clearError: () => set({ error: null }),
