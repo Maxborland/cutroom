@@ -1,7 +1,13 @@
+import fs from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from './setup.js';
-import { createProject, deleteProject, withProject } from '../../server/lib/storage.js';
+import {
+  createProject,
+  deleteProject,
+  resolveProjectPath,
+  withProject,
+} from '../../server/lib/storage.js';
 
 vi.mock('../../server/lib/normalize.js', () => ({
   probeDuration: vi.fn().mockResolvedValue(5),
@@ -66,5 +72,47 @@ describe('OpenReel route integration', () => {
     await request(app)
       .get('/api/projects/non-existent-project/openreel-project')
       .expect(404);
+  });
+
+  it('PUT /openreel-project saves snapshot and returns modifiedAt', async () => {
+    const payload = {
+      version: '1.0.0',
+      project: {
+        id: projectId,
+        timeline: {
+          tracks: [],
+        },
+      },
+    };
+
+    const response = await request(app)
+      .put(`/api/projects/${projectId}/openreel-project`)
+      .send(payload)
+      .expect(200);
+
+    expect(response.body.saved).toBe(true);
+    expect(typeof response.body.modifiedAt).toBe('number');
+
+    const savedRaw = await fs.readFile(
+      resolveProjectPath(projectId, 'openreel', 'project.json'),
+      'utf-8',
+    );
+    const saved = JSON.parse(savedRaw);
+
+    expect(saved.version).toBe('1.0.0');
+    expect(saved.project).toEqual(payload.project);
+    expect(saved.modifiedAt).toBe(response.body.modifiedAt);
+  });
+
+  it('PUT /openreel-project returns 400 for invalid version', async () => {
+    const response = await request(app)
+      .put(`/api/projects/${projectId}/openreel-project`)
+      .send({
+        version: '2.0.0',
+        project: { id: projectId },
+      })
+      .expect(400);
+
+    expect(response.body.error).toBe('Unsupported OpenReel project version');
   });
 });
