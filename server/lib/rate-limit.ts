@@ -17,13 +17,13 @@ export function createRateLimit(max = 60, windowMs = 60_000) {
     legacyHeaders: false,
     keyGenerator: (req) => {
       // Support proxied deployments (x-forwarded-for) and direct connections.
-      // Use express-rate-limit helper to normalize IPv6 addresses (prevents bypass).
+      // Extract client IP, then normalize IPv6 via express-rate-limit helper.
       const forwarded = req.headers['x-forwarded-for'];
-      if (typeof forwarded === 'string') {
-        const ip = forwarded.split(',')[0].trim();
-        return ipKeyGenerator({ ...req, ip } as any);
-      }
-      return ipKeyGenerator(req);
+      const clientIp = typeof forwarded === 'string'
+        ? forwarded.split(',')[0].trim()
+        : (req.ip ?? '127.0.0.1');
+      // ipKeyGenerator normalizes IPv6 (e.g. ::ffff:127.0.0.1 → 127.0.0.1)
+      return ipKeyGenerator({ ip: clientIp } as any);
     },
     message: { error: 'Too many requests, please try again later' },
   });
