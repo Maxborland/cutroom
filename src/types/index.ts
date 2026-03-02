@@ -180,6 +180,11 @@ export interface RenderJob {
   logFile?: string
 }
 
+export interface OpenReelBundleMeta {
+  version: string
+  exportedAt: number
+}
+
 // ── Creative Director ────────────────────────────────────────────────
 
 export type DirectorVerdict = 'approve' | 'revise' | 'reject'
