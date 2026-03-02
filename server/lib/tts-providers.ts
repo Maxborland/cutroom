@@ -318,18 +318,21 @@ async function generateElevenLabsDirectSpeech(
     throw new Error('Invalid ElevenLabs voice ID format: contains disallowed characters');
   }
 
-  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
+  // Validate voiceId and construct trusted URL
+  const safeVoiceId = voiceId.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!safeVoiceId || safeVoiceId.length > 64) {
+    throw new Error('Invalid voice ID');
+  }
+  const targetUrl = new URL(`/v1/text-to-speech/${safeVoiceId}`, 'https://api.elevenlabs.io');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
 
-  const safeVoiceId = voiceId.replace(/[\r\n\t]/g, '');
-  console.log(`[tts] ElevenLabs-direct: voice=${safeVoiceId} text=${text.length} chars`);
+  console.log('[tts] ElevenLabs-direct request');
 
   let response: Response;
   try {
-    // Text is pre-normalized (stage directions converted, length-validated upstream).
-    // Sending to trusted ElevenLabs API endpoint — file-access-to-http is by design.
-    response = await fetch(url, {
+    const sanitizedText = String(text).slice(0, 5000);
+    response = await fetch(targetUrl.toString(), {
       method: 'POST',
       headers: {
         'xi-api-key': apiKey,
@@ -337,7 +340,7 @@ async function generateElevenLabsDirectSpeech(
         'Accept': 'audio/mpeg',
       },
       body: JSON.stringify({
-        text: text.slice(0, 5000), // Hard cap to prevent abuse
+        text: sanitizedText,
         model_id: 'eleven_multilingual_v2',
         voice_settings: { stability: 0.5, similarity_boost: 0.75 },
       }),

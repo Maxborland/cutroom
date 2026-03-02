@@ -2,14 +2,14 @@ import fs from 'node:fs/promises';
 import { Router, Request, Response } from 'express';
 import { sendApiError } from '../lib/api-error.js';
 import { buildOpenReelBundle } from '../lib/openreel-exporter.js';
-import { rateLimit } from '../lib/rate-limit.js';
+import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
 import { ensureDir, getProject, resolveProjectPath } from '../lib/storage.js';
 
 const router = Router({ mergeParams: true });
 
 // GET /api/projects/:id/openreel-project
 // Returns saved snapshot if it exists, otherwise builds fresh from CutRoom project
-router.get('/openreel-project', rateLimit('openreel-get', { max: 60, windowMs: 60_000 }), async (req: Request, res: Response) => {
+router.get('/openreel-project', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -44,7 +44,7 @@ router.get('/openreel-project', rateLimit('openreel-get', { max: 60, windowMs: 6
 });
 
 // PUT /api/projects/:id/openreel-project
-router.put('/openreel-project', rateLimit('openreel-put', { max: 30, windowMs: 60_000 }), async (req: Request, res: Response) => {
+router.put('/openreel-project', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const projectId = req.params.id;
     const project = await getProject(projectId);

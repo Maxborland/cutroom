@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
+import { readLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
   saveProject,
@@ -456,7 +457,7 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
 });
 
 // GET /api/projects/:id/shots/:shotId/generated/:filename
-router.get('/shots/:shotId/generated/:filename', async (req: Request, res: Response) => {
+router.get('/shots/:shotId/generated/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {

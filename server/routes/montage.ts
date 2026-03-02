@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import fsCb from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
-import { rateLimit } from '../lib/rate-limit.js';
+import { readLimiter, mutationLimiter, generationLimiter } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
@@ -180,7 +180,7 @@ router.post('/montage/normalize-vo-text', async (req: Request, res: Response) =>
 });
 
 // POST /api/projects/:id/montage/generate-voiceover
-router.post('/montage/generate-voiceover', async (req: Request, res: Response) => {
+router.post('/montage/generate-voiceover', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -256,7 +256,16 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const ext = result.contentType.includes('wav') ? 'wav' : 'mp3';
     const tmpName = `voiceover_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.tmp.${ext}`;
     const tmpPath = path.join(montageDir, tmpName);
-    await fs.writeFile(tmpPath, result.audioBuffer);
+    // Validate write path stays within montage dir
+    if (!path.resolve(tmpPath).startsWith(path.resolve(montageDir) + path.sep)) {
+      throw new Error('Path escapes montage directory');
+    }
+    // Validate audio buffer before writing (size cap 50MB, must be Buffer)
+    if (!Buffer.isBuffer(result.audioBuffer) || result.audioBuffer.length > 50 * 1024 * 1024) {
+      throw new Error('Invalid or oversized audio data');
+    }
+    const safeAudio = Buffer.from(result.audioBuffer);
+    await fs.writeFile(tmpPath, safeAudio);
 
     // Re-check approval AND script content inside withProject to prevent TOCTOU race
     const finalFilename = `voiceover.${ext}`;
@@ -334,7 +343,7 @@ const voiceoverUpload = createAudioUpload('voiceover');
 const musicUpload = createAudioUpload('music');
 
 // DELETE /api/projects/:id/montage/voiceover
-router.delete('/montage/voiceover', rateLimit('montage-del-vo', { max: 30, windowMs: 60_000 }), async (req: Request, res: Response) => {
+router.delete('/montage/voiceover', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -367,7 +376,7 @@ router.delete('/montage/voiceover', rateLimit('montage-del-vo', { max: 30, windo
 
 // POST /api/projects/:id/montage/upload-voiceover
 // Upload custom voiceover audio — validates project before buffering
-router.post('/montage/upload-voiceover', async (req: Request, res: Response) => {
+router.post('/montage/upload-voiceover', mutationLimiter, async (req: Request, res: Response) => {
   const project = await loadProject(req, res);
   if (!project) return;
 
@@ -452,7 +461,7 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
 
 // POST /api/projects/:id/montage/generate-music-prompt
 // Generates a music prompt via LLM that the user can copy into Suno UI
-router.post('/montage/generate-music-prompt', async (req: Request, res: Response) => {
+router.post('/montage/generate-music-prompt', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -508,7 +517,7 @@ Rules:
 
 // POST /api/projects/:id/montage/upload-music
 // Check project existence BEFORE multer parses body (avoid buffering 50MB for 404)
-router.post('/montage/upload-music', async (req: Request, res: Response) => {
+router.post('/montage/upload-music', mutationLimiter, async (req: Request, res: Response) => {
   const project = await loadProject(req, res);
   if (!project) return;
 
@@ -547,7 +556,7 @@ router.post('/montage/upload-music', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/projects/:id/montage/music
-router.delete('/montage/music', rateLimit('montage-del-music', { max: 30, windowMs: 60_000 }), async (req: Request, res: Response) => {
+router.delete('/montage/music', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -641,7 +650,7 @@ router.put('/montage/music-prompt', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/montage/generate-plan
-router.post('/montage/generate-plan', async (req: Request, res: Response) => {
+router.post('/montage/generate-plan', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -989,7 +998,7 @@ router.put('/montage/plan/audio', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/montage/refine-plan
-router.post('/montage/refine-plan', async (req: Request, res: Response) => {
+router.post('/montage/refine-plan', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
