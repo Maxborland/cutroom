@@ -279,6 +279,117 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
   }
 });
 
+// ─── Audio upload helpers ───────────────────────────────────────────
+
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.aac': 'audio/aac',
+};
+
+const ALLOWED_AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
+
+function getMimeForExt(ext: string): string {
+  return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
+}
+
+const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
+
+function createAudioUpload(fieldName: string) {
+  return multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+    fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const extValid = ALLOWED_AUDIO_EXTENSIONS.has(ext);
+      const mimeValid = ALLOWED_AUDIO_MIMES.has(file.mimetype);
+      if (extValid && mimeValid) {
+        cb(null, true);
+      } else {
+        cb(new Error('Недопустимый формат файла. Разрешены: mp3, wav, m4a, ogg, aac'));
+      }
+    },
+  });
+}
+
+const voiceoverUpload = createAudioUpload('voiceover');
+const musicUpload = createAudioUpload('music');
+
+// DELETE /api/projects/:id/montage/voiceover
+router.delete('/montage/voiceover', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    // Atomic: check + clear inside withProject to prevent race with concurrent upload
+    const deletedFile = await withProject(project.id, (proj) => {
+      if (!proj.voiceoverFile) return null;
+      const file = proj.voiceoverFile;
+      delete proj.voiceoverFile;
+      delete proj.voiceoverProvider;
+      delete proj.voiceoverVoiceId;
+      return file;
+    });
+
+    if (!deletedFile) {
+      sendApiError(res, 404, 'No voiceover to delete');
+      return;
+    }
+
+    // Remove file after clearing reference (safe even if file missing)
+    const filePath = resolveProjectPath(project.id, deletedFile);
+    await fs.unlink(filePath).catch(() => {});
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Failed to delete voiceover:', err);
+    sendApiError(res, 500, 'Failed to delete voiceover');
+  }
+});
+
+// POST /api/projects/:id/montage/upload-voiceover
+// Upload custom voiceover audio — validates project before buffering
+router.post('/montage/upload-voiceover', async (req: Request, res: Response) => {
+  const project = await loadProject(req, res);
+  if (!project) return;
+
+  voiceoverUpload.single('voiceover')(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        sendApiError(res, 400, multerErr.message);
+        return;
+      }
+
+      if (!req.file) {
+        sendApiError(res, 400, 'Файл озвучки не предоставлен');
+        return;
+      }
+
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const montageDir = resolveProjectPath(project.id, 'montage');
+      await ensureDir(montageDir);
+
+      const filename = `voiceover${ext}`;
+      const filePath = path.join(montageDir, filename);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      const voiceoverFile = `montage/${filename}`;
+      await withProject(project.id, (proj) => {
+        proj.voiceoverFile = voiceoverFile;
+        proj.voiceoverProvider = 'manual';
+        delete proj.voiceoverVoiceId;
+      });
+
+      res.json({ voiceoverFile, provider: 'manual' });
+    } catch (err) {
+      console.error('Failed to upload voiceover:', err);
+      sendApiError(res, 500, 'Failed to upload voiceover');
+    }
+  });
+});
+
 // GET /api/projects/:id/montage/voiceover
 router.get('/montage/voiceover', async (req: Request, res: Response) => {
   try {
@@ -300,8 +411,7 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
     }
 
     const ext = path.extname(filePath).toLowerCase();
-    const mimeType = ext === '.wav' ? 'audio/wav' : 'audio/mpeg';
-    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Type', getMimeForExt(ext));
     const stream = fsCb.createReadStream(filePath);
     stream.on('error', (err) => {
       console.error('Stream error:', err);
@@ -316,41 +426,6 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
     console.error('Failed to stream voiceover:', err);
     sendApiError(res, 500, 'Failed to stream voiceover');
   }
-});
-
-// ─── Music helpers ──────────────────────────────────────────────────
-
-const AUDIO_MIME_TYPES: Record<string, string> = {
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.m4a': 'audio/mp4',
-  '.ogg': 'audio/ogg',
-  '.aac': 'audio/aac',
-};
-
-const ALLOWED_AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
-
-function getMimeForExt(ext: string): string {
-  return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
-}
-
-// Allowed MIME types for audio upload validation
-const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
-
-// Multer for music upload — validates by both extension and MIME type
-const musicUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const extValid = ALLOWED_AUDIO_EXTENSIONS.has(ext);
-    const mimeValid = ALLOWED_AUDIO_MIMES.has(file.mimetype);
-    if (extValid && mimeValid) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Allowed audio formats: mp3, wav, m4a, ogg, aac'));
-    }
-  },
 });
 
 // POST /api/projects/:id/montage/generate-music-prompt
@@ -447,6 +522,38 @@ router.post('/montage/upload-music', async (req: Request, res: Response) => {
       sendApiError(res, 500, 'Failed to upload music');
     }
   });
+});
+
+// DELETE /api/projects/:id/montage/music
+router.delete('/montage/music', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    // Atomic: check + clear inside withProject to prevent race with concurrent upload
+    const deletedFile = await withProject(project.id, (proj) => {
+      if (!proj.musicFile) return null;
+      const file = proj.musicFile;
+      delete proj.musicFile;
+      delete proj.musicProvider;
+      // Keep musicPrompt for re-generation convenience
+      return file;
+    });
+
+    if (!deletedFile) {
+      sendApiError(res, 404, 'No music to delete');
+      return;
+    }
+
+    // Remove file after clearing reference
+    const filePath = resolveProjectPath(project.id, deletedFile);
+    await fs.unlink(filePath).catch(() => {});
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Failed to delete music:', err);
+    sendApiError(res, 500, 'Failed to delete music');
+  }
 });
 
 // GET /api/projects/:id/montage/music
