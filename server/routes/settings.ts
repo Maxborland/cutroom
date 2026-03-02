@@ -24,9 +24,9 @@ interface Settings {
 /**
  * Allowed keys that clients may send in PUT /api/settings.
  * Unknown keys are rejected with 400 to prevent mass-assignment.
- * remotionConcurrency is the only numeric field; all others are strings.
+ * All values are strings.
  */
-export const SETTINGS_ALLOWLIST: ReadonlyMap<string, 'string' | 'number'> = new Map([
+export const SETTINGS_ALLOWLIST: ReadonlyMap<string, 'string'> = new Map([
   // API keys
   ['openRouterApiKey', 'string'],
   ['falApiKey', 'string'],
@@ -57,7 +57,6 @@ export const SETTINGS_ALLOWLIST: ReadonlyMap<string, 'string' | 'number'> = new 
   ['enhanceSize', 'string'],
   ['enhanceQuality', 'string'],
   ['imageAspectRatio', 'string'],
-  ['remotionConcurrency', 'number'],
 
   // Master prompts
   ['masterPromptScriptwriter', 'string'],

@@ -46,7 +46,6 @@ export interface Project {
   musicPrompt?: string;
   musicProvider?: string;
   montagePlan?: MontagePlan;
-  renders?: RenderJob[];
 }
 
 export interface ShotMeta {
@@ -146,26 +145,6 @@ export interface MontagePlan {
   style: MontageStyle;
 }
 
-export type RenderPhase = 'bundling' | 'compositing' | 'encoding' | 'finalizing';
-
-export interface RenderJob {
-  id: string;
-  createdAt: string;
-  quality: 'preview' | 'final';
-  resolution: string;
-  status: 'queued' | 'rendering' | 'done' | 'failed';
-  progress?: number;
-  phase?: RenderPhase;
-  startedAt?: string;
-  completedAt?: string;
-  frameCurrent?: number;
-  frameTotal?: number;
-  renderFps?: number;
-  outputFile?: string;
-  durationSec?: number;
-  errorMessage?: string;
-  logFile?: string;
-}
 
 // ── Constants ────────────────────────────────────────────────────────
 

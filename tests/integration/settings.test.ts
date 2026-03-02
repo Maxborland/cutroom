@@ -93,10 +93,10 @@ describe('Settings API', () => {
       expect(res.body.error).toMatch(/unknown key/)
     })
 
-    it('should reject wrong type for numeric setting', async () => {
+    it('should reject wrong type for known setting', async () => {
       const res = await request(app)
         .put('/api/settings')
-        .send({ remotionConcurrency: 'not-a-number' })
+        .send({ defaultTextModel: 123 })
         .expect(400)
 
       expect(res.body.code).toBe('SETTINGS_INVALID')
