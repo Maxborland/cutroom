@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenReel Editor</title>
+  <!-- CutRoom bridge adapter: enables postMessage communication with host -->
+  <script src="/openreel/bridge-loader.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <!-- OpenReel app entry point is loaded from the built dist -->
+  <script>
+    // Dynamically load OpenReel's built assets
+    // The build output includes an index.html with script/link tags.
+    // We fetch it, extract the script/css refs, and inject them.
+    (function() {
+      fetch('/openreel/app/index.html')
+        .then(function(res) {
+          if (!res.ok) throw new Error('OpenReel build not found (HTTP ' + res.status + ')');
+          return res.text();
+        })
+        .then(function(html) {
+          var parser = new DOMParser();
+          var doc = parser.parseFromString(html, 'text/html');
+
+          // Copy all link[rel=stylesheet] tags
+          doc.querySelectorAll('link[rel="stylesheet"]').forEach(function(link) {
+            var href = link.getAttribute('href');
+            if (href && !href.startsWith('http')) {
+              // Rebase relative paths to /openreel/app/
+              href = href.startsWith('/') ? '/openreel/app' + href : '/openreel/app/' + href;
+            }
+            var newLink = document.createElement('link');
+            newLink.rel = 'stylesheet';
+            newLink.href = href;
+            document.head.appendChild(newLink);
+          });
+
+          // Copy all script tags
+          doc.querySelectorAll('script[src]').forEach(function(script) {
+            var src = script.getAttribute('src');
+            if (src && !src.startsWith('http')) {
+              src = src.startsWith('/') ? '/openreel/app' + src : '/openreel/app/' + src;
+            }
+            var newScript = document.createElement('script');
+            newScript.type = script.getAttribute('type') || 'text/javascript';
+            newScript.src = src;
+            // Preserve module type
+            if (script.getAttribute('type') === 'module') {
+              newScript.type = 'module';
+            }
+            document.body.appendChild(newScript);
+          });
+        })
+        .catch(function(err) {
+          document.getElementById('root').innerHTML =
+            '<div style="padding:2rem;text-align:center;color:#888;font-family:monospace">' +
+            '<p>OpenReel editor build not found.</p>' +
+            '<p style="font-size:0.85em;margin-top:0.5em">Run <code>npm run openreel:build</code></p>' +
+            '<p style="font-size:0.75em;margin-top:0.5em;color:#666">' + (err.message || err) + '</p>' +
+            '</div>';
+          // Still signal ready so CutRoom doesn't show timeout
+          window.parent.postMessage({ type: 'openreel:ready' }, '*');
+        });
+    })();
+  </script>
+</body>
+</html>
