@@ -1,15 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { RenderJob, Project } from '../types'
-import { TimelineEditor } from './TimelineEditor'
+import type { Project } from '../types'
 import {
   Mic,
   Music,
   Film,
-  Play,
-  Download,
   RefreshCw,
   Check,
   X,
@@ -23,11 +20,10 @@ import {
   ChevronUp,
   Send,
   AlertCircle,
-  Sliders,
   Trash2,
 } from 'lucide-react'
 
-type MontageStep = 'voiceover' | 'music' | 'plan' | 'render'
+type MontageStep = 'voiceover' | 'music' | 'plan'
 
 export function MontageView() {
   const project = useProjectStore((s) => s.activeProject())
@@ -72,12 +68,6 @@ export function MontageView() {
       icon: <Film size={16} />,
       done: !!project.montagePlan,
     },
-    {
-      id: 'render',
-      label: 'Рендер',
-      icon: <Clapperboard size={16} />,
-      done: project.renders?.some((r) => r.status === 'done') ?? false,
-    },
   ]
 
   return (
@@ -116,9 +106,6 @@ export function MontageView() {
             onRefresh={() => refreshProject(project.id)}
             onOpenEditor={() => navigate(`/editor/${project.id}`)}
           />
-        )}
-        {activeStep === 'render' && (
-          <RenderStep project={project} onRefresh={() => refreshProject(project.id)} />
         )}
       </div>
     </div>
@@ -593,8 +580,6 @@ function PlanStep({
   const [loading, setLoading] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
-  const [showMixer, setShowMixer] = useState(false)
-  const setMontagePlan = useProjectStore((s) => s.setMontagePlan)
 
   const generatePlan = async () => {
     setLoading(true)
@@ -616,10 +601,6 @@ function PlanStep({
     } finally {
       setLoading(false)
     }
-  }
-
-  const handlePlanUpdated = (plan: import('../types').MontagePlan) => {
-    setMontagePlan(project.id, plan)
   }
 
   const plan = project.montagePlan
@@ -666,32 +647,6 @@ function PlanStep({
               <Stat label="Титры" value={plan.motionGraphics.lowerThirds.length} />
             </div>
 
-            {/* Interactive Timeline */}
-            <TimelineEditor
-              projectId={project.id}
-              plan={plan}
-              onPlanUpdated={handlePlanUpdated}
-            />
-
-            {/* Audio Mixer toggle */}
-            <div className="bg-surface-1 border-2 border-border rounded-[5px]">
-              <button
-                onClick={() => setShowMixer(!showMixer)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 font-mono text-xs uppercase tracking-wider text-text-muted hover:text-text-secondary transition-colors"
-              >
-                <Sliders size={14} />
-                Аудио микшер
-                {showMixer ? <ChevronUp size={14} className="ml-auto" /> : <ChevronDown size={14} className="ml-auto" />}
-              </button>
-              {showMixer && (
-                <AudioMixer
-                  projectId={project.id}
-                  plan={plan}
-                  onPlanUpdated={handlePlanUpdated}
-                />
-              )}
-            </div>
-
             {/* Refinement */}
             <div className="flex gap-2">
               <input
@@ -725,381 +680,6 @@ function PlanStep({
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-// ── Render Step ─────────────────────────────────────────────────────
-
-function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
-  const [loading, setLoading] = useState(false)
-  const [polling, setPolling] = useState<string | null>(null)
-  const [currentJob, setCurrentJob] = useState<RenderJob | null>(null)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Poll render status
-  useEffect(() => {
-    if (!polling) return
-    const poll = async () => {
-      try {
-        const job = await api.montage.getRenderStatus(project.id, polling)
-        setCurrentJob(job)
-        if (job.status === 'done' || job.status === 'failed') {
-          setPolling(null)
-          onRefresh()
-        }
-      } catch {
-        setPolling(null)
-      }
-    }
-    intervalRef.current = setInterval(poll, 3000)
-    poll()
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [polling, project.id])
-
-  const startRender = async (quality: 'preview' | 'final') => {
-    setLoading(true)
-    try {
-      const result = await api.montage.render(project.id, quality)
-      setPolling(result.id)
-      setCurrentJob({ ...result, progress: result.progress ?? 0 })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const renders = project.renders || []
-  const doneRenders = renders.filter((r) => r.status === 'done')
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-surface-2 border-2 border-border rounded-[5px] p-6 shadow-brutal-sm">
-        <h3 className="font-heading font-semibold text-base mb-4 flex items-center gap-2">
-          <Clapperboard size={18} />
-          Рендер
-        </h3>
-
-        {!project.montagePlan && (
-          <div className="flex items-center gap-2 text-amber">
-            <AlertCircle size={16} />
-            <span className="text-sm">Сначала сгенерируйте план монтажа</span>
-          </div>
-        )}
-
-        {project.montagePlan && (
-          <div className="space-y-4">
-            {/* Start render buttons */}
-            <div className="flex gap-3">
-              <button
-                onClick={() => startRender('preview')}
-                disabled={loading || !!polling}
-                className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
-              >
-                <Play size={14} /> Превью (720p)
-              </button>
-              <button
-                onClick={() => startRender('final')}
-                disabled={loading || !!polling}
-                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
-              >
-                <Film size={14} /> Финальный (4K)
-              </button>
-            </div>
-
-            {/* Current render progress */}
-            {currentJob && (currentJob.status === 'queued' || currentJob.status === 'rendering') && (
-              <RenderProgress job={currentJob} />
-            )}
-
-            {currentJob?.status === 'failed' && (
-              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4 space-y-2">
-                <div className="flex items-center gap-2 text-red-400">
-                  <X size={14} />
-                  <span className="font-mono text-xs font-semibold">Ошибка рендера</span>
-                </div>
-                <details className="text-red-400">
-                  <summary className="font-mono text-xs cursor-pointer hover:underline">
-                    Подробности
-                  </summary>
-                  <pre className="mt-2 font-mono text-[10px] whitespace-pre-wrap break-all bg-surface-2 rounded p-2 max-h-40 overflow-auto">
-                    {currentJob.errorMessage || 'Unknown error'}
-                  </pre>
-                </details>
-              </div>
-            )}
-
-            {/* Completed renders */}
-            {doneRenders.length > 0 && (
-              <div className="pt-4 border-t border-border">
-                <h4 className="font-mono text-[10px] uppercase tracking-wider text-text-muted mb-3">
-                  Готовые рендеры
-                </h4>
-                <div className="space-y-2">
-                  {doneRenders.map((render) => (
-                    <div
-                      key={render.id}
-                      className="flex items-center justify-between bg-surface-1 border-2 border-emerald rounded-[5px] p-3"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Check size={14} className="text-emerald" />
-                        <span className="font-mono text-xs text-text-secondary">
-                          {render.quality === 'final' ? '4K' : '720p'} — {render.resolution}
-                        </span>
-                        <span className="font-mono text-[10px] text-text-muted">
-                          {new Date(render.createdAt).toLocaleString('ru')}
-                        </span>
-                      </div>
-                      <a
-                        href={api.montage.getRenderDownloadUrl(project.id, render.id)}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all"
-                        download
-                      >
-                        <Download size={14} /> Скачать
-                      </a>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Render Progress ─────────────────────────────────────────────────
-
-const PHASE_LABELS: Record<string, { label: string; icon: string }> = {
-  bundling: { label: 'Сборка проекта', icon: '📦' },
-  compositing: { label: 'Подготовка композиции', icon: '🎬' },
-  encoding: { label: 'Кодирование видео', icon: '⚙️' },
-  finalizing: { label: 'Финализация', icon: '✨' },
-}
-
-function RenderProgress({ job }: { job: RenderJob }) {
-  const phase = job.phase ? PHASE_LABELS[job.phase] : null
-  const progress = job.progress ?? 0
-
-  // Compute ETA
-  let etaText = ''
-  if (job.frameTotal && job.frameCurrent != null && job.renderFps && job.renderFps > 0) {
-    const remaining = job.frameTotal - job.frameCurrent
-    const etaSec = Math.ceil(remaining / job.renderFps)
-    if (etaSec > 60) {
-      const m = Math.floor(etaSec / 60)
-      const s = etaSec % 60
-      etaText = `~${m}:${s.toString().padStart(2, '0')} осталось`
-    } else if (etaSec > 0) {
-      etaText = `~${etaSec}с осталось`
-    }
-  }
-
-  return (
-    <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4 space-y-3">
-      {/* Phase indicator */}
-      <div className="flex items-center gap-2">
-        {job.status === 'queued' ? (
-          <>
-            <Loader2 size={14} className="animate-spin text-sky" />
-            <span className="font-mono text-xs uppercase text-sky">В очереди...</span>
-          </>
-        ) : (
-          <>
-            <Loader2 size={14} className="animate-spin text-sky" />
-            <span className="font-mono text-xs text-sky">
-              {phase ? `${phase.icon} ${phase.label}` : 'Рендер'}
-            </span>
-          </>
-        )}
-      </div>
-
-      {/* Progress bar */}
-      <div className="w-full bg-surface-2 rounded-full h-2">
-        <div
-          className="bg-sky h-2 rounded-full transition-all duration-500"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-
-      {/* Detail stats */}
-      {job.status === 'rendering' && (
-        <div className="flex items-center gap-4 flex-wrap">
-          <span className="font-mono text-[10px] text-text-muted">
-            {progress}%
-          </span>
-          {job.frameCurrent != null && job.frameTotal != null && (
-            <span className="font-mono text-[10px] text-text-muted">
-              Кадр {job.frameCurrent}/{job.frameTotal}
-            </span>
-          )}
-          {job.renderFps != null && job.renderFps > 0 && (
-            <span className="font-mono text-[10px] text-text-muted">
-              {job.renderFps} fps
-            </span>
-          )}
-          {etaText && (
-            <span className="font-mono text-[10px] text-sky">
-              {etaText}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-// ── Audio Mixer ─────────────────────────────────────────────────────
-
-function AudioMixer({
-  projectId,
-  plan,
-  onPlanUpdated,
-}: {
-  projectId: string
-  plan: import('../types').MontagePlan
-  onPlanUpdated: (plan: import('../types').MontagePlan) => void
-}) {
-  const [saving, setSaving] = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingRef = useRef<Record<string, unknown>>({})
-
-  const update = useCallback((audio: Record<string, unknown>) => {
-    for (const [key, val] of Object.entries(audio)) {
-      pendingRef.current[key] = {
-        ...((pendingRef.current[key] as Record<string, unknown>) || {}),
-        ...((val as Record<string, unknown>) || {}),
-      }
-    }
-
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(async () => {
-      const payload = { ...pendingRef.current }
-      pendingRef.current = {}
-
-      setSaving(true)
-      try {
-        const result = await api.montage.updateAudioLevels(projectId, payload)
-        onPlanUpdated(result.montagePlan)
-      } catch (err) {
-        console.error('Audio update failed:', err)
-      } finally {
-        setSaving(false)
-      }
-    }, 400)
-  }, [projectId, onPlanUpdated])
-
-  const voGain = plan.audio.voiceover.gainDb
-  const musicGain = plan.audio.music.gainDb
-  const duckingDb = plan.audio.music.duckingDb
-  const duckFadeMs = plan.audio.music.duckFadeMs
-
-  return (
-    <div className="px-4 pb-4 space-y-4">
-      {/* Voiceover gain */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
-            Озвучка
-          </span>
-          <span className="font-mono text-xs text-text-secondary tabular-nums">
-            {voGain > 0 ? '+' : ''}{voGain}дБ
-          </span>
-        </div>
-        <input
-          type="range"
-          min={-24}
-          max={12}
-          step={1}
-          value={voGain}
-          onChange={(e) => {
-            const v = parseInt(e.target.value)
-            update({ voiceover: { gainDb: v } })
-          }}
-          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-sky"
-        />
-      </div>
-
-      {/* Music gain */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
-            Музыка
-          </span>
-          <span className="font-mono text-xs text-text-secondary tabular-nums">
-            {musicGain > 0 ? '+' : ''}{musicGain}дБ
-          </span>
-        </div>
-        <input
-          type="range"
-          min={-48}
-          max={6}
-          step={1}
-          value={musicGain}
-          onChange={(e) => {
-            const v = parseInt(e.target.value)
-            update({ music: { gainDb: v } })
-          }}
-          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-amber"
-        />
-      </div>
-
-      {/* Ducking */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
-            Даккинг (приглушение под голос)
-          </span>
-          <span className="font-mono text-xs text-text-secondary tabular-nums">
-            {duckingDb}дБ
-          </span>
-        </div>
-        <input
-          type="range"
-          min={-48}
-          max={0}
-          step={1}
-          value={duckingDb}
-          onChange={(e) => {
-            const v = parseInt(e.target.value)
-            update({ music: { duckingDb: v } })
-          }}
-          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-amber"
-        />
-      </div>
-
-      {/* Duck fade */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
-            Скорость даккинга
-          </span>
-          <span className="font-mono text-xs text-text-secondary tabular-nums">
-            {duckFadeMs}мс
-          </span>
-        </div>
-        <input
-          type="range"
-          min={50}
-          max={2000}
-          step={50}
-          value={duckFadeMs}
-          onChange={(e) => {
-            const v = parseInt(e.target.value)
-            update({ music: { duckFadeMs: v } })
-          }}
-          className="w-full h-1.5 bg-surface-2 rounded-full appearance-none cursor-pointer accent-amber"
-        />
-      </div>
-
-      {saving && (
-        <div className="flex items-center gap-2 text-text-muted">
-          <Loader2 size={12} className="animate-spin" />
-          <span className="font-mono text-[10px]">Сохранение...</span>
-        </div>
-      )}
     </div>
   )
 }

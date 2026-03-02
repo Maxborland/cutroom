@@ -43,7 +43,6 @@ export interface GlobalSettings {
   sunoApiKey?: string;
   defaultMusicStyle?: string;
   defaultMontagePreset?: string;
-  remotionConcurrency?: number;
 }
 
 const DEFAULT_SETTINGS: GlobalSettings = {

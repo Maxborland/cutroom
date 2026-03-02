@@ -8,7 +8,6 @@ import type {
   DirectorState,
   VideoGenerationResult,
   MontagePlan,
-  RenderJob,
 } from '../types/index'
 import type { OpenReelBundle } from './openreel-bridge'
 
@@ -334,14 +333,5 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ feedback }),
       }),
-    render: (projectId: string, quality: 'preview' | 'final') =>
-      request<RenderJob>(`/projects/${projectId}/montage/render`, {
-        method: 'POST',
-        body: JSON.stringify({ quality }),
-      }),
-    getRenderStatus: (projectId: string, jobId: string) =>
-      request<RenderJob>(`/projects/${projectId}/montage/render/${jobId}`),
-    getRenderDownloadUrl: (projectId: string, jobId: string) =>
-      `${BASE}/projects/${projectId}/montage/render/${jobId}/download`,
   },
 }

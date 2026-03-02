@@ -78,7 +78,6 @@ export interface Project {
   musicPrompt?: string
   musicProvider?: string
   montagePlan?: MontagePlan
-  renders?: RenderJob[]
 }
 
 // ── Montage Types ────────────────────────────────────────────────────
@@ -159,26 +158,6 @@ export interface MontagePlan {
   style: MontageStyle
 }
 
-export type RenderPhase = 'bundling' | 'compositing' | 'encoding' | 'finalizing'
-
-export interface RenderJob {
-  id: string
-  createdAt: string
-  quality: 'preview' | 'final'
-  resolution: string
-  status: 'queued' | 'rendering' | 'done' | 'failed'
-  progress?: number
-  phase?: RenderPhase
-  startedAt?: string
-  completedAt?: string
-  frameCurrent?: number
-  frameTotal?: number
-  renderFps?: number
-  outputFile?: string
-  durationSec?: number
-  errorMessage?: string
-  logFile?: string
-}
 
 export interface OpenReelBundleMeta {
   version: string
@@ -256,5 +235,4 @@ export interface AppSettings {
   sunoApiKey?: string
   defaultMusicStyle?: string
   defaultMontagePreset?: string
-  remotionConcurrency?: number
 }

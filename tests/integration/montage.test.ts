@@ -1,6 +1,6 @@
 /**
  * Integration tests for montage endpoints.
- * Tests the full HTTP flow with mocked external dependencies (LLM, TTS, render).
+ * Tests the full HTTP flow with mocked external dependencies (LLM, TTS).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import request from 'supertest'
@@ -14,7 +14,6 @@ import {
   withProject,
   resolveProjectPath,
   ensureDir,
-  type Project,
 } from '../../server/lib/storage.js'
 
 // Mock external dependencies
@@ -22,13 +21,6 @@ vi.mock('../../server/lib/openrouter.js', () => ({
   chatCompletion: vi.fn().mockResolvedValue('Mocked LLM response'),
   generateImage: vi.fn(),
 }))
-
-vi.mock('../../server/lib/render-worker.js', () => ({
-  startRender: vi.fn().mockResolvedValue('render-test-job-preview'),
-  getRenderJob: vi.fn(),
-  deleteRenderJob: vi.fn(),
-}))
-
 vi.mock('../../server/lib/normalize.js', () => ({
   normalizeClips: vi.fn().mockResolvedValue(new Map()),
   probeDuration: vi.fn().mockResolvedValue(30),
@@ -854,156 +846,4 @@ describe('Montage Integration', () => {
     })
   })
 
-  // ─── Render ───────────────────────────────────────────────────────
-
-  describe('POST /montage/render', () => {
-    it('starts a render job', async () => {
-      await withProject(projectId, (proj) => {
-        proj.montagePlan = {
-          version: 1,
-          format: { width: 3840, height: 2160, fps: 30 },
-          timeline: [],
-          transitions: [],
-          motionGraphics: { lowerThirds: [] },
-          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
-          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
-        } as any
-      })
-
-      const { getRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(getRenderJob).mockResolvedValueOnce({
-        id: 'render-test-job-preview',
-        createdAt: new Date().toISOString(),
-        quality: 'preview',
-        resolution: '1280x720',
-        status: 'queued',
-        progress: 0,
-      })
-
-      const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/render`)
-        .send({ quality: 'preview' })
-        .expect(200)
-
-      expect(res.body.id).toBe('render-test-job-preview')
-      expect(res.body.status).toBe('queued')
-      expect(res.body.quality).toBe('preview')
-    })
-
-    it('returns 400 when no plan exists', async () => {
-      await request(app)
-        .post(`/api/projects/${projectId}/montage/render`)
-        .send({ quality: 'preview' })
-        .expect(400)
-    })
-  })
-
-  describe('GET /montage/render/:jobId', () => {
-    it('returns render job status', async () => {
-      const { getRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(getRenderJob).mockResolvedValueOnce({
-        id: 'job-1',
-        createdAt: new Date().toISOString(),
-        quality: 'preview',
-        resolution: '1280x720',
-        status: 'done',
-        progress: 100,
-        outputFile: 'montage/renders/job-1.mp4',
-      })
-
-      const res = await request(app)
-        .get(`/api/projects/${projectId}/montage/render/job-1`)
-        .expect(200)
-
-      expect(res.body.id).toBe('job-1')
-      expect(res.body.status).toBe('done')
-    })
-
-    it('returns 404 for unknown job', async () => {
-      const { getRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(getRenderJob).mockResolvedValueOnce(null)
-
-      await request(app)
-        .get(`/api/projects/${projectId}/montage/render/unknown`)
-        .expect(404)
-    })
-  })
-
-  describe('DELETE /montage/render/:jobId', () => {
-    it('deletes a render job', async () => {
-      const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(deleteRenderJob).mockResolvedValueOnce(true)
-
-      const res = await request(app)
-        .delete(`/api/projects/${projectId}/montage/render/job-1`)
-        .expect(200)
-
-      expect(res.body.deleted).toBe(true)
-    })
-
-    it('returns 404 for unknown job', async () => {
-      const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(deleteRenderJob).mockResolvedValueOnce(false)
-
-      await request(app)
-        .delete(`/api/projects/${projectId}/montage/render/unknown`)
-        .expect(404)
-    })
-
-    it('returns 409 when job is currently rendering', async () => {
-      const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(deleteRenderJob).mockRejectedValueOnce(
-        new Error('Cannot delete a render job that is currently rendering')
-      )
-
-      const res = await request(app)
-        .delete(`/api/projects/${projectId}/montage/render/active-job`)
-        .expect(409)
-
-      expect(res.body.error).toContain('currently rendering')
-    })
-  })
-
-  describe('GET /montage/render/:jobId/download', () => {
-    it('streams rendered video file', async () => {
-      const { getRenderJob } = await import('../../server/lib/render-worker.js')
-      const rendersDir = resolveProjectPath(projectId, 'montage', 'renders')
-      await ensureDir(rendersDir)
-      const videoContent = Buffer.from('fake-mp4-content')
-      await fs.writeFile(path.join(rendersDir, 'job-1.mp4'), videoContent)
-
-      vi.mocked(getRenderJob).mockResolvedValueOnce({
-        id: 'job-1',
-        createdAt: new Date().toISOString(),
-        quality: 'preview',
-        resolution: '1280x720',
-        status: 'done',
-        progress: 100,
-        outputFile: 'montage/renders/job-1.mp4',
-      })
-
-      const res = await request(app)
-        .get(`/api/projects/${projectId}/montage/render/job-1/download`)
-        .expect(200)
-
-      expect(res.headers['content-type']).toContain('video/mp4')
-      expect(Buffer.from(res.body).toString()).toBe('fake-mp4-content')
-    })
-
-    it('returns 400 when render not complete', async () => {
-      const { getRenderJob } = await import('../../server/lib/render-worker.js')
-      vi.mocked(getRenderJob).mockResolvedValueOnce({
-        id: 'job-1',
-        createdAt: new Date().toISOString(),
-        quality: 'preview',
-        resolution: '1280x720',
-        status: 'rendering',
-        progress: 50,
-      })
-
-      await request(app)
-        .get(`/api/projects/${projectId}/montage/render/job-1/download`)
-        .expect(400)
-    })
-  })
 })
