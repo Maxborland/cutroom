@@ -15,6 +15,12 @@ export function createRateLimit(max = 60, windowMs = 60_000) {
     max,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => {
+      // Support proxied deployments (x-forwarded-for) and direct connections
+      const forwarded = req.headers['x-forwarded-for'];
+      if (typeof forwarded === 'string') return forwarded.split(',')[0].trim();
+      return req.ip ?? '127.0.0.1';
+    },
     message: { error: 'Too many requests, please try again later' },
   });
 }

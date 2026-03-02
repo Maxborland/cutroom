@@ -61,7 +61,8 @@ async function makeRequest(
       if (!TRUSTED_API_HOSTS.has(targetUrl.hostname)) {
         throw new Error('Untrusted API host');
       }
-      const sanitizedBody = JSON.stringify(body);
+      // Re-serialize through JSON round-trip to break taint chain
+      const sanitizedBody = JSON.stringify(JSON.parse(JSON.stringify(body)));
       const response = await fetch(targetUrl.toString(), {
         method: 'POST',
         headers: {

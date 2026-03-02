@@ -136,9 +136,13 @@ export function getMimeType(filename: string): string {
  * Save an image result (URL, data URL, or raw base64) to a file on disk.
  */
 export async function saveImageResult(resultUrl: string, filePath: string): Promise<void> {
-  // Validate filePath: no path traversal, must be absolute or within cwd
+  // Guard: filePath must be absolute (callers use resolveProjectPath which validates traversal)
   const resolvedPath = path.resolve(filePath);
-  if (resolvedPath.includes('..') || !path.isAbsolute(resolvedPath)) {
+  if (resolvedPath !== filePath && !path.isAbsolute(filePath)) {
+    throw new Error('File path must be absolute');
+  }
+  // Guard: reject obviously suspicious patterns in the original input
+  if (filePath.includes('\0') || /\.\.[/\\]/.test(filePath)) {
     throw new Error('Invalid file path');
   }
 

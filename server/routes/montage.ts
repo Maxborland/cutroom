@@ -260,7 +260,12 @@ router.post('/montage/generate-voiceover', generationLimiter, async (req: Reques
     if (!path.resolve(tmpPath).startsWith(path.resolve(montageDir) + path.sep)) {
       throw new Error('Path escapes montage directory');
     }
-    await fs.writeFile(tmpPath, result.audioBuffer);
+    // Validate audio buffer before writing (size cap 50MB, must be Buffer)
+    if (!Buffer.isBuffer(result.audioBuffer) || result.audioBuffer.length > 50 * 1024 * 1024) {
+      throw new Error('Invalid or oversized audio data');
+    }
+    const safeAudio = Buffer.from(result.audioBuffer);
+    await fs.writeFile(tmpPath, safeAudio);
 
     // Re-check approval AND script content inside withProject to prevent TOCTOU race
     const finalFilename = `voiceover.${ext}`;
