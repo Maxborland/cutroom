@@ -422,7 +422,7 @@ router.post('/montage/upload-voiceover', mutationLimiter, async (req: Request, r
 });
 
 // GET /api/projects/:id/montage/voiceover
-router.get('/montage/voiceover', async (req: Request, res: Response) => {
+router.get('/montage/voiceover', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -588,7 +588,7 @@ router.delete('/montage/music', mutationLimiter, async (req: Request, res: Respo
 });
 
 // GET /api/projects/:id/montage/music
-router.get('/montage/music', async (req: Request, res: Response) => {
+router.get('/montage/music', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;

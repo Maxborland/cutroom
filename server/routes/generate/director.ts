@@ -389,11 +389,18 @@ function markImageFeedbackHandled(
   });
 
   if (review.shotVerdicts && typeof review.shotVerdicts === 'object') {
+    const verdicts: Record<string, string> = Object.create(null);
+    for (const [k, v] of Object.entries(review.shotVerdicts)) {
+      verdicts[k] = String(v);
+    }
     for (const id of handled) {
-      if (Object.prototype.hasOwnProperty.call(review.shotVerdicts, id) && review.shotVerdicts[id]) {
-        review.shotVerdicts[id] = 'approve';
+      // Validate shot id format (UUID or simple alphanumeric)
+      if (typeof id !== 'string' || !/^[\w-]+$/.test(id)) continue;
+      if (id in verdicts && verdicts[id]) {
+        verdicts[id] = 'approve';
       }
     }
+    review.shotVerdicts = verdicts;
   }
 
   const hasOpenIssues = review.notes.some((note) => note.verdict !== 'approve' && !note.resolvedAt);

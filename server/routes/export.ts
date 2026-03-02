@@ -3,12 +3,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import archiver from 'archiver';
 import { getProject, getProjectDir } from '../lib/storage.js';
+import { readLimiter } from '../lib/rate-limit.js';
 import { sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
 
 // GET /api/projects/:id/export — stream ZIP of the entire project
-router.get('/export', async (req: Request, res: Response) => {
+router.get('/export', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
