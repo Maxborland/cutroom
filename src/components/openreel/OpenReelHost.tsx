@@ -10,6 +10,15 @@ import { OpenReelSyncStatus, type OpenReelSyncState } from './OpenReelSyncStatus
 const OPENREEL_READY_TIMEOUT_MS = 4000
 const DEFAULT_EDITOR_URL = (import.meta.env.VITE_OPENREEL_EDITOR_URL as string | undefined) ?? '/openreel/index.html'
 
+function deriveOrigin(url: string): string {
+  try {
+    const parsed = new URL(url, window.location.origin)
+    return parsed.origin
+  } catch {
+    return window.location.origin
+  }
+}
+
 interface OpenReelHostProps {
   bundle: OpenReelBundle
   syncStatus: OpenReelSyncState
@@ -45,10 +54,11 @@ export function OpenReelHost({
     const targetWindow = iframeRef.current?.contentWindow
     if (!targetWindow) return
 
+    const origin = deriveOrigin(DEFAULT_EDITOR_URL)
     postBridgeMessage(targetWindow, {
       type: 'cutroom:init',
       payload: bundle,
-    })
+    }, origin)
   }, [bundle])
 
   useEffect(() => {

@@ -7,12 +7,31 @@ import { ensureDir, getProject, resolveProjectPath } from '../lib/storage.js';
 const router = Router({ mergeParams: true });
 
 // GET /api/projects/:id/openreel-project
+// Returns saved snapshot if it exists, otherwise builds fresh from CutRoom project
 router.get('/openreel-project', async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
       sendApiError(res, 404, 'Project not found');
       return;
+    }
+
+    // Try to return saved snapshot first (user's edits in OpenReel)
+    const snapshotPath = resolveProjectPath(project.id, 'openreel', 'project.json');
+    try {
+      const snapshotRaw = await fs.readFile(snapshotPath, 'utf-8');
+      const snapshot = JSON.parse(snapshotRaw);
+      if (snapshot?.version === '1.0.0' && snapshot?.project) {
+        // Rebuild media manifest from current CutRoom state (URLs may change)
+        const freshBundle = await buildOpenReelBundle(project, `/api/projects/${project.id}`);
+        res.json({
+          ...snapshot,
+          mediaManifest: freshBundle.mediaManifest,
+        });
+        return;
+      }
+    } catch {
+      // No snapshot or invalid — fall through to build fresh
     }
 
     const bundle = await buildOpenReelBundle(project, `/api/projects/${project.id}`);
@@ -45,7 +64,7 @@ router.put('/openreel-project', async (req: Request, res: Response) => {
       return;
     }
 
-    if (typeof body.project === 'undefined') {
+    if (body.project == null) {
       sendApiError(res, 400, 'project is required');
       return;
     }

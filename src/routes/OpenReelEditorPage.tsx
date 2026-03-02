@@ -112,6 +112,12 @@ export function OpenReelEditorPage() {
     return () => {
       cancelled = true
       clearSaveTimer()
+      // Flush any pending save on unmount/navigation
+      if (pendingSaveRef.current && !isSavingRef.current) {
+        const payload = pendingSaveRef.current
+        pendingSaveRef.current = null
+        void api.openreel.saveProject(projectId!, payload).catch(() => {})
+      }
     }
   }, [clearSaveTimer, projectId])
 
