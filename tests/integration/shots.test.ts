@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll } from 'vitest'
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest'
 import request from 'supertest'
 import { createApp } from './setup.js'
 import {
@@ -170,6 +170,28 @@ describe('Shots API', () => {
 
       const saved = await getProject(project.id)
       expect(saved?.shots[0]?.videoFile).toBeNull()
+    })
+  })
+
+  describe('POST /api/projects/:id/shots/:shotId/cache-video', () => {
+    it('rejects loopback video URLs before attempting a fetch', async () => {
+      shot.videoFile = 'http://127.0.0.1/internal.mp4'
+      await saveProject(project)
+
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        const res = await request(app)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
+          .send({})
+          .expect(400)
+
+        expect(res.body.error).toContain('not allowed')
+        expect(fetchMock).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
+      }
     })
   })
 })

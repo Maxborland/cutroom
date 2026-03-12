@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
+import { isIP } from 'node:net';
 import {
   getProject,
   saveProject,
@@ -16,8 +17,65 @@ const router = Router({ mergeParams: true });
 const VIDEO_DOWNLOAD_ATTEMPTS = 5;
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 60000;
 
+class InvalidExternalVideoUrlError extends Error {}
+
 function isExternalMediaRef(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
+}
+
+function isPrivateHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+
+  if (
+    normalized === 'localhost'
+    || normalized === '0.0.0.0'
+    || normalized === '::'
+    || normalized === '::1'
+    || normalized.endsWith('.localhost')
+    || normalized.endsWith('.local')
+  ) {
+    return true;
+  }
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    const [first, second] = normalized.split('.').map(Number);
+    return first === 10
+      || first === 127
+      || first === 0
+      || (first === 169 && second === 254)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168);
+  }
+
+  if (ipVersion === 6) {
+    return normalized === '::1'
+      || normalized.startsWith('fc')
+      || normalized.startsWith('fd')
+      || normalized.startsWith('fe8')
+      || normalized.startsWith('fe9')
+      || normalized.startsWith('fea')
+      || normalized.startsWith('feb');
+  }
+
+  return false;
+}
+
+function assertAllowedRemoteVideoUrl(videoUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(videoUrl);
+  } catch {
+    throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
+  }
+
+  if (parsed.username || parsed.password || isPrivateHostname(parsed.hostname)) {
+    throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
+  }
 }
 
 async function downloadVideoToLocalFile(
@@ -25,6 +83,8 @@ async function downloadVideoToLocalFile(
   shotId: string,
   videoUrl: string,
 ): Promise<{ filename: string; url: string }> {
+  assertAllowedRemoteVideoUrl(videoUrl);
+
   const videoDir = resolveProjectPath(projectId, 'shots', shotId, 'video');
   await ensureDir(videoDir);
 
@@ -245,6 +305,10 @@ router.post('/shots/:shotId/cache-video', async (req: Request, res: Response) =>
     await setShotVideoFile(project.id, shotId, local.filename);
     res.json(local);
   } catch (err) {
+    if (err instanceof InvalidExternalVideoUrlError) {
+      sendApiError(res, 400, err.message, 'VIDEO_CACHE_URL_FORBIDDEN');
+      return;
+    }
     console.error('Failed to cache external video locally:', err);
     sendApiError(res, 500, 'Failed to cache external video locally', 'VIDEO_CACHE_FAILED');
   }
