@@ -7,7 +7,10 @@ type FakePool = {
   query: ReturnType<typeof vi.fn>
 }
 
-function createFakePool(appliedVersions: string[]): { pool: FakePool; queries: string[] } {
+function createFakePool(
+  appliedVersions: string[],
+  options: { missingMigrationsTable?: boolean } = {},
+): { pool: FakePool; queries: string[] } {
   const queries: string[] = []
 
   const pool: FakePool = {
@@ -15,6 +18,12 @@ function createFakePool(appliedVersions: string[]): { pool: FakePool; queries: s
       queries.push(sql)
 
       if (sql.includes('SELECT version FROM schema_migrations')) {
+        if (options.missingMigrationsTable) {
+          const error = new Error('relation "schema_migrations" does not exist') as Error & { code?: string }
+          error.code = '42P01'
+          throw error
+        }
+
         return {
           rows: appliedVersions.map((version) => ({ version })),
         }
@@ -69,6 +78,35 @@ describe('db:check contract', () => {
     expect(exitCode).toBe(1)
     expect(errorLog).toHaveBeenCalledWith(
       '[db] Migration command failed: pending migrations detected (1): 0001_initial',
+    )
+    expect(log).not.toHaveBeenCalled()
+    expect(queries.some((query) => query.includes('CREATE TABLE IF NOT EXISTS schema_migrations'))).toBe(false)
+    expect(pool.end).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns exit code 1 with a pending-migrations message when schema_migrations does not exist yet', async () => {
+    const { pool, queries } = createFakePool([], { missingMigrationsTable: true })
+    const log = vi.fn()
+    const errorLog = vi.fn()
+
+    const exitCode = await runMigrationCommand({
+      checkOnly: true,
+      connectionString: 'postgres://postgres:postgres@127.0.0.1:5432/cut_room_test',
+      createDb: vi.fn(() => pool),
+      healthcheckDb: vi.fn(async () => true),
+      loadMigrations: vi.fn(async () => [
+        { version: '0001_initial', sql: 'CREATE TABLE app_metadata ();' },
+      ]),
+      log,
+      errorLog,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(errorLog).toHaveBeenCalledWith(
+      '[db] Migration command failed: pending migrations detected (1): 0001_initial',
+    )
+    expect(errorLog).not.toHaveBeenCalledWith(
+      expect.stringContaining('relation "schema_migrations" does not exist'),
     )
     expect(log).not.toHaveBeenCalled()
     expect(queries.some((query) => query.includes('CREATE TABLE IF NOT EXISTS schema_migrations'))).toBe(false)

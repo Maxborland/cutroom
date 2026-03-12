@@ -70,6 +70,27 @@ async function getAppliedVersions(pool: MigrationPool): Promise<Set<string>> {
   return new Set(result.rows.map((row) => row.version));
 }
 
+function isMissingMigrationsTableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (error as Error & { code?: string }).code === '42P01'
+    || error.message.includes(`relation "${migrationsTableName}" does not exist`);
+}
+
+async function getAppliedVersionsForCheck(pool: MigrationPool): Promise<Set<string>> {
+  try {
+    return await getAppliedVersions(pool);
+  } catch (error) {
+    if (isMissingMigrationsTableError(error)) {
+      return new Set();
+    }
+
+    throw error;
+  }
+}
+
 async function applyMigration(pool: MigrationPool, migration: Migration): Promise<void> {
   const client = await pool.connect();
 
@@ -113,7 +134,7 @@ export async function runMigrationCommand({
 
     if (checkOnly) {
       const migrations = await loadMigrations();
-      const appliedVersions = await getAppliedVersions(pool);
+      const appliedVersions = await getAppliedVersionsForCheck(pool);
       const pendingMigrations = migrations.filter((migration) => !appliedVersions.has(migration.version));
 
       if (pendingMigrations.length === 0) {
