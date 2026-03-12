@@ -1,19 +1,43 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Pool } from 'pg';
-import { createDb, healthcheckDb } from './index.js';
+import { createDb as createDbDefault, healthcheckDb as healthcheckDbDefault } from './index.js';
 
 type Migration = {
   version: string;
   sql: string;
 };
 
+type QueryResult<Row> = {
+  rows: Row[];
+};
+
+type MigrationClient = {
+  query: <Row>(sql: string, params?: unknown[]) => Promise<QueryResult<Row>>;
+  release: () => void;
+};
+
+type MigrationPool = {
+  connect: () => Promise<MigrationClient>;
+  end: () => Promise<void>;
+  query: <Row>(sql: string, params?: unknown[]) => Promise<QueryResult<Row>>;
+};
+
+type RunMigrationCommandOptions = {
+  checkOnly?: boolean;
+  connectionString?: string;
+  createDb?: (connectionString: string) => MigrationPool;
+  healthcheckDb?: (pool: MigrationPool) => Promise<boolean>;
+  loadMigrations?: () => Promise<Migration[]>;
+  log?: (message: string) => void;
+  errorLog?: (message: string) => void;
+};
+
 const migrationsTableName = 'schema_migrations';
 const dbDir = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(dbDir, 'migrations');
 
-async function ensureMigrationsTable(pool: Pool): Promise<void> {
+async function ensureMigrationsTable(pool: MigrationPool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${migrationsTableName} (
       version TEXT PRIMARY KEY,
@@ -22,7 +46,7 @@ async function ensureMigrationsTable(pool: Pool): Promise<void> {
   `);
 }
 
-async function loadMigrations(): Promise<Migration[]> {
+async function loadMigrationsFromDisk(): Promise<Migration[]> {
   const entries = await readdir(migrationsDir, { withFileTypes: true });
 
   const migrations = await Promise.all(
@@ -38,7 +62,7 @@ async function loadMigrations(): Promise<Migration[]> {
   return migrations;
 }
 
-async function getAppliedVersions(pool: Pool): Promise<Set<string>> {
+async function getAppliedVersions(pool: MigrationPool): Promise<Set<string>> {
   const result = await pool.query<{ version: string }>(
     `SELECT version FROM ${migrationsTableName} ORDER BY version ASC`,
   );
@@ -46,7 +70,7 @@ async function getAppliedVersions(pool: Pool): Promise<Set<string>> {
   return new Set(result.rows.map((row) => row.version));
 }
 
-async function applyMigration(pool: Pool, migration: Migration): Promise<void> {
+async function applyMigration(pool: MigrationPool, migration: Migration): Promise<void> {
   const client = await pool.connect();
 
   try {
@@ -65,9 +89,20 @@ async function applyMigration(pool: Pool, migration: Migration): Promise<void> {
   }
 }
 
-async function run(): Promise<void> {
-  const checkOnly = process.argv.includes('--check');
-  const connectionString = process.env.DATABASE_URL ?? '';
+export async function runMigrationCommand({
+  checkOnly = process.argv.includes('--check'),
+  connectionString = process.env.DATABASE_URL ?? '',
+  createDb = createDbDefault,
+  healthcheckDb = healthcheckDbDefault,
+  loadMigrations = loadMigrationsFromDisk,
+  log = console.log,
+  errorLog = console.error,
+}: RunMigrationCommandOptions = {}): Promise<number> {
+  if (!connectionString) {
+    errorLog('[db] Migration command failed: DATABASE_URL is not configured');
+    return 1;
+  }
+
   const pool = createDb(connectionString);
 
   try {
@@ -76,41 +111,60 @@ async function run(): Promise<void> {
       throw new Error('database healthcheck failed');
     }
 
+    if (checkOnly) {
+      const migrations = await loadMigrations();
+      const appliedVersions = await getAppliedVersions(pool);
+      const pendingMigrations = migrations.filter((migration) => !appliedVersions.has(migration.version));
+
+      if (pendingMigrations.length === 0) {
+        log(`[db] Migration status: ok (${migrations.length} applied, 0 pending).`);
+        return 0;
+      }
+
+      errorLog(
+        `[db] Migration command failed: pending migrations detected (${pendingMigrations.length}): ${pendingMigrations.map((migration) => migration.version).join(', ')}`,
+      );
+      return 1;
+    }
+
     await ensureMigrationsTable(pool);
 
     const migrations = await loadMigrations();
     const appliedVersions = await getAppliedVersions(pool);
     const pendingMigrations = migrations.filter((migration) => !appliedVersions.has(migration.version));
 
-    if (checkOnly) {
-      if (pendingMigrations.length === 0) {
-        console.log(`[db] Migration status: ok (${migrations.length} applied, 0 pending).`);
-        return;
-      }
-
-      throw new Error(
-        `pending migrations detected (${pendingMigrations.length}): ${pendingMigrations.map((migration) => migration.version).join(', ')}`,
-      );
-    }
-
     if (pendingMigrations.length === 0) {
-      console.log('[db] No pending migrations.');
-      return;
+      log('[db] No pending migrations.');
+      return 0;
     }
 
     for (const migration of pendingMigrations) {
-      console.log(`[db] Applying migration ${migration.version}`);
+      log(`[db] Applying migration ${migration.version}`);
       await applyMigration(pool, migration);
     }
 
-    console.log(`[db] Applied ${pendingMigrations.length} migration(s).`);
+    log(`[db] Applied ${pendingMigrations.length} migration(s).`);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errorLog(`[db] Migration command failed: ${message}`);
+    return 1;
   } finally {
     await pool.end();
   }
 }
 
-void run().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[db] Migration command failed: ${message}`);
-  process.exitCode = 1;
-});
+function isExecutedDirectly(): boolean {
+  const entryPath = process.argv[1];
+  if (!entryPath) {
+    return false;
+  }
+
+  return path.resolve(entryPath) === path.resolve(fileURLToPath(import.meta.url));
+}
+
+if (isExecutedDirectly()) {
+  void runMigrationCommand().then((exitCode) => {
+    process.exitCode = exitCode;
+  });
+}
