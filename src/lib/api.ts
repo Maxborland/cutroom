@@ -21,6 +21,12 @@ type DeepPartial<T> = {
       : T[K]
 }
 
+export interface RenderStartResponse {
+  jobId: string
+  status: 'queued'
+  quality: RenderJob['quality']
+}
+
 export class ApiRequestError extends Error {
   readonly status: number
   readonly code?: string
@@ -288,7 +294,7 @@ export const api = {
         body: JSON.stringify({ feedback }),
       }),
     render: (projectId: string, quality: 'preview' | 'final') =>
-      request<RenderJob>(`/projects/${projectId}/montage/render`, {
+      request<RenderStartResponse>(`/projects/${projectId}/montage/render`, {
         method: 'POST',
         body: JSON.stringify({ quality }),
       }),

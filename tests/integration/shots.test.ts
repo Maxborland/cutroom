@@ -64,6 +64,33 @@ describe('Shots API', () => {
       expect(res.body.scene).toBe('Another update')
     })
 
+    it('ignores internal media metadata fields during generic shot updates', async () => {
+      shot.generatedImages = ['safe-generated.png']
+      shot.enhancedImages = ['safe-enhanced.png']
+      shot.videoFile = 'safe-video.mp4'
+      await saveProject(project)
+
+      const res = await request(app)
+        .put(`/api/projects/${project.id}/shots/shot-001`)
+        .send({
+          scene: 'Safe update',
+          generatedImages: ['../../../project.json'],
+          enhancedImages: ['..\\..\\..\\secret.png'],
+          videoFile: '../../../secret.mp4',
+        })
+        .expect(200)
+
+      expect(res.body.scene).toBe('Safe update')
+      expect(res.body.generatedImages).toEqual(['safe-generated.png'])
+      expect(res.body.enhancedImages).toEqual(['safe-enhanced.png'])
+      expect(res.body.videoFile).toBe('safe-video.mp4')
+
+      const saved = await getProject(project.id)
+      expect(saved?.shots[0]?.generatedImages).toEqual(['safe-generated.png'])
+      expect(saved?.shots[0]?.enhancedImages).toEqual(['safe-enhanced.png'])
+      expect(saved?.shots[0]?.videoFile).toBe('safe-video.mp4')
+    })
+
     it('should return 404 for non-existent shot', async () => {
       const res = await request(app)
         .put(`/api/projects/${project.id}/shots/non-existent-shot`)

@@ -15,9 +15,62 @@ import { sanitizeUploadedFilename } from '../lib/file-utils.js';
 import { sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
+const EDITABLE_SHOT_FIELDS = [
+  'scene',
+  'audioDescription',
+  'imagePrompt',
+  'videoPrompt',
+  'duration',
+  'assetRefs',
+] as const;
+
+type EditableShotField = (typeof EDITABLE_SHOT_FIELDS)[number];
+type EditableShotUpdates = Pick<ShotMeta, EditableShotField>;
 
 function isExternalMediaRef(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
+}
+
+function isSafeManagedFilename(value: string): boolean {
+  const trimmed = value.trim();
+  return Boolean(trimmed) && trimmed === path.basename(trimmed) && trimmed !== '.' && trimmed !== '..';
+}
+
+function resolveManagedShotFilePath(
+  projectId: string,
+  shotId: string,
+  kind: 'generated' | 'video',
+  filename: string,
+): string | null {
+  if (isExternalMediaRef(filename) || !isSafeManagedFilename(filename)) {
+    return null;
+  }
+
+  try {
+    return resolveProjectPath(projectId, 'shots', shotId, kind, filename);
+  } catch {
+    return null;
+  }
+}
+
+function buildEditableShotUpdates(input: unknown): Partial<EditableShotUpdates> {
+  if (!input || typeof input !== 'object') {
+    return {};
+  }
+
+  const body = input as Record<string, unknown>;
+  const updates: Partial<EditableShotUpdates> = {};
+
+  if (typeof body.scene === 'string') updates.scene = body.scene;
+  if (typeof body.audioDescription === 'string') updates.audioDescription = body.audioDescription;
+  if (typeof body.imagePrompt === 'string') updates.imagePrompt = body.imagePrompt;
+  if (typeof body.videoPrompt === 'string') updates.videoPrompt = body.videoPrompt;
+  if (typeof body.duration === 'number' && Number.isFinite(body.duration)) updates.duration = body.duration;
+  if (Array.isArray(body.assetRefs) && body.assetRefs.every((ref) => typeof ref === 'string')) {
+    updates.assetRefs = body.assetRefs;
+  }
+
+  return updates;
 }
 
 /**
@@ -25,22 +78,21 @@ function isExternalMediaRef(value: string): boolean {
  * Resets the shot metadata arrays. Does NOT save the project.
  */
 async function cleanupShotFiles(projectId: string, shotId: string, shot: ShotMeta): Promise<void> {
-  const generatedDir = resolveProjectPath(projectId, 'shots', shotId, 'generated');
-  const videoDir = resolveProjectPath(projectId, 'shots', shotId, 'video');
-
   for (const filename of [...(shot.generatedImages || []), ...(shot.enhancedImages || [])]) {
-    if (isExternalMediaRef(filename)) continue;
+    const filePath = resolveManagedShotFilePath(projectId, shotId, 'generated', filename);
+    if (!filePath) continue;
     try {
-      await fs.unlink(path.join(generatedDir, filename));
+      await fs.unlink(filePath);
     } catch {
       // file may already be gone
     }
   }
 
   if (shot.videoFile) {
-    if (!isExternalMediaRef(shot.videoFile)) {
+    const filePath = resolveManagedShotFilePath(projectId, shotId, 'video', shot.videoFile);
+    if (filePath) {
       try {
-        await fs.unlink(path.join(videoDir, shot.videoFile));
+        await fs.unlink(filePath);
       } catch {
         // file may already be gone
       }
@@ -140,9 +192,9 @@ router.put('/:shotId', async (req: Request, res: Response) => {
     }
 
     const existing = project.shots[shotIndex];
-    const updates = req.body;
+    const updates = buildEditableShotUpdates(req.body);
 
-    // Merge updates, preserving id and order
+    // Generic updates are intentionally limited to editable content fields.
     project.shots[shotIndex] = {
       ...existing,
       ...updates,

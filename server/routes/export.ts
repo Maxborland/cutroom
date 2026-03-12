@@ -2,10 +2,31 @@ import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import archiver from 'archiver';
-import { getProject, getProjectDir } from '../lib/storage.js';
+import { getProject, resolveProjectPath } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
+
+function isExternalMediaRef(value: string): boolean {
+  return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
+}
+
+function isSafeManagedFilename(value: string): boolean {
+  const trimmed = value.trim();
+  return Boolean(trimmed) && trimmed === path.basename(trimmed) && trimmed !== '.' && trimmed !== '..';
+}
+
+function resolveGeneratedImagePath(projectId: string, shotId: string, filename: string): string | null {
+  if (isExternalMediaRef(filename) || !isSafeManagedFilename(filename)) {
+    return null;
+  }
+
+  try {
+    return resolveProjectPath(projectId, 'shots', shotId, 'generated', filename);
+  } catch {
+    return null;
+  }
+}
 
 // GET /api/projects/:id/export — stream ZIP of the entire project
 router.get('/export', async (req: Request, res: Response) => {
@@ -15,8 +36,6 @@ router.get('/export', async (req: Request, res: Response) => {
       sendApiError(res, 404, 'Project not found');
       return;
     }
-
-    const projectDir = getProjectDir(project.id);
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader(
@@ -68,14 +87,15 @@ router.get('/export', async (req: Request, res: Response) => {
       const bestImages = enhancedImages.length > 0 ? enhancedImages : generatedImages;
 
       // Add best images as final/
-      const generatedDir = path.join(projectDir, 'shots', shot.id, 'generated');
+      const generatedDir = resolveProjectPath(project.id, 'shots', shot.id, 'generated');
       if (bestImages.length > 0) {
         for (const file of bestImages) {
-          const filePath = path.join(generatedDir, file);
+          const filePath = resolveGeneratedImagePath(project.id, shot.id, file);
+          if (!filePath) continue;
           try {
             const stat = await fs.stat(filePath);
             if (stat.isFile()) {
-              archive.file(filePath, { name: `${folderName}/final/${file}` });
+              archive.file(filePath, { name: `${folderName}/final/${path.basename(file)}` });
             }
           } catch {
             // File might be missing, skip
@@ -98,7 +118,7 @@ router.get('/export', async (req: Request, res: Response) => {
       }
 
       // Add video
-      const videoDir = path.join(projectDir, 'shots', shot.id, 'video');
+      const videoDir = resolveProjectPath(project.id, 'shots', shot.id, 'video');
       try {
         const videoFiles = await fs.readdir(videoDir);
         for (const file of videoFiles) {
@@ -113,7 +133,7 @@ router.get('/export', async (req: Request, res: Response) => {
       }
 
       // Add reference
-      const referenceDir = path.join(projectDir, 'shots', shot.id, 'reference');
+      const referenceDir = resolveProjectPath(project.id, 'shots', shot.id, 'reference');
       try {
         const referenceFiles = await fs.readdir(referenceDir);
         for (const file of referenceFiles) {
