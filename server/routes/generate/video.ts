@@ -500,13 +500,17 @@ router.post('/generate-all-videos', async (req: Request, res: Response) => {
         try {
           const local = await downloadVideoToLocalFile(project.id, shot.id, videoUrl);
           await setShotVideoFile(project.id, shot.id, local.filename);
+          generated++;
         } catch (downloadErr) {
+          if (downloadErr instanceof InvalidExternalVideoUrlError) {
+            console.warn(`[generate-all-videos] Blocked forbidden external fallback for ${shot.id}`);
+            continue;
+          }
           console.warn(`[generate-all-videos] Local download failed for ${shot.id}; keeping external URL`, downloadErr);
           await setShotVideoFile(project.id, shot.id, videoUrl);
           void cacheExternalVideoInBackground(project.id, shot.id, videoUrl);
+          generated++;
         }
-
-        generated++;
       } catch (err) {
         console.error(`[generate-all-videos] Failed for ${shot.id}:`, err);
       }

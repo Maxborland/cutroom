@@ -271,4 +271,38 @@ describe('Shots API', () => {
       }
     })
   })
+
+  describe('POST /api/projects/:id/generate-all-videos', () => {
+    it('does not persist forbidden external fallback URLs in batch generation', async () => {
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('http://127.0.0.1/batch-forbidden.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce('https://images.example.test/seed.png')
+
+      shot.status = 'img_review'
+      shot.generatedImages = ['seed.png']
+      shot.videoFile = null
+      await saveProject(project)
+
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        const res = await request(app)
+          .post(`/api/projects/${project.id}/generate-all-videos`)
+          .send({})
+          .expect(200)
+
+        expect(res.body.generated).toBe(0)
+        expect(res.body.total).toBe(1)
+        expect(fetchMock).not.toHaveBeenCalled()
+
+        const saved = await getProject(project.id)
+        expect(saved?.shots[0]?.status).toBe('img_review')
+        expect(saved?.shots[0]?.videoFile).toBeNull()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+  })
 })
