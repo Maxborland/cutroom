@@ -183,9 +183,17 @@ export async function normalizeClips(
 
     const outputPath = resolveProjectPath(projectId, 'montage', 'normalized', `${shot.id}.mp4`);
 
+    if (shot.videoFile && isExternalMediaRef(shot.videoFile)) {
+      throw new Error(`Shot ${shot.id} video must be cached locally before montage normalization`);
+    }
+
     const videoPath = shot.videoFile
       ? resolveShotMediaPath(projectId, shot, 'video', shot.videoFile)
       : null;
+
+    if (shot.videoFile && !videoPath) {
+      throw new Error(`Shot ${shot.id} video file could not be resolved for montage normalization`);
+    }
 
     if (videoPath) {
       // Shot has video — probe and potentially normalize

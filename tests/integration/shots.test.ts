@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll, beforeEach, vi } from 'vitest'
 import request from 'supertest'
+import { EventEmitter } from 'node:events'
 import { createApp } from './setup.js'
 import {
   createProject,
@@ -230,31 +231,89 @@ describe('Shots API', () => {
       }
     })
 
-    it('rejects redirecting external video URLs for local caching', async () => {
-      shot.videoFile = 'http://93.184.216.34/redirect.mp4'
-      await saveProject(project)
+    it('blocks redirects and downloads through the validated resolved address to avoid DNS rebinding', async () => {
+      let mode: 'redirect' | 'ok' = 'redirect'
+      const requestMock = vi.fn((options: any, handler: (response: EventEmitter & { statusCode: number; headers: Record<string, string> }) => void) => {
+        const response = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
+        response.statusCode = mode === 'redirect' ? 302 : 200
+        response.headers = mode === 'redirect'
+          ? { location: 'http://127.0.0.1/internal.mp4' }
+          : {}
 
-      const fetchMock = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 302,
-        url: 'http://93.184.216.34/redirect.mp4',
-        headers: new Headers({ location: 'http://127.0.0.1/internal.mp4' }),
+        queueMicrotask(() => {
+          handler(response)
+          if (mode === 'ok') {
+            response.emit('data', Buffer.from('video-bytes'))
+          }
+          response.emit('end')
+        })
+
+        const req = new EventEmitter() as EventEmitter & {
+          setTimeout: (timeout: number, listener?: () => void) => void
+          end: () => void
+          destroy: (error?: Error) => void
+        }
+        req.setTimeout = vi.fn()
+        req.end = vi.fn()
+        req.destroy = vi.fn((error?: Error) => {
+          if (error) {
+            req.emit('error', error)
+          }
+        })
+        return req
       })
-      vi.stubGlobal('fetch', fetchMock)
 
       try {
-        const res = await request(app)
+        vi.resetModules()
+        vi.doMock('node:dns/promises', () => ({
+          default: {},
+          lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+        }))
+        vi.doMock('node:http', () => ({ default: {}, request: requestMock }))
+        vi.doMock('node:https', () => ({ default: {}, request: requestMock }))
+
+        const { createApp: createIsolatedApp } = await import('./setup.js')
+        const isolatedApp = createIsolatedApp()
+
+        shot.videoFile = 'http://cdn.example.test/redirect.mp4'
+        await saveProject(project)
+
+        const blocked = await request(isolatedApp)
           .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
           .send({})
           .expect(400)
 
-        expect(res.body.error).toContain('not allowed')
-        expect(fetchMock).toHaveBeenCalledWith(
-          'http://93.184.216.34/redirect.mp4',
-          expect.objectContaining({ redirect: 'manual', signal: expect.any(AbortSignal) }),
+        expect(blocked.body.error).toContain('not allowed')
+
+        mode = 'ok'
+        shot.videoFile = 'http://cdn.example.test/rebinding-safe.mp4'
+        await saveProject(project)
+
+        const res = await request(isolatedApp)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
+          .send({})
+          .expect(200)
+
+        expect(requestMock).toHaveBeenCalledTimes(2)
+        expect(requestMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            hostname: '93.184.216.34',
+            path: '/rebinding-safe.mp4',
+            headers: expect.objectContaining({
+              Host: 'cdn.example.test',
+            }),
+          }),
+          expect.any(Function),
         )
+        expect(res.body.filename).toMatch(/^vid_\d+\.mp4$/)
+
+        const saved = await getProject(project.id)
+        expect(saved?.shots[0]?.videoFile).toMatch(/^vid_\d+\.mp4$/)
       } finally {
-        vi.unstubAllGlobals()
+        vi.doUnmock('node:dns/promises')
+        vi.doUnmock('node:http')
+        vi.doUnmock('node:https')
+        vi.resetModules()
       }
     })
   })

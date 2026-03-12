@@ -1,7 +1,10 @@
 import { Router, Request, Response } from 'express';
-import { lookup } from 'node:dns/promises';
+import * as dnsPromises from 'node:dns/promises';
 import fs from 'node:fs/promises';
+import * as http from 'node:http';
+import * as https from 'node:https';
 import { isIP } from 'node:net';
+import { checkServerIdentity } from 'node:tls';
 import {
   getProject,
   saveProject,
@@ -20,6 +23,10 @@ const VIDEO_DOWNLOAD_TIMEOUT_MS = 60000;
 const VIDEO_DOWNLOAD_RETRY_DELAY_MS = 1500;
 
 class InvalidExternalVideoUrlError extends Error {}
+interface AllowedRemoteVideoTarget {
+  address: string;
+  parsedUrl: URL;
+}
 
 function isExternalMediaRef(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
@@ -144,7 +151,7 @@ function isPrivateHostname(hostname: string): boolean {
   return false;
 }
 
-async function assertAllowedRemoteVideoUrl(videoUrl: string): Promise<void> {
+async function resolveAllowedRemoteVideoTarget(videoUrl: string): Promise<AllowedRemoteVideoTarget> {
   let parsed: URL;
   try {
     parsed = new URL(videoUrl);
@@ -160,10 +167,71 @@ async function assertAllowedRemoteVideoUrl(videoUrl: string): Promise<void> {
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
 
-  const resolved = await lookup(parsed.hostname, { all: true, verbatim: true });
+  const resolved = await dnsPromises.lookup(parsed.hostname, { all: true, verbatim: true });
   if (!resolved.length || resolved.some((entry) => isPrivateHostname(entry.address))) {
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
+
+  return {
+    address: resolved[0]!.address,
+    parsedUrl: parsed,
+  };
+}
+
+async function requestRemoteVideo(
+  target: AllowedRemoteVideoTarget,
+  timeoutMs: number,
+): Promise<{ status: number; buffer: Buffer }> {
+  const { parsedUrl } = target;
+  const requestImpl = parsedUrl.protocol === 'https:' ? https.request : http.request;
+  const requestOptions: http.RequestOptions & https.RequestOptions = {
+    hostname: target.address,
+    port: parsedUrl.port ? Number(parsedUrl.port) : undefined,
+    method: 'GET',
+    path: `${parsedUrl.pathname}${parsedUrl.search}`,
+    headers: {
+      Host: parsedUrl.host,
+    },
+  };
+
+  if (parsedUrl.protocol === 'https:') {
+    const servername = normalizeHostForPolicyChecks(parsedUrl.hostname);
+    requestOptions.servername = servername;
+    requestOptions.checkServerIdentity = (_servername, cert) => checkServerIdentity(servername, cert);
+  }
+
+  return new Promise((resolve, reject) => {
+    const req = requestImpl(requestOptions, (response) => {
+      const status = response.statusCode ?? 0;
+
+      if (status >= 300 && status < 400) {
+        response.resume?.();
+        reject(new InvalidExternalVideoUrlError('External video URL is not allowed for local caching'));
+        return;
+      }
+
+      if (status < 200 || status >= 300) {
+        response.resume?.();
+        resolve({ status, buffer: Buffer.alloc(0) });
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on('end', () => {
+        resolve({ status, buffer: Buffer.concat(chunks) });
+      });
+      response.on('error', reject);
+    });
+
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Request timeout'));
+    });
+    req.end();
+  });
 }
 
 async function fetchAllowedRemoteVideoBuffer(
@@ -175,21 +243,10 @@ async function fetchAllowedRemoteVideoBuffer(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await assertAllowedRemoteVideoUrl(videoUrl);
+      const target = await resolveAllowedRemoteVideoTarget(videoUrl);
+      const response = await requestRemoteVideo(target, timeoutMs);
 
-      const response = await fetch(videoUrl, {
-        signal: AbortSignal.timeout(timeoutMs),
-        redirect: 'manual',
-      });
-
-      if (response.status >= 300 && response.status < 400) {
-        throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
-      }
-
-      const finalUrl = response.url || videoUrl;
-      await assertAllowedRemoteVideoUrl(finalUrl);
-
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         if (isRetryableStatus(response.status) && attempt < maxAttempts) {
           await sleep(attempt * VIDEO_DOWNLOAD_RETRY_DELAY_MS);
           continue;
@@ -197,7 +254,7 @@ async function fetchAllowedRemoteVideoBuffer(
         throw new Error(`Failed to download media: ${response.status}`);
       }
 
-      return Buffer.from(await response.arrayBuffer());
+      return response.buffer;
     } catch (err) {
       lastErr = err;
       if (err instanceof InvalidExternalVideoUrlError) {

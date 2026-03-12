@@ -570,6 +570,34 @@ describe('Montage Integration', () => {
         vi.resetModules()
       }
     })
+
+    it('fails explicitly when an approved shot still points at an external video URL', async () => {
+      const imagePath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame.png')
+      await ensureDir(path.dirname(imagePath))
+      await fs.writeFile(imagePath, 'image-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'https://cdn.example.com/final.mp4'
+        proj.shots[0]!.generatedImages = ['frame.png']
+      })
+
+      const execFileMock = vi.fn()
+
+      try {
+        vi.resetModules()
+        vi.doMock('node:child_process', () => ({ execFile: execFileMock }))
+        const { normalizeClips } = await vi.importActual<typeof import('../../server/lib/normalize.js')>('../../server/lib/normalize.js')
+        const project = await getProject(projectId)
+
+        await expect(normalizeClips(projectId, project!.shots as any)).rejects.toThrow(
+          'Shot shot-1 video must be cached locally before montage normalization',
+        )
+        expect(execFileMock).not.toHaveBeenCalled()
+      } finally {
+        vi.doUnmock('node:child_process')
+        vi.resetModules()
+      }
+    })
   })
 
   describe('GET /montage/render/:jobId', () => {
