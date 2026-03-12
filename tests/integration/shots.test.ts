@@ -231,7 +231,47 @@ describe('Shots API', () => {
       }
     })
 
-    it('follows safe public redirects and blocks private redirect targets hop-by-hop', async () => {
+    it('rejects non-global carrier-grade NAT video URLs before attempting a fetch', async () => {
+      shot.videoFile = 'http://100.64.0.1/carrier-nat.mp4'
+      await saveProject(project)
+
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        const res = await request(app)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
+          .send({})
+          .expect(400)
+
+        expect(res.body.error).toContain('not allowed')
+        expect(fetchMock).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('rejects non-global IPv6 multicast video URLs before attempting a fetch', async () => {
+      shot.videoFile = 'http://[ff02::1]/multicast.mp4'
+      await saveProject(project)
+
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        const res = await request(app)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
+          .send({})
+          .expect(400)
+
+        expect(res.body.error).toContain('not allowed')
+        expect(fetchMock).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('follows safe public redirects and blocks non-global redirect targets hop-by-hop', async () => {
       const requestMock = vi.fn((options: any, handler: (response: EventEmitter & { statusCode: number; headers: Record<string, string> }) => void) => {
         const response = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
         const isPublicRedirectStart = options.path === '/redirect-start.mp4'
@@ -240,7 +280,7 @@ describe('Shots API', () => {
         response.headers = isPublicRedirectStart
           ? { location: 'http://downloads.example.test/final.mp4?token=abc123' }
           : isPrivateRedirectStart
-            ? { location: 'http://127.0.0.1/internal.mp4' }
+            ? { location: 'http://100.64.0.1/internal.mp4' }
             : {}
 
         queueMicrotask(() => {

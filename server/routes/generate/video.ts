@@ -109,47 +109,134 @@ function decodeMappedIpv4(address: string): string | null {
   return null;
 }
 
-function isPrivateHostname(hostname: string): boolean {
+function ipv4ToInt(address: string): number {
+  return address
+    .split('.')
+    .map(Number)
+    .reduce((value, octet) => ((value << 8) | octet) >>> 0, 0);
+}
+
+function isIpv4InCidr(address: string, network: string, prefixLength: number): boolean {
+  const value = ipv4ToInt(address);
+  const base = ipv4ToInt(network);
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return (value & mask) === (base & mask);
+}
+
+function parseIpv6ToBigInt(address: string): bigint | null {
+  const normalized = normalizeHostForPolicyChecks(address);
+  if (!normalized.includes(':')) {
+    return null;
+  }
+
+  const halves = normalized.split('::');
+  if (halves.length > 2) {
+    return null;
+  }
+
+  const parseGroups = (part: string): string[] => (
+    part
+      .split(':')
+      .filter(Boolean)
+      .flatMap((group) => {
+        if (group.includes('.')) {
+          if (isIP(group) !== 4) return [];
+          const octets = group.split('.').map(Number);
+          return [
+            ((octets[0] << 8) | octets[1]).toString(16),
+            ((octets[2] << 8) | octets[3]).toString(16),
+          ];
+        }
+        return [group];
+      })
+  );
+
+  const head = parseGroups(halves[0] ?? '');
+  const tail = parseGroups(halves[1] ?? '');
+  const missingGroups = 8 - (head.length + tail.length);
+
+  if (missingGroups < 0 || (halves.length === 1 && missingGroups !== 0)) {
+    return null;
+  }
+
+  const groups = halves.length === 2
+    ? [...head, ...Array.from({ length: missingGroups }, () => '0'), ...tail]
+    : head;
+
+  if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) {
+    return null;
+  }
+
+  return groups.reduce((value, group) => (value << 16n) | BigInt(`0x${group}`), 0n);
+}
+
+function isIpv6InPrefix(address: string, network: string, prefixLength: number): boolean {
+  const value = parseIpv6ToBigInt(address);
+  const base = parseIpv6ToBigInt(network);
+  if (value === null || base === null) {
+    return false;
+  }
+
+  const hostBits = 128n - BigInt(prefixLength);
+  const mask = prefixLength === 0
+    ? 0n
+    : ((1n << 128n) - 1n) ^ ((1n << hostBits) - 1n);
+
+  return (value & mask) === (base & mask);
+}
+
+function isGloballyRoutableHostname(hostname: string): boolean {
   const normalized = normalizeHostForPolicyChecks(hostname);
 
   if (
     normalized === 'localhost'
-    || normalized === '0.0.0.0'
-    || normalized === '::'
-    || normalized === '::1'
     || normalized.endsWith('.localhost')
     || normalized.endsWith('.local')
   ) {
-    return true;
+    return false;
   }
 
   const mappedIpv4 = decodeMappedIpv4(normalized);
   if (mappedIpv4) {
-    return isPrivateHostname(mappedIpv4);
+    return isGloballyRoutableHostname(mappedIpv4);
   }
 
   const ipVersion = isIP(normalized);
   if (ipVersion === 4) {
-    const [first, second] = normalized.split('.').map(Number);
-    return first === 10
-      || first === 127
-      || first === 0
-      || (first === 169 && second === 254)
-      || (first === 172 && second >= 16 && second <= 31)
-      || (first === 192 && second === 168);
+    return ![
+      ['0.0.0.0', 8],
+      ['10.0.0.0', 8],
+      ['100.64.0.0', 10],
+      ['127.0.0.0', 8],
+      ['169.254.0.0', 16],
+      ['172.16.0.0', 12],
+      ['192.0.0.0', 24],
+      ['192.0.2.0', 24],
+      ['192.88.99.0', 24],
+      ['192.168.0.0', 16],
+      ['198.18.0.0', 15],
+      ['198.51.100.0', 24],
+      ['203.0.113.0', 24],
+      ['224.0.0.0', 4],
+      ['240.0.0.0', 4],
+    ].some(([network, prefix]) => isIpv4InCidr(normalized, network as string, prefix as number));
   }
 
   if (ipVersion === 6) {
-    return normalized === '::1'
-      || normalized.startsWith('fc')
-      || normalized.startsWith('fd')
-      || normalized.startsWith('fe8')
-      || normalized.startsWith('fe9')
-      || normalized.startsWith('fea')
-      || normalized.startsWith('feb');
+    return ![
+      ['::', 128],
+      ['::1', 128],
+      ['64:ff9b:1::', 48],
+      ['100::', 64],
+      ['2001:db8::', 32],
+      ['2001:10::', 28],
+      ['fc00::', 7],
+      ['fe80::', 10],
+      ['ff00::', 8],
+    ].some(([network, prefix]) => isIpv6InPrefix(normalized, network as string, prefix as number));
   }
 
-  return false;
+  return true;
 }
 
 async function resolveAllowedRemoteVideoTarget(videoUrl: string): Promise<AllowedRemoteVideoTarget> {
@@ -164,12 +251,12 @@ async function resolveAllowedRemoteVideoTarget(videoUrl: string): Promise<Allowe
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
 
-  if (parsed.username || parsed.password || isPrivateHostname(parsed.hostname)) {
+  if (parsed.username || parsed.password || !isGloballyRoutableHostname(parsed.hostname)) {
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
 
   const resolved = await dnsPromises.lookup(parsed.hostname, { all: true, verbatim: true });
-  if (!resolved.length || resolved.some((entry) => isPrivateHostname(entry.address))) {
+  if (!resolved.length || resolved.some((entry) => !isGloballyRoutableHostname(entry.address))) {
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
 
