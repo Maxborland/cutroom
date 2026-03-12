@@ -59,8 +59,50 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
+function normalizeHostForPolicyChecks(hostname: string): string {
+  const trimmed = hostname.trim().toLowerCase();
+  const withoutBrackets = trimmed.startsWith('[') && trimmed.endsWith(']')
+    ? trimmed.slice(1, -1)
+    : trimmed;
+  const zoneIndex = withoutBrackets.indexOf('%');
+  return zoneIndex >= 0 ? withoutBrackets.slice(0, zoneIndex) : withoutBrackets;
+}
+
+function decodeMappedIpv4(address: string): string | null {
+  const normalized = normalizeHostForPolicyChecks(address);
+  if (!normalized.startsWith('::ffff:')) {
+    return null;
+  }
+
+  const mapped = normalized.slice('::ffff:'.length);
+  if (isIP(mapped) === 4) {
+    return mapped;
+  }
+
+  if (/^[0-9a-f]{8}$/i.test(mapped)) {
+    const value = Number.parseInt(mapped, 16);
+    return [
+      (value >>> 24) & 0xff,
+      (value >>> 16) & 0xff,
+      (value >>> 8) & 0xff,
+      value & 0xff,
+    ].join('.');
+  }
+
+  const hexGroups = mapped.split(':');
+  if (hexGroups.length === 2 && hexGroups.every((part) => /^[0-9a-f]{1,4}$/i.test(part))) {
+    const bytes = hexGroups.flatMap((part) => {
+      const value = Number.parseInt(part, 16);
+      return [(value >>> 8) & 0xff, value & 0xff];
+    });
+    return bytes.join('.');
+  }
+
+  return null;
+}
+
 function isPrivateHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
+  const normalized = normalizeHostForPolicyChecks(hostname);
 
   if (
     normalized === 'localhost'
@@ -71,6 +113,11 @@ function isPrivateHostname(hostname: string): boolean {
     || normalized.endsWith('.local')
   ) {
     return true;
+  }
+
+  const mappedIpv4 = decodeMappedIpv4(normalized);
+  if (mappedIpv4) {
+    return isPrivateHostname(mappedIpv4);
   }
 
   const ipVersion = isIP(normalized);

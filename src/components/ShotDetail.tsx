@@ -123,8 +123,11 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     }
   }
 
+  const mediaKeyFor = (kind: 'generated' | 'enhanced', filename: string) =>
+    `${shot.id}:${kind}:${filename}`
+
   const markMediaBroken = (kind: 'generated' | 'enhanced', filename: string) => {
-    const mediaKey = `${kind}:${filename}`
+    const mediaKey = mediaKeyFor(kind, filename)
     setBrokenMediaKeys((prev) => {
       if (prev.has(mediaKey)) return prev
       const next = new Set(prev)
@@ -134,7 +137,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   }
 
   const isMediaBroken = (kind: 'generated' | 'enhanced', filename: string) =>
-    brokenMediaKeys.has(`${kind}:${filename}`)
+    brokenMediaKeys.has(mediaKeyFor(kind, filename))
 
   return (
     <div className="h-full flex flex-col bg-surface-1 overflow-hidden">

@@ -167,4 +167,91 @@ describe('ReviewView accessibility', () => {
     expect(screen.queryByTestId('pwned-node')).not.toBeInTheDocument()
     expect(container.textContent).toContain(maliciousFilename)
   })
+
+  it('does not leak broken-media fallback state between shots with the same filename', () => {
+    const project: any = {
+      id: 'proj-shot-detail-switch',
+      name: 'Shot detail switch project',
+      created: '2026-02-19T00:00:00.000Z',
+      updated: '2026-02-19T00:00:00.000Z',
+      stage: 'review',
+      briefType: 'text',
+      brief: {
+        text: '',
+        assets: [],
+        targetDuration: 60,
+      },
+      script: '',
+      settings: {
+        textModel: 'openai/gpt-4o',
+        imageModel: 'openai/gpt-image-1',
+        enhanceModel: 'openai/gpt-image-1',
+        masterPromptScriptwriter: '',
+        masterPromptShotSplitter: '',
+        masterPromptEnhance: '',
+      },
+      shots: [
+        {
+          id: 'shot-1',
+          order: 1,
+          status: 'img_review',
+          scene: 'First shot',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 5,
+          assetRefs: [],
+          generatedImages: ['shared.png'],
+          enhancedImages: [],
+          videoFile: null,
+        },
+        {
+          id: 'shot-2',
+          order: 2,
+          status: 'img_review',
+          scene: 'Second shot',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 5,
+          assetRefs: [],
+          generatedImages: ['shared.png'],
+          enhancedImages: [],
+          videoFile: null,
+        },
+      ],
+    }
+
+    let activeShotIndex = 0
+    const state = {
+      activeProject: () => project,
+      activeShot: () => project.shots[activeShotIndex],
+      setActiveShotId: vi.fn((shotId: string) => {
+        activeShotIndex = project.shots.findIndex((shot: any) => shot.id === shotId)
+      }),
+      updateShot: vi.fn(),
+      updateShotStatus: vi.fn(),
+      generateImage: vi.fn(),
+      generateVideo: vi.fn(),
+      enhanceImage: vi.fn(),
+      cancelGeneration: vi.fn(),
+      deleteShotImage: vi.fn(),
+      deleteShotVideo: vi.fn(),
+      loadProject: vi.fn(),
+      generatingShotIds: new Set<string>(),
+      enhancingShotIds: new Set<string>(),
+      generatingVideoShotIds: new Set<string>(),
+    }
+
+    mockedUseProjectStore.mockImplementation((selector: any) => selector(state))
+
+    const { rerender } = render(<ShotDetail onClose={vi.fn()} />)
+    fireEvent.error(screen.getByAltText('shared.png'))
+    expect(screen.queryByAltText('shared.png')).not.toBeInTheDocument()
+
+    activeShotIndex = 1
+    rerender(<ShotDetail onClose={vi.fn()} />)
+
+    expect(screen.getByAltText('shared.png')).toBeInTheDocument()
+  })
 })

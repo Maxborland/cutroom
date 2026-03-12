@@ -210,6 +210,26 @@ describe('Shots API', () => {
       }
     })
 
+    it('rejects IPv4-mapped IPv6 loopback URLs before attempting a fetch', async () => {
+      shot.videoFile = 'http://[::ffff:127.0.0.1]/mapped-loopback.mp4'
+      await saveProject(project)
+
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        const res = await request(app)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
+          .send({})
+          .expect(400)
+
+        expect(res.body.error).toContain('not allowed')
+        expect(fetchMock).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
     it('rejects redirecting external video URLs for local caching', async () => {
       shot.videoFile = 'http://93.184.216.34/redirect.mp4'
       await saveProject(project)
@@ -243,7 +263,7 @@ describe('Shots API', () => {
     it('rolls back and does not persist a forbidden external fallback URL', async () => {
       const { generateVideoFromImage } = await import('../../server/lib/generation.js')
       const { getBestImageFile } = await import('../../server/lib/media-utils.js')
-      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('http://127.0.0.1/forbidden.mp4')
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('http://[::ffff:127.0.0.1]/forbidden.mp4')
       vi.mocked(getBestImageFile).mockReturnValueOnce('https://images.example.test/seed.png')
 
       shot.status = 'img_review'
