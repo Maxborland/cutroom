@@ -55,6 +55,20 @@ npm run dev:all
 - Frontend: `http://localhost:5173`
 - API: `http://localhost:3001`
 
+## Database Bootstrap
+
+PostgreSQL support is scaffolded for future backend work without changing the current file-based routes yet.
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/cut_room npm run db:migrate
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/cut_room npm run db:check
+```
+
+- `server/db/index.ts` creates a shared `pg` pool and exposes a simple healthcheck.
+- `server/db/migrations/0001_initial.sql` is the first tracked migration.
+- `tests/integration/setup.ts` stays as the shared helper module for app/test bootstrap.
+- `TEST_DATABASE_URL` can be set for the DB smoke test in `tests/integration/setup.test.ts`.
+
 ## Architecture
 
 ```
