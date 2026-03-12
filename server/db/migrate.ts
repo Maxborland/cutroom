@@ -115,14 +115,7 @@ async function acquireMigrationLock(pool: MigrationPool): Promise<MigrationClien
   const client = await pool.connect();
 
   try {
-    const result = await client.query<{ locked: boolean }>(
-      'SELECT pg_try_advisory_lock($1) AS locked',
-      [migrationLockId],
-    );
-
-    if (!result.rows[0]?.locked) {
-      throw new Error('another migration process is already running');
-    }
+    await client.query('SELECT pg_advisory_lock($1)', [migrationLockId]);
 
     return client;
   } catch (error) {
