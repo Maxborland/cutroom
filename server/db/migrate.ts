@@ -68,12 +68,6 @@ async function applyMigration(pool: Pool, migration: Migration): Promise<void> {
 async function run(): Promise<void> {
   const checkOnly = process.argv.includes('--check');
   const connectionString = process.env.DATABASE_URL ?? '';
-
-  if (!connectionString) {
-    console.log('[db] DATABASE_URL is not configured; skipping migration check.');
-    return;
-  }
-
   const pool = createDb(connectionString);
 
   try {
@@ -94,10 +88,9 @@ async function run(): Promise<void> {
         return;
       }
 
-      console.log(
-        `[db] Migration status: pending (${pendingMigrations.length}): ${pendingMigrations.map((migration) => migration.version).join(', ')}`,
+      throw new Error(
+        `pending migrations detected (${pendingMigrations.length}): ${pendingMigrations.map((migration) => migration.version).join(', ')}`,
       );
-      return;
     }
 
     if (pendingMigrations.length === 0) {

@@ -1,17 +1,18 @@
+import { Pool } from 'pg'
 import { describe, expect, it } from 'vitest'
-import { healthcheckDb } from '../../server/db/index.js'
 import { createDbForTest } from './setup.js'
 
 describe('database bootstrap', () => {
-  const testDatabaseUrl = process.env.TEST_DATABASE_URL
+  it('creates and closes a database pool from an explicit connection string', async () => {
+    const connectionString = 'postgres://postgres:postgres@127.0.0.1:5432/cut_room_test'
+    const db = createDbForTest(connectionString)
 
-  it.skipIf(!testDatabaseUrl)('creates a database pool when TEST_DATABASE_URL is configured', async () => {
-    const db = createDbForTest(testDatabaseUrl!)
+    expect(db).toBeInstanceOf(Pool)
+    expect(db.options.connectionString).toBe(connectionString)
+    expect(db.ended).toBe(false)
 
-    try {
-      await expect(healthcheckDb(db)).resolves.toBe(true)
-    } finally {
-      await db.end()
-    }
+    await db.end()
+
+    expect(db.ended).toBe(true)
   })
 })

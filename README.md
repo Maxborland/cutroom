@@ -66,8 +66,9 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/cut_room npm run db:che
 
 - `server/db/index.ts` creates a shared `pg` pool and exposes a simple healthcheck.
 - `server/db/migrations/0001_initial.sql` is the first tracked migration.
+- `npm run db:check` now behaves like a real verification command: it fails if `DATABASE_URL` is missing or if tracked migrations are still pending.
 - `tests/integration/setup.ts` stays as the shared helper module for app/test bootstrap.
-- `TEST_DATABASE_URL` can be set for the DB smoke test in `tests/integration/setup.test.ts`.
+- `tests/integration/setup.test.ts` smoke-tests `createDb(...)` with an explicit connection string and closes the pool without requiring a live PostgreSQL server.
 
 ## Architecture
 
