@@ -34,6 +34,7 @@ type RunMigrationCommandOptions = {
 };
 
 const migrationsTableName = 'schema_migrations';
+const migrationLockId = 2_046_001;
 const dbDir = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(dbDir, 'migrations');
 
@@ -110,6 +111,34 @@ async function applyMigration(pool: MigrationPool, migration: Migration): Promis
   }
 }
 
+async function acquireMigrationLock(pool: MigrationPool): Promise<MigrationClient> {
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock($1) AS locked',
+      [migrationLockId],
+    );
+
+    if (!result.rows[0]?.locked) {
+      throw new Error('another migration process is already running');
+    }
+
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+async function releaseMigrationLock(client: MigrationClient): Promise<void> {
+  try {
+    await client.query('SELECT pg_advisory_unlock($1) AS unlocked', [migrationLockId]);
+  } finally {
+    client.release();
+  }
+}
+
 export async function runMigrationCommand({
   checkOnly = process.argv.includes('--check'),
   connectionString = process.env.DATABASE_URL ?? '',
@@ -148,24 +177,30 @@ export async function runMigrationCommand({
       return 1;
     }
 
-    await ensureMigrationsTable(pool);
+    const migrationLock = await acquireMigrationLock(pool);
 
-    const migrations = await loadMigrations();
-    const appliedVersions = await getAppliedVersions(pool);
-    const pendingMigrations = migrations.filter((migration) => !appliedVersions.has(migration.version));
+    try {
+      await ensureMigrationsTable(pool);
 
-    if (pendingMigrations.length === 0) {
-      log('[db] No pending migrations.');
+      const migrations = await loadMigrations();
+      const appliedVersions = await getAppliedVersions(pool);
+      const pendingMigrations = migrations.filter((migration) => !appliedVersions.has(migration.version));
+
+      if (pendingMigrations.length === 0) {
+        log('[db] No pending migrations.');
+        return 0;
+      }
+
+      for (const migration of pendingMigrations) {
+        log(`[db] Applying migration ${migration.version}`);
+        await applyMigration(pool, migration);
+      }
+
+      log(`[db] Applied ${pendingMigrations.length} migration(s).`);
       return 0;
+    } finally {
+      await releaseMigrationLock(migrationLock);
     }
-
-    for (const migration of pendingMigrations) {
-      log(`[db] Applying migration ${migration.version}`);
-      await applyMigration(pool, migration);
-    }
-
-    log(`[db] Applied ${pendingMigrations.length} migration(s).`);
-    return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     errorLog(`[db] Migration command failed: ${message}`);
