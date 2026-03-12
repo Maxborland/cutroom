@@ -571,6 +571,44 @@ describe('Montage Integration', () => {
       }
     })
 
+    it('prefers enhanced images over older generated frames for image-only clips', async () => {
+      const generatedPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame.png')
+      const enhancedPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame-enhanced.png')
+      await ensureDir(path.dirname(generatedPath))
+      await fs.writeFile(generatedPath, 'generated-image-bytes')
+      await fs.writeFile(enhancedPath, 'enhanced-image-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = null
+        proj.shots[0]!.selectedImage = 'frame.png'
+        proj.shots[0]!.generatedImages = ['frame.png']
+        proj.shots[0]!.enhancedImages = ['frame-enhanced.png']
+      })
+
+      const execFileMock = vi.fn((cmd: string, args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        if (cmd === 'ffmpeg' && args.includes(enhancedPath)) {
+          callback(null, '', '')
+          return {} as any
+        }
+
+        callback(new Error(`Unexpected media input: ${args.join(' ')}`), '', '')
+        return {} as any
+      })
+
+      try {
+        vi.resetModules()
+        vi.doMock('node:child_process', () => ({ execFile: execFileMock }))
+        const { normalizeClips } = await vi.importActual<typeof import('../../server/lib/normalize.js')>('../../server/lib/normalize.js')
+        const project = await getProject(projectId)
+        const result = await normalizeClips(projectId, project!.shots as any)
+
+        expect(result.has('shot-1')).toBe(true)
+      } finally {
+        vi.doUnmock('node:child_process')
+        vi.resetModules()
+      }
+    })
+
     it('fails explicitly when an approved shot still points at an external video URL', async () => {
       const imagePath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame.png')
       await ensureDir(path.dirname(imagePath))

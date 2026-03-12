@@ -1,6 +1,7 @@
 import * as childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getBestImageFile } from './media-utils.js';
 import { resolveProjectPath, ensureDir, type ShotMeta } from './storage.js';
 
 // Use namespace import so vitest can intercept the mock at call time
@@ -210,8 +211,8 @@ export async function normalizeClips(
     } else {
       // No video — generate from best image
       const imageCandidates = [
+        getBestImageFile(shot),
         shot.selectedImage,
-        ...shot.generatedImages,
       ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
       const imagePath = imageCandidates
         .map((mediaRef) => resolveShotMediaPath(projectId, shot, 'generated', mediaRef))

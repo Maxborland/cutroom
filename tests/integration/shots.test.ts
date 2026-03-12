@@ -231,18 +231,21 @@ describe('Shots API', () => {
       }
     })
 
-    it('blocks redirects and downloads through the validated resolved address to avoid DNS rebinding', async () => {
-      let mode: 'redirect' | 'ok' = 'redirect'
+    it('follows safe public redirects and blocks private redirect targets hop-by-hop', async () => {
       const requestMock = vi.fn((options: any, handler: (response: EventEmitter & { statusCode: number; headers: Record<string, string> }) => void) => {
         const response = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
-        response.statusCode = mode === 'redirect' ? 302 : 200
-        response.headers = mode === 'redirect'
-          ? { location: 'http://127.0.0.1/internal.mp4' }
-          : {}
+        const isPublicRedirectStart = options.path === '/redirect-start.mp4'
+        const isPrivateRedirectStart = options.path === '/redirect-private.mp4'
+        response.statusCode = (isPublicRedirectStart || isPrivateRedirectStart) ? 302 : 200
+        response.headers = isPublicRedirectStart
+          ? { location: 'http://downloads.example.test/final.mp4?token=abc123' }
+          : isPrivateRedirectStart
+            ? { location: 'http://127.0.0.1/internal.mp4' }
+            : {}
 
         queueMicrotask(() => {
           handler(response)
-          if (mode === 'ok') {
+          if (!isPublicRedirectStart && !isPrivateRedirectStart) {
             response.emit('data', Buffer.from('video-bytes'))
           }
           response.emit('end')
@@ -267,7 +270,15 @@ describe('Shots API', () => {
         vi.resetModules()
         vi.doMock('node:dns/promises', () => ({
           default: {},
-          lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+          lookup: vi.fn((hostname: string) => {
+            if (hostname === 'cdn.example.test') {
+              return Promise.resolve([{ address: '93.184.216.34', family: 4 }])
+            }
+            if (hostname === 'downloads.example.test') {
+              return Promise.resolve([{ address: '93.184.216.35', family: 4 }])
+            }
+            return Promise.resolve([{ address: '93.184.216.36', family: 4 }])
+          }),
         }))
         vi.doMock('node:http', () => ({ default: {}, request: requestMock }))
         vi.doMock('node:https', () => ({ default: {}, request: requestMock }))
@@ -275,18 +286,7 @@ describe('Shots API', () => {
         const { createApp: createIsolatedApp } = await import('./setup.js')
         const isolatedApp = createIsolatedApp()
 
-        shot.videoFile = 'http://cdn.example.test/redirect.mp4'
-        await saveProject(project)
-
-        const blocked = await request(isolatedApp)
-          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
-          .send({})
-          .expect(400)
-
-        expect(blocked.body.error).toContain('not allowed')
-
-        mode = 'ok'
-        shot.videoFile = 'http://cdn.example.test/rebinding-safe.mp4'
+        shot.videoFile = 'http://cdn.example.test/redirect-start.mp4'
         await saveProject(project)
 
         const res = await request(isolatedApp)
@@ -298,9 +298,19 @@ describe('Shots API', () => {
         expect(requestMock).toHaveBeenCalledWith(
           expect.objectContaining({
             hostname: '93.184.216.34',
-            path: '/rebinding-safe.mp4',
+            path: '/redirect-start.mp4',
             headers: expect.objectContaining({
               Host: 'cdn.example.test',
+            }),
+          }),
+          expect.any(Function),
+        )
+        expect(requestMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            hostname: '93.184.216.35',
+            path: '/final.mp4?token=abc123',
+            headers: expect.objectContaining({
+              Host: 'downloads.example.test',
             }),
           }),
           expect.any(Function),
@@ -309,6 +319,24 @@ describe('Shots API', () => {
 
         const saved = await getProject(project.id)
         expect(saved?.shots[0]?.videoFile).toMatch(/^vid_\d+\.mp4$/)
+
+        shot.videoFile = 'http://cdn.example.test/redirect-private.mp4'
+        await saveProject(project)
+
+        const blocked = await request(isolatedApp)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/cache-video`)
+          .send({})
+          .expect(400)
+
+        expect(blocked.body.error).toContain('not allowed')
+        expect(requestMock).toHaveBeenCalledTimes(3)
+        expect(requestMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            hostname: '93.184.216.34',
+            path: '/redirect-private.mp4',
+          }),
+          expect.any(Function),
+        )
       } finally {
         vi.doUnmock('node:dns/promises')
         vi.doUnmock('node:http')
