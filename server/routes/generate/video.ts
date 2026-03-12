@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { lookup } from 'node:dns/promises';
 import fs from 'node:fs/promises';
 import { isIP } from 'node:net';
 import {
@@ -9,18 +10,53 @@ import {
 } from '../../lib/storage.js';
 import { generateVideoFromImage } from '../../lib/generation.js';
 import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generation-models.js';
-import { fetchRemoteMediaBuffer, getBestImageFile, getMimeType } from '../../lib/media-utils.js';
+import { getBestImageFile, getMimeType } from '../../lib/media-utils.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DOWNLOAD_ATTEMPTS = 5;
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 60000;
+const VIDEO_DOWNLOAD_RETRY_DELAY_MS = 1500;
 
 class InvalidExternalVideoUrlError extends Error {}
 
 function isExternalMediaRef(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function errorMessageIncludes(err: any, pattern: string): boolean {
+  const needle = pattern.toLowerCase();
+  const message = `${err?.message || ''} ${err?.cause?.message || ''}`.toLowerCase();
+  return message.includes(needle);
+}
+
+function isRetryableFetchError(err: any): boolean {
+  const code = String(err?.cause?.code ?? err?.code ?? '').toUpperCase();
+  if ([
+    'ECONNRESET',
+    'ECONNABORTED',
+    'ETIMEDOUT',
+    'EPIPE',
+    'UND_ERR_SOCKET',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+    'UND_ERR_REQUEST_TIMEOUT',
+  ].includes(code)) {
+    return true;
+  }
+
+  return errorMessageIncludes(err, 'terminated')
+    || errorMessageIncludes(err, 'fetch failed')
+    || errorMessageIncludes(err, 'timeout')
+    || errorMessageIncludes(err, 'socket');
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
 function isPrivateHostname(hostname: string): boolean {
@@ -61,7 +97,7 @@ function isPrivateHostname(hostname: string): boolean {
   return false;
 }
 
-function assertAllowedRemoteVideoUrl(videoUrl: string): void {
+async function assertAllowedRemoteVideoUrl(videoUrl: string): Promise<void> {
   let parsed: URL;
   try {
     parsed = new URL(videoUrl);
@@ -76,6 +112,62 @@ function assertAllowedRemoteVideoUrl(videoUrl: string): void {
   if (parsed.username || parsed.password || isPrivateHostname(parsed.hostname)) {
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
+
+  const resolved = await lookup(parsed.hostname, { all: true, verbatim: true });
+  if (!resolved.length || resolved.some((entry) => isPrivateHostname(entry.address))) {
+    throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
+  }
+}
+
+async function fetchAllowedRemoteVideoBuffer(
+  videoUrl: string,
+  maxAttempts = VIDEO_DOWNLOAD_ATTEMPTS,
+  timeoutMs = VIDEO_DOWNLOAD_TIMEOUT_MS,
+): Promise<Buffer> {
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await assertAllowedRemoteVideoUrl(videoUrl);
+
+      const response = await fetch(videoUrl, {
+        signal: AbortSignal.timeout(timeoutMs),
+        redirect: 'manual',
+      });
+
+      if (response.status >= 300 && response.status < 400) {
+        throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
+      }
+
+      const finalUrl = response.url || videoUrl;
+      await assertAllowedRemoteVideoUrl(finalUrl);
+
+      if (!response.ok) {
+        if (isRetryableStatus(response.status) && attempt < maxAttempts) {
+          await sleep(attempt * VIDEO_DOWNLOAD_RETRY_DELAY_MS);
+          continue;
+        }
+        throw new Error(`Failed to download media: ${response.status}`);
+      }
+
+      return Buffer.from(await response.arrayBuffer());
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof InvalidExternalVideoUrlError) {
+        throw err;
+      }
+
+      if (isRetryableFetchError(err) && attempt < maxAttempts) {
+        await sleep(attempt * VIDEO_DOWNLOAD_RETRY_DELAY_MS);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  if (lastErr instanceof Error) throw lastErr;
+  throw new Error('Failed to download media');
 }
 
 async function downloadVideoToLocalFile(
@@ -83,8 +175,6 @@ async function downloadVideoToLocalFile(
   shotId: string,
   videoUrl: string,
 ): Promise<{ filename: string; url: string }> {
-  assertAllowedRemoteVideoUrl(videoUrl);
-
   const videoDir = resolveProjectPath(projectId, 'shots', shotId, 'video');
   await ensureDir(videoDir);
 
@@ -92,7 +182,7 @@ async function downloadVideoToLocalFile(
   const videoFilename = `vid_${timestamp}.mp4`;
   const videoPath = resolveProjectPath(projectId, 'shots', shotId, 'video', videoFilename);
 
-  const videoBuffer = await fetchRemoteMediaBuffer(videoUrl, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS);
+  const videoBuffer = await fetchAllowedRemoteVideoBuffer(videoUrl, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS);
   await fs.writeFile(videoPath, videoBuffer);
 
   return {
@@ -239,6 +329,9 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
           appliedQualityParam,
         };
       } catch (downloadErr) {
+        if (downloadErr instanceof InvalidExternalVideoUrlError) {
+          throw downloadErr;
+        }
         console.warn(`[generate-video] Local download failed for shot ${shotId}; keeping external URL`, downloadErr);
         await setShotVideoFile(project.id, shotId, videoUrl);
         // Try to recover local cache asynchronously without blocking user flow.
@@ -269,12 +362,16 @@ router.post('/shots/:shotId/generate-video', async (req: Request, res: Response)
       throw genErr;
     }
   } catch (err) {
-    console.error('Failed to generate video:', err);
     const isCancelled = err instanceof Error && err.message === 'Generation cancelled';
     if (isCancelled) {
       sendApiError(res, 499, 'Generation cancelled', 'GENERATION_CANCELLED');
       return;
     }
+    if (err instanceof InvalidExternalVideoUrlError) {
+      sendApiError(res, 400, err.message, 'VIDEO_CACHE_URL_FORBIDDEN');
+      return;
+    }
+    console.error('Failed to generate video:', err);
     sendApiError(res, 500, getErrorMessage(err, 'Failed to generate video'), 'VIDEO_GENERATION_FAILED');
   }
 });
