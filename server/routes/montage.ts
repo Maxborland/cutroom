@@ -5,12 +5,14 @@ import path from 'node:path';
 import multer from 'multer';
 import { readLimiter, mutationLimiter, generationLimiter } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
+import type { ShotVideoDescription, ShotVideoDescriptionMoment } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
 
 const router = Router({ mergeParams: true });
+const VIDEO_DESCRIPTION_VERSION = 1;
 
 // Helper: load project or 404
 async function loadProject(req: Request, res: Response) {
@@ -20,6 +22,132 @@ async function loadProject(req: Request, res: Response) {
     return null;
   }
   return project;
+}
+
+function isExternalMediaRef(value: string) {
+  return /^https?:\/\//i.test(value) || /^data:/i.test(value);
+}
+
+async function resolveLocalShotVideoPath(projectId: string, shotId: string, videoFile: string) {
+  const candidates = [
+    resolveProjectPath(projectId, 'shots', shotId, 'video', videoFile),
+    resolveProjectPath(projectId, videoFile),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function normalizeMoment(moment: unknown, index: number): ShotVideoDescriptionMoment | null {
+  if (!moment || typeof moment !== 'object') {
+    return null;
+  }
+
+  const record = moment as Record<string, unknown>;
+  const label = typeof record.label === 'string' && record.label.trim()
+    ? record.label.trim()
+    : `Moment ${index + 1}`;
+  const summary = typeof record.summary === 'string' && record.summary.trim()
+    ? record.summary.trim()
+    : label;
+  const id = typeof record.id === 'string' && record.id.trim()
+    ? record.id.trim()
+    : `moment-${index + 1}`;
+  const startSec = typeof record.startSec === 'number' && Number.isFinite(record.startSec)
+    ? record.startSec
+    : undefined;
+  const endSec = typeof record.endSec === 'number' && Number.isFinite(record.endSec)
+    ? record.endSec
+    : undefined;
+  const tags = Array.isArray(record.tags)
+    ? record.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+    : [];
+
+  return { id, label, startSec, endSec, tags, summary };
+}
+
+function buildFallbackVideoDescription(shot: {
+  scene?: string;
+  audioDescription?: string;
+  imagePrompt?: string;
+  videoPrompt?: string;
+}): ShotVideoDescription {
+  const summarySource = [
+    shot.videoPrompt,
+    shot.audioDescription,
+    shot.imagePrompt,
+    shot.scene,
+  ].find((value) => typeof value === 'string' && value.trim().length > 0)?.trim() || 'Видео шота готово к монтажу.';
+  const tags = [
+    shot.scene,
+    shot.audioDescription,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const matchHints = [
+    shot.videoPrompt,
+    shot.imagePrompt,
+    shot.audioDescription,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  return {
+    version: VIDEO_DESCRIPTION_VERSION,
+    summary: summarySource,
+    tags,
+    matchHints,
+    moments: [],
+  };
+}
+
+function parseVideoDescriptionResponse(
+  rawResponse: string,
+  shot: {
+    scene?: string;
+    audioDescription?: string;
+    imagePrompt?: string;
+    videoPrompt?: string;
+  },
+): ShotVideoDescription {
+  const trimmed = rawResponse.trim();
+  const normalized = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '');
+
+  try {
+    const parsed = JSON.parse(normalized) as Record<string, unknown>;
+    const fallback = buildFallbackVideoDescription(shot);
+    const summary = typeof parsed.summary === 'string' && parsed.summary.trim()
+      ? parsed.summary.trim()
+      : fallback.summary;
+    const tags = Array.isArray(parsed.tags)
+      ? parsed.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+      : fallback.tags;
+    const matchHints = Array.isArray(parsed.matchHints)
+      ? parsed.matchHints.filter((hint): hint is string => typeof hint === 'string' && hint.trim().length > 0)
+      : fallback.matchHints;
+    const moments = Array.isArray(parsed.moments)
+      ? parsed.moments
+        .map((moment, index) => normalizeMoment(moment, index))
+        .filter((moment): moment is ShotVideoDescriptionMoment => Boolean(moment))
+      : [];
+
+    return {
+      version: VIDEO_DESCRIPTION_VERSION,
+      summary,
+      tags,
+      matchHints,
+      moments,
+    };
+  } catch {
+    return buildFallbackVideoDescription(shot);
+  }
 }
 
 // POST /api/projects/:id/montage/generate-vo-script
@@ -646,6 +774,120 @@ router.put('/montage/music-prompt', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Failed to update music prompt:', err);
     sendApiError(res, 500, 'Failed to update music prompt');
+  }
+});
+
+// POST /api/projects/:id/montage/describe-videos
+router.post('/montage/describe-videos', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const approvedShots = project.shots.filter((shot) => shot.status === 'approved');
+    if (approvedShots.length === 0) {
+      res.json({ described: 0, skipped: 0, shots: [], skippedShots: [] });
+      return;
+    }
+
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 400, 'OpenRouter API key is not configured. Please set it in Settings.');
+      return;
+    }
+
+    const settings = await getGlobalSettings();
+    const model = settings.defaultDescribeModel || settings.defaultTextModel || settings.defaultScriptModel || 'openai/gpt-4o-mini';
+    const describedShots: Array<{ shotId: string; videoDescription: ShotVideoDescription }> = [];
+    const skippedShots: Array<{ shotId: string; reason: string }> = [];
+
+    for (const shot of approvedShots) {
+      if (!shot.videoFile) {
+        skippedShots.push({ shotId: shot.id, reason: 'missing_local_video' });
+        continue;
+      }
+
+      if (isExternalMediaRef(shot.videoFile)) {
+        skippedShots.push({ shotId: shot.id, reason: 'external_video_not_cached' });
+        continue;
+      }
+
+      const localVideoPath = await resolveLocalShotVideoPath(project.id, shot.id, shot.videoFile);
+      if (!localVideoPath) {
+        skippedShots.push({ shotId: shot.id, reason: 'missing_local_video' });
+        continue;
+      }
+
+      const systemPrompt = `You describe a finished real-estate video shot for AI-assisted montage planning.
+Return ONLY valid JSON with this exact shape:
+{
+  "summary": "short Russian summary",
+  "tags": ["visual tag"],
+  "matchHints": ["phrase usable to match narrator anchors"],
+  "moments": [
+    {
+      "id": "moment-1",
+      "label": "short label",
+      "startSec": 0,
+      "endSec": 3,
+      "tags": ["tag"],
+      "summary": "moment summary in Russian"
+    }
+  ]
+}
+If exact moments are unclear, return an empty moments array.`;
+
+      const userPrompt = [
+        `Shot scene: ${shot.scene || 'n/a'}`,
+        `Audio description: ${shot.audioDescription || 'n/a'}`,
+        `Image prompt: ${shot.imagePrompt || 'n/a'}`,
+        `Video prompt: ${shot.videoPrompt || 'n/a'}`,
+        `Local video file is available: ${path.basename(localVideoPath)}`,
+      ].join('\n');
+
+      try {
+        const llmResponse = await chatCompletion(
+          model,
+          [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          0.2,
+        );
+
+        describedShots.push({
+          shotId: shot.id,
+          videoDescription: parseVideoDescriptionResponse(llmResponse, shot),
+        });
+      } catch (err) {
+        console.error(`Failed to describe video for shot ${shot.id}:`, err);
+        skippedShots.push({ shotId: shot.id, reason: 'description_failed' });
+      }
+    }
+
+    if (describedShots.length > 0) {
+      const descriptionsByShotId = new Map(
+        describedShots.map(({ shotId, videoDescription }) => [shotId, videoDescription]),
+      );
+
+      await withProject(project.id, (proj) => {
+        for (const shot of proj.shots) {
+          const videoDescription = descriptionsByShotId.get(shot.id);
+          if (videoDescription) {
+            shot.videoDescription = videoDescription;
+          }
+        }
+      });
+    }
+
+    res.json({
+      described: describedShots.length,
+      skipped: skippedShots.length,
+      shots: describedShots,
+      skippedShots,
+    });
+  } catch (err) {
+    console.error('Failed to describe montage videos:', err);
+    sendApiError(res, 500, 'Failed to describe videos');
   }
 });
 

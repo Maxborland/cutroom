@@ -7,6 +7,7 @@ import request from 'supertest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createApp } from './setup.js'
+import { api } from '../../src/lib/api'
 import {
   createProject,
   deleteProject,
@@ -491,6 +492,240 @@ describe('Montage Integration', () => {
       await request(app)
         .get(`/api/projects/${projectId}/montage/music`)
         .expect(404)
+    })
+  })
+
+  describe('POST /montage/describe-videos', () => {
+    it('describes approved shots with local video files and persists shot.videoDescription', async () => {
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.videoPrompt = 'Evening aerial around the facade'
+      })
+
+      const description = {
+        summary: 'Плавный пролет вдоль фасада и панорамных окон.',
+        tags: ['фасад', 'панорамные окна'],
+        matchHints: ['панорамные окна', 'архитектура комплекса'],
+        moments: [
+          {
+            id: 'moment-1',
+            label: 'Фасад',
+            startSec: 0,
+            endSec: 3,
+            tags: ['фасад'],
+            summary: 'Камера мягко проходит вдоль фасада.',
+          },
+        ],
+      }
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify(description))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(res.body.described).toBe(1)
+      expect(res.body.skipped).toBe(0)
+      expect(res.body.shots).toEqual([
+        {
+          shotId: 'shot-1',
+          videoDescription: {
+            version: 1,
+            ...description,
+          },
+        },
+      ])
+      expect(res.body.skippedShots).toEqual([])
+
+      const project = await getProject(projectId)
+      expect(project?.shots[0]?.videoDescription).toEqual({
+        version: 1,
+        ...description,
+      })
+    })
+
+    it('prefers defaultDescribeModel when generating video descriptions', async () => {
+      const settingsPath = path.join(process.cwd(), 'data', 'settings.json')
+      const existing = JSON.parse(await fs.readFile(settingsPath, 'utf-8').catch(() => '{}'))
+      await fs.writeFile(settingsPath, JSON.stringify({
+        ...existing,
+        openRouterApiKey: 'test-key',
+        defaultDescribeModel: 'openai/gpt-4.1-mini',
+        defaultTextModel: 'openai/gpt-4o',
+        defaultScriptModel: 'openai/gpt-4o',
+      }, null, 2))
+
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.videoPrompt = 'Evening aerial around the facade'
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
+        summary: 'Плавный пролет вдоль фасада.',
+        tags: ['фасад'],
+        matchHints: ['фасад'],
+        moments: [],
+      }))
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(chatCompletion).toHaveBeenCalledWith(
+        'openai/gpt-4.1-mini',
+        expect.any(Array),
+        0.2,
+      )
+    })
+
+    it('skips approved shots without a local cached video and reports them cleanly', async () => {
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.videoPrompt = 'Exterior drone pass'
+        proj.shots.push({
+          id: 'shot-2',
+          order: 2,
+          scene: 'lobby',
+          audioDescription: 'Lobby push-in',
+          imagePrompt: '',
+          videoPrompt: 'Walk into the lobby',
+          duration: 5,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'https://cdn.example.com/final.mp4',
+        })
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
+        summary: 'Плавный обзор фасада.',
+        tags: ['фасад'],
+        matchHints: ['фасад'],
+        moments: [],
+      }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(res.body.described).toBe(1)
+      expect(res.body.skipped).toBe(1)
+      expect(res.body.shots).toHaveLength(1)
+      expect(res.body.skippedShots).toEqual([
+        {
+          shotId: 'shot-2',
+          reason: 'external_video_not_cached',
+        },
+      ])
+
+      const project = await getProject(projectId)
+      expect(project?.shots.find((shot) => shot.id === 'shot-2')?.videoDescription).toBeUndefined()
+    })
+
+    it('skips approved shots when the local video file is missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'missing.mp4'
+        proj.shots[0]!.videoPrompt = 'Exterior drone pass'
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(res.body).toEqual({
+        described: 0,
+        skipped: 1,
+        shots: [],
+        skippedShots: [
+          {
+            shotId: 'shot-1',
+            reason: 'missing_local_video',
+          },
+        ],
+      })
+      expect(chatCompletion).not.toHaveBeenCalled()
+
+      const project = await getProject(projectId)
+      expect(project?.shots[0]?.videoDescription).toBeUndefined()
+    })
+  })
+
+  describe('api.montage.describeVideos', () => {
+    it('posts to the describe-videos endpoint and returns per-shot descriptions', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        described: 1,
+        skipped: 1,
+        shots: [
+          {
+            shotId: 'shot-1',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный обзор фасада.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [],
+            },
+          },
+        ],
+        skippedShots: [
+          {
+            shotId: 'shot-2',
+            reason: 'missing_local_video',
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const result = await api.montage.describeVideos(projectId)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/describe-videos`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      expect(result).toEqual({
+        described: 1,
+        skipped: 1,
+        shots: [
+          {
+            shotId: 'shot-1',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный обзор фасада.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [],
+            },
+          },
+        ],
+        skippedShots: [
+          {
+            shotId: 'shot-2',
+            reason: 'missing_local_video',
+          },
+        ],
+      })
     })
   })
 
