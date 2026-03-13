@@ -729,6 +729,110 @@ describe('Montage Integration', () => {
     })
   })
 
+  describe('POST /montage/extract-anchors', () => {
+    it('extracts ordered anchors from voiceover script and persists them on the project', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = 'Просторная кухня с островом. Затем терраса с видом на реку.'
+      })
+
+      const anchors = [
+        {
+          id: 'anchor-2',
+          sourceText: 'Затем терраса с видом на реку',
+          label: 'Терраса с видом',
+          order: 2,
+          intent: 'lifestyle',
+        },
+        {
+          id: 'anchor-1',
+          sourceText: 'Просторная кухня с островом',
+          label: 'Кухня с островом',
+          order: 1,
+          intent: 'feature',
+        },
+      ]
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({ anchors }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/extract-anchors`)
+        .expect(200)
+
+      expect(res.body.anchors).toHaveLength(2)
+      expect(res.body.anchors[0]).toMatchObject({
+        id: 'anchor-1',
+        sourceText: 'Просторная кухня с островом',
+        label: 'Кухня с островом',
+        intent: 'feature',
+      })
+      expect(res.body.anchors[1]).toMatchObject({
+        id: 'anchor-2',
+        sourceText: 'Затем терраса с видом на реку',
+        label: 'Терраса с видом',
+        intent: 'lifestyle',
+      })
+      expect(res.body.anchors[0].order).toBeLessThan(res.body.anchors[1].order)
+
+      const project = await getProject(projectId)
+      expect(project?.narrationAnchors).toEqual(res.body.anchors)
+    })
+
+    it('returns 400 when voiceover script is missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = ''
+        proj.voiceoverScriptApproved = false
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/extract-anchors`)
+        .expect(400)
+
+      expect(res.body.error).toContain('озвуч')
+      expect(chatCompletion).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('api.montage.extractAnchors', () => {
+    it('posts to the extract-anchors endpoint and returns ordered anchors', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        anchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const result = await api.montage.extractAnchors(projectId)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/extract-anchors`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      expect(result).toEqual({
+        anchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ],
+      })
+    })
+  })
+
   // ─── Montage Plan ─────────────────────────────────────────────────
 
   describe('POST /montage/generate-plan', () => {

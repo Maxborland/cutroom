@@ -5,7 +5,7 @@ import path from 'node:path';
 import multer from 'multer';
 import { readLimiter, mutationLimiter, generationLimiter } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
-import type { ShotVideoDescription, ShotVideoDescriptionMoment } from '../lib/storage.js';
+import type { NarrationAnchor, ShotVideoDescription, ShotVideoDescriptionMoment } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
@@ -147,6 +147,99 @@ function parseVideoDescriptionResponse(
     };
   } catch {
     return buildFallbackVideoDescription(shot);
+  }
+}
+
+const VALID_ANCHOR_INTENTS: NarrationAnchor['intent'][] = ['hook', 'feature', 'detail', 'lifestyle', 'cta'];
+
+function normalizeAnchor(anchor: unknown, index: number): NarrationAnchor | null {
+  if (!anchor || typeof anchor !== 'object') {
+    return null;
+  }
+
+  const record = anchor as Record<string, unknown>;
+  const sourceText = typeof record.sourceText === 'string' && record.sourceText.trim()
+    ? record.sourceText.trim()
+    : typeof record.label === 'string' && record.label.trim()
+      ? record.label.trim()
+      : null;
+
+  if (!sourceText) {
+    return null;
+  }
+
+  const label = typeof record.label === 'string' && record.label.trim()
+    ? record.label.trim()
+    : sourceText;
+  const id = typeof record.id === 'string' && record.id.trim()
+    ? record.id.trim()
+    : `anchor-${index + 1}`;
+  const order = typeof record.order === 'number' && Number.isFinite(record.order) && record.order >= 0
+    ? record.order
+    : index;
+  const intent = typeof record.intent === 'string' && VALID_ANCHOR_INTENTS.includes(record.intent as NarrationAnchor['intent'])
+    ? record.intent as NarrationAnchor['intent']
+    : 'feature';
+
+  return {
+    id,
+    sourceText,
+    label,
+    order,
+    intent,
+  };
+}
+
+function buildFallbackAnchors(voiceoverScript: string): NarrationAnchor[] {
+  const segments = voiceoverScript
+    .split(/[.!?]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return segments.map((segment, index) => ({
+    id: `anchor-${index + 1}`,
+    sourceText: segment,
+    label: segment,
+    order: index,
+    intent: index === 0 ? 'hook' : 'feature',
+  }));
+}
+
+function parseNarrationAnchorsResponse(rawResponse: string, voiceoverScript: string): NarrationAnchor[] {
+  const trimmed = rawResponse.trim();
+  const normalized = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '');
+
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    const rawAnchors = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { anchors?: unknown[] }).anchors)
+        ? (parsed as { anchors: unknown[] }).anchors
+        : [];
+    const anchors = rawAnchors
+      .map((anchor, index) => normalizeAnchor(anchor, index))
+      .filter((anchor): anchor is NarrationAnchor => Boolean(anchor));
+
+    const orderedAnchors = anchors
+      .map((anchor, index) => ({ anchor, sourceIndex: index }))
+      .sort((left, right) => {
+        const byOrder = left.anchor.order - right.anchor.order;
+        if (byOrder !== 0) return byOrder;
+        const byStart = (left.anchor.startSec ?? left.sourceIndex) - (right.anchor.startSec ?? right.sourceIndex);
+        if (byStart !== 0) return byStart;
+        return left.sourceIndex - right.sourceIndex;
+      })
+      .map(({ anchor }, index) => ({
+        ...anchor,
+        order: index + 1,
+      }));
+
+    return orderedAnchors.length > 0 ? orderedAnchors : buildFallbackAnchors(voiceoverScript);
+  } catch {
+    return buildFallbackAnchors(voiceoverScript);
   }
 }
 
@@ -888,6 +981,70 @@ If exact moments are unclear, return an empty moments array.`;
   } catch (err) {
     console.error('Failed to describe montage videos:', err);
     sendApiError(res, 500, 'Failed to describe videos');
+  }
+});
+
+// POST /api/projects/:id/montage/extract-anchors
+router.post('/montage/extract-anchors', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const voiceoverScript = project.voiceoverScript?.trim();
+    if (!voiceoverScript) {
+      sendApiError(res, 400, 'Сначала добавьте текст озвучки, чтобы извлечь смысловые якоря.');
+      return;
+    }
+
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 400, 'OpenRouter API key is not configured. Please set it in Settings.');
+      return;
+    }
+
+    const settings = await getGlobalSettings();
+    const model = settings.defaultScriptModel || settings.defaultTextModel || 'openai/gpt-4o-mini';
+    const systemPrompt = `You extract ordered narrator anchors for AI-assisted montage planning.
+Return ONLY valid JSON in one of these forms:
+[
+  {
+    "id": "anchor-1",
+    "sourceText": "exact Russian phrase from the voiceover",
+    "label": "short Russian anchor label",
+    "order": 1,
+    "intent": "hook|feature|detail|lifestyle|cta"
+  }
+]
+or
+{ "anchors": [ ... ] }
+
+Rules:
+- Keep sourceText in Russian and close to the original voiceover wording
+- Preserve story order
+- Prefer 3-8 meaningful anchors
+- Keep labels short and montage-friendly`;
+
+    const anchorsResponse = await chatCompletion(
+      model,
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: voiceoverScript },
+      ],
+      0.2,
+    );
+
+    const anchors = parseNarrationAnchorsResponse(anchorsResponse, voiceoverScript);
+
+    await withProject(project.id, (proj) => {
+      proj.narrationAnchors = anchors;
+      delete proj.anchorMatches;
+      delete proj.anchorCoverageSummary;
+    });
+
+    res.json({ anchors });
+  } catch (err) {
+    console.error('Failed to extract narration anchors:', err);
+    sendApiError(res, 500, 'Failed to extract narration anchors');
   }
 });
 

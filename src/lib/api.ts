@@ -10,6 +10,7 @@ import type {
   VideoGenerationResult,
   MontagePlan,
   RenderJob,
+  NarrationAnchor,
   ShotVideoDescription,
 } from '../types/index'
 import type { OpenReelBundle } from './openreel-bridge'
@@ -67,6 +68,10 @@ export interface DescribeVideosResponse {
     shotId: string
     reason: string
   }>
+}
+
+export interface ExtractAnchorsResponse {
+  anchors: NarrationAnchor[]
 }
 
 export class ApiRequestError extends Error {
@@ -435,6 +440,8 @@ export const api = {
     voiceoverUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/voiceover`,
     describeVideos: (projectId: string) =>
       request<DescribeVideosResponse>(`/projects/${projectId}/montage/describe-videos`, { method: 'POST' }),
+    extractAnchors: (projectId: string) =>
+      request<ExtractAnchorsResponse>(`/projects/${projectId}/montage/extract-anchors`, { method: 'POST' }),
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
     reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>
