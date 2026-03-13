@@ -461,7 +461,7 @@ export async function enqueueVideoCacheJob(
   if (!jobsRepository) {
     const safeShotId = sanitizeForLog(input.shotId);
     void attachCachedVideo(input.projectId, input.shotId, input.externalUrl).catch((err) => {
-      console.warn(`[video-cache] Background cache failed for shot ${safeShotId}:`, err);
+      console.warn('[video-cache] Background cache failed for shot %s:', safeShotId, err);
     });
     return null;
   }

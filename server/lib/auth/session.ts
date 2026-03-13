@@ -41,16 +41,16 @@ export function clearSessionCookie(req: Request, res: Response): void {
   });
 }
 
-function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+function parseCookies(cookieHeader: string | undefined): Map<string, string> {
   if (!cookieHeader) {
-    return {};
+    return new Map();
   }
 
   return cookieHeader
     .split(';')
     .map((part) => part.trim())
     .filter(Boolean)
-    .reduce<Record<string, string>>((cookies, part) => {
+    .reduce<Map<string, string>>((cookies, part) => {
       const separatorIndex = part.indexOf('=');
       if (separatorIndex === -1) {
         return cookies;
@@ -62,12 +62,12 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
         return cookies;
       }
 
-      cookies[key] = decodeURIComponent(value);
+      cookies.set(key, decodeURIComponent(value));
       return cookies;
-    }, {});
+    }, new Map<string, string>());
 }
 
 export function getSessionTokenFromRequest(req: Request): string | null {
   const cookies = parseCookies(req.headers.cookie);
-  return cookies[SESSION_COOKIE_NAME] ?? null;
+  return cookies.get(SESSION_COOKIE_NAME) ?? null;
 }
