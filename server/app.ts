@@ -25,6 +25,8 @@ interface CreateAppOptions {
   allowMissingApiKey?: boolean;
   rateLimitWindowMs?: number;
   rateLimitMax?: number;
+  authRateLimitWindowMs?: number;
+  authRateLimitMax?: number;
   userInviteRateLimitWindowMs?: number;
   userInviteRateLimitMax?: number;
   licensingService?: LicensingService;
@@ -219,7 +221,10 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   if (authRepository) {
     app.use('/api', createAuthSessionMiddleware(authRepository));
-    app.use('/api/auth', createAuthRoutes(authRepository));
+    app.use('/api/auth', createAuthRoutes(authRepository, {
+      rateLimitMax: options.authRateLimitMax,
+      rateLimitWindowMs: options.authRateLimitWindowMs,
+    }));
     app.use('/api/users', createUsersRoutes(authRepository, {
       bootstrapSetupToken,
       inviteRateLimitMax: options.userInviteRateLimitMax,

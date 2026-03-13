@@ -227,4 +227,24 @@ describe('video-cache durable jobs', () => {
     await storage.deleteProject(project.id)
     await fs.rm(storage.resolveProjectPath(project.id), { recursive: true, force: true })
   })
+
+  it('sanitizes shot ids before logging background cache failures', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    global.fetch = vi.fn().mockRejectedValue(new Error('boom')) as typeof fetch
+
+    const videoCache = await import('../../server/lib/jobs/video-cache.js')
+
+    const jobId = await videoCache.enqueueVideoCacheJob({
+      projectId: 'project-123',
+      shotId: 'shot-001\nforged-log',
+      externalUrl: 'https://replicate.example/cache-me.mp4',
+    })
+
+    expect(jobId).toBeNull()
+    await vi.waitFor(() => {
+      expect(warnSpy).toHaveBeenCalled()
+    })
+
+    expect(String(warnSpy.mock.calls[0]?.[0] ?? '')).not.toContain('\n')
+  })
 })

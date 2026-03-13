@@ -7,6 +7,8 @@ function createAuthApp(options: {
   bootstrapSetupToken?: string
   userInviteRateLimitMax?: number
   userInviteRateLimitWindowMs?: number
+  authRateLimitMax?: number
+  authRateLimitWindowMs?: number
 } = {}) {
   const authRepository = createInMemoryAuthRepository()
   const app = createApp({
@@ -16,6 +18,8 @@ function createAuthApp(options: {
     bootstrapSetupToken: options.bootstrapSetupToken,
     userInviteRateLimitMax: options.userInviteRateLimitMax,
     userInviteRateLimitWindowMs: options.userInviteRateLimitWindowMs,
+    authRateLimitMax: options.authRateLimitMax,
+    authRateLimitWindowMs: options.authRateLimitWindowMs,
   })
 
   return { app, authRepository }
@@ -345,6 +349,43 @@ describe('Authentication API', () => {
       .post('/api/users/invite')
       .set('Cookie', ownerSessionCookie)
       .send({ email: 'viewer@example.com', role: 'viewer' })
+      .expect(429)
+  })
+
+  it('rate limits repeated auth route submissions', async () => {
+    const { app } = createAuthApp({
+      authRateLimitMax: 1,
+      authRateLimitWindowMs: 60_000,
+    })
+
+    const bootstrapInvite = await request(app)
+      .post('/api/users/bootstrap-owner-invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: bootstrapInvite.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'owner@example.com',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'owner@example.com',
+        password: 'super-secret-pass',
+      })
       .expect(429)
   })
 

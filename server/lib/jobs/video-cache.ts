@@ -29,6 +29,10 @@ interface VideoCacheJobPayload {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+function sanitizeForLog(value: string): string {
+  return value.replace(/[\r\n\t]+/g, ' ').trim();
+}
+
 function errorMessageIncludes(err: unknown, pattern: string): boolean {
   const needle = pattern.toLowerCase();
   const maybeError = err as { message?: string; cause?: { message?: string } } | undefined;
@@ -455,8 +459,9 @@ export async function enqueueVideoCacheJob(
 ): Promise<string | null> {
   const jobsRepository = getDefaultJobsRepository();
   if (!jobsRepository) {
+    const safeShotId = sanitizeForLog(input.shotId);
     void attachCachedVideo(input.projectId, input.shotId, input.externalUrl).catch((err) => {
-      console.warn(`[video-cache] Background cache failed for shot ${input.shotId}:`, err);
+      console.warn(`[video-cache] Background cache failed for shot ${safeShotId}:`, err);
     });
     return null;
   }
