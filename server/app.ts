@@ -12,6 +12,10 @@ import { createSystemRoutes } from './routes/system.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
 import type { LicensingService } from './lib/licensing/types.js';
 import { createDefaultLicensingService } from './lib/licensing/service.js';
+import { createDefaultAuthRepository, type AuthRepository } from './lib/auth/repository.js';
+import { createAuthSessionMiddleware, requireAuthenticatedUser } from './lib/auth/middleware.js';
+import { createAuthRoutes } from './routes/auth.js';
+import { createUsersRoutes } from './routes/users.js';
 
 interface CreateAppOptions {
   apiAccessKey?: string;
@@ -19,6 +23,7 @@ interface CreateAppOptions {
   rateLimitWindowMs?: number;
   rateLimitMax?: number;
   licensingService?: LicensingService;
+  authRepository?: AuthRepository | null;
 }
 
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
@@ -57,6 +62,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
   const isDev = process.env.NODE_ENV !== 'production';
   let licensingService = options.licensingService;
+  const authRepository = options.authRepository ?? (process.env.NODE_ENV === 'test' ? null : createDefaultAuthRepository());
 
   const resolveLicensingService = (): LicensingService => {
     if (!licensingService) {
@@ -89,6 +95,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   app.use(
     cors({
+      credentials: true,
       origin: (origin, callback) => {
         if (!origin || corsAllowlist.has(origin)) {
           callback(null, true);
@@ -169,6 +176,20 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
     sendApiError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
   });
+
+  if (authRepository) {
+    app.use('/api', createAuthSessionMiddleware(authRepository));
+    app.use('/api/auth', createAuthRoutes(authRepository));
+    app.use('/api/users', createUsersRoutes(authRepository));
+    app.use('/api', (req, res, next) => {
+      if (req.path === '/health' || req.path.startsWith('/auth/')) {
+        next();
+        return;
+      }
+
+      requireAuthenticatedUser(req, res, next);
+    });
+  }
 
   app.use('/api/projects', projectRoutes);
   app.use('/api/settings', settingsRoutes);

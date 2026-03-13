@@ -22,6 +22,26 @@ type DeepPartial<T> = {
       : T[K]
 }
 
+export interface AuthUser {
+  id: string
+  email: string
+  name: string
+  createdAt: string
+}
+
+export interface AuthSessionResponse {
+  user: AuthUser
+}
+
+export interface InviteResponse {
+  invite: {
+    token: string
+    email: string
+    createdAt: string
+    inviteUrl: string
+  }
+}
+
 export interface RenderStartResponse {
   jobId: string
   status: 'queued'
@@ -81,6 +101,7 @@ async function throwRequestError(res: Response, path: string): Promise<never> {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   })
   if (!res.ok) {
@@ -100,6 +121,27 @@ export const api = {
       request<Project>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   },
+  auth: {
+    login: (email: string, password: string) =>
+      request<AuthSessionResponse>('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      }),
+    logout: () => request<void>('/auth/logout', { method: 'POST' }),
+    me: () => request<AuthSessionResponse>('/auth/me'),
+    acceptInvite: (token: string, name: string, password: string) =>
+      request<AuthSessionResponse>('/auth/accept-invite', {
+        method: 'POST',
+        body: JSON.stringify({ token, name, password }),
+      }),
+  },
+  users: {
+    invite: (email: string) =>
+      request<InviteResponse>('/users/invite', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      }),
+  },
   assets: {
     upload: async (projectId: string, files: File[]) => {
       const form = new FormData()
@@ -107,6 +149,7 @@ export const api = {
       const path = `/projects/${projectId}/assets`
       const res = await fetch(`${BASE}/projects/${projectId}/assets`, {
         method: 'POST',
+        credentials: 'include',
         body: form,
       })
       if (!res.ok) await throwRequestError(res, path)
@@ -172,6 +215,7 @@ export const api = {
       const path = `/projects/${projectId}/shots/${shotId}/video`
       const res = await fetch(`${BASE}/projects/${projectId}/shots/${shotId}/video`, {
         method: 'POST',
+        credentials: 'include',
         body: form,
       })
       if (!res.ok) await throwRequestError(res, path)
@@ -279,7 +323,7 @@ export const api = {
       const form = new FormData()
       form.append('music', file)
       const path = `/projects/${projectId}/montage/upload-music`
-      const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form })
+      const res = await fetch(`${BASE}${path}`, { method: 'POST', credentials: 'include', body: form })
       if (!res.ok) await throwRequestError(res, path)
       return res.json() as Promise<{ musicFile: string; provider: string }>
     },

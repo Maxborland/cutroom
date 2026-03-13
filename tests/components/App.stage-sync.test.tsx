@@ -3,11 +3,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../../src/App'
 import { useProjectStore } from '../../src/stores/projectStore'
+import { useAuthStore } from '../../src/stores/authStore'
 
 vi.mock('../../src/stores/projectStore', () => {
   const store: any = vi.fn()
   store.getState = vi.fn()
   return { useProjectStore: store }
+})
+
+vi.mock('../../src/stores/authStore', () => {
+  const store: any = vi.fn()
+  return { useAuthStore: store }
 })
 
 vi.mock('../../src/components/Sidebar', () => ({
@@ -32,8 +38,11 @@ vi.mock('../../src/components/DirectorView', () => ({ DirectorView: () => <div /
 vi.mock('../../src/components/Toaster', () => ({ Toaster: () => <div /> }))
 vi.mock('../../src/components/Lightbox', () => ({ Lightbox: () => <div /> }))
 vi.mock('../../src/components/ErrorBoundary', () => ({ ErrorBoundary: ({ children }: any) => <>{children}</> }))
+vi.mock('../../src/components/auth/LoginView', () => ({ LoginView: () => <div>Login View</div> }))
+vi.mock('../../src/components/auth/AcceptInviteView', () => ({ AcceptInviteView: () => <div>Accept Invite View</div> }))
 
 const mockedUseProjectStore = useProjectStore as any
+const mockedUseAuthStore = useAuthStore as any
 let updateProjectStageMock: ReturnType<typeof vi.fn>
 
 describe('App stage sync', () => {
@@ -80,6 +89,44 @@ describe('App stage sync', () => {
 
     mockedUseProjectStore.mockImplementation((selector: any) => selector(state))
     mockedUseProjectStore.getState.mockReturnValue(state)
+
+    const authState = {
+      status: 'authenticated',
+      user: { id: 'user-1', email: 'owner@example.com', name: 'Owner' },
+      loading: false,
+      error: null,
+      hydrate: vi.fn().mockResolvedValue(undefined),
+      login: vi.fn(),
+      logout: vi.fn(),
+      acceptInvite: vi.fn(),
+      clearError: vi.fn(),
+    }
+
+    mockedUseAuthStore.mockImplementation((selector: any) => selector(authState))
+  })
+
+  it('shows the login view when there is no active session', async () => {
+    const authState = {
+      status: 'unauthenticated',
+      user: null,
+      loading: false,
+      error: null,
+      hydrate: vi.fn().mockResolvedValue(undefined),
+      login: vi.fn(),
+      logout: vi.fn(),
+      acceptInvite: vi.fn(),
+      clearError: vi.fn(),
+    }
+
+    mockedUseAuthStore.mockImplementation((selector: any) => selector(authState))
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <App />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('Login View')).toBeInTheDocument()
   })
 
   it('updates project stage only for review/export navigation', async () => {

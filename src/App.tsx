@@ -14,6 +14,9 @@ import { Toaster } from './components/Toaster'
 import { Lightbox } from './components/Lightbox'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { useProjectStore } from './stores/projectStore'
+import { useAuthStore } from './stores/authStore'
+import { LoginView } from './components/auth/LoginView'
+import { AcceptInviteView } from './components/auth/AcceptInviteView'
 import type { PipelineStage } from './types'
 import { Clapperboard, Plus, Loader2 } from 'lucide-react'
 
@@ -216,11 +219,44 @@ function AppShell() {
 }
 
 function App() {
+  const status = useAuthStore((state) => state.status)
+  const loading = useAuthStore((state) => state.loading)
+  const hydrate = useAuthStore((state) => state.hydrate)
+
+  useEffect(() => {
+    if (status === 'idle') {
+      void hydrate()
+    }
+  }, [status, hydrate])
+
+  if (status === 'idle' || loading) {
+    return (
+      <div className="flex h-screen w-screen bg-bg items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 size={32} className="text-amber animate-spin" />
+          <p className="text-sm text-text-muted font-mono uppercase tracking-wider">Проверка сессии...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (status !== 'authenticated') {
+    return (
+      <Routes>
+        <Route path="/accept-invite" element={<AcceptInviteView />} />
+        <Route path="/accept-invite/:token" element={<AcceptInviteView />} />
+        <Route path="*" element={<LoginView />} />
+      </Routes>
+    )
+  }
+
   return (
     <Routes>
       <Route path="/" element={<AppShell />} />
       <Route path="/projects/:projectId" element={<AppShell />} />
       <Route path="/projects/:projectId/:view" element={<AppShell />} />
+      <Route path="/accept-invite" element={<Navigate to="/" replace />} />
+      <Route path="/accept-invite/:token" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
