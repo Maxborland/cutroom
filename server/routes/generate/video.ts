@@ -14,6 +14,7 @@ import { generateVideoFromImage } from '../../lib/generation.js';
 import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generation-models.js';
 import { getBestImageFile, getMimeType } from '../../lib/media-utils.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
+import { safeLogValue } from '../../lib/safe-log.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
 const router = Router({ mergeParams: true });
@@ -143,7 +144,11 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
         if (downloadErr instanceof InvalidExternalVideoUrlError) {
           throw downloadErr;
         }
-        console.warn(`[generate-video] Local download failed for shot ${shotId}; keeping external URL`, downloadErr);
+        console.warn(
+          '[generate-video] Local download failed for shot %s; keeping external URL',
+          safeLogValue(shotId),
+          downloadErr,
+        );
         await setShotVideoFile(project.id, shotId, videoUrl);
         await enqueueVideoCacheJob({ projectId: project.id, shotId, externalUrl: videoUrl });
         payload = {
