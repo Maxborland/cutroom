@@ -1,22 +1,60 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../server/app.js'
 import { createLicensingRepository } from '../../server/lib/licensing/repository.js'
 import { createLicensingService } from '../../server/lib/licensing/service.js'
 
-const tempPaths: string[] = []
+function createFakeLicensingDb() {
+  let state: any = null
+  const queries: string[] = []
 
-afterEach(async () => {
-  await Promise.all(tempPaths.splice(0).map((filePath) => fs.rm(filePath, { force: true })))
-})
+  return {
+    db: {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push(sql)
 
-function createTestApp(filePath = path.join(process.cwd(), 'data', `installation-state.${randomUUID()}.json`)) {
-  tempPaths.push(filePath)
+        if (sql.includes('SELECT') && sql.includes('FROM installation_state')) {
+          return { rows: state ? [state] : [] }
+        }
 
-  const repository = createLicensingRepository({ filePath })
+        if (sql.includes('INSERT INTO installation_state')) {
+          const [
+            id,
+            installationId,
+            tenantName,
+            licenseStatus,
+            trialStartedAt,
+            trialEndsAt,
+            activatedAt,
+            lastLicenseCheckAt,
+            graceEndsAt,
+          ] = params as (string | null)[]
+
+          state = {
+            id,
+            installation_id: installationId,
+            tenant_name: tenantName,
+            license_status: licenseStatus,
+            trial_started_at: trialStartedAt,
+            trial_ends_at: trialEndsAt,
+            activated_at: activatedAt,
+            last_license_check_at: lastLicenseCheckAt,
+            grace_ends_at: graceEndsAt,
+          }
+
+          return { rows: [state] }
+        }
+
+        throw new Error(`Unexpected SQL in fake licensing db: ${sql}`)
+      },
+    },
+    queries,
+  }
+}
+
+function createTestApp() {
+  const fake = createFakeLicensingDb()
+  const repository = createLicensingRepository({ db: fake.db } as any)
   const licensingService = createLicensingService(repository)
 
   return {
@@ -26,13 +64,13 @@ function createTestApp(filePath = path.join(process.cwd(), 'data', `installation
       licensingService,
     }),
     repository,
-    filePath,
+    queries: fake.queries,
   }
 }
 
 describe('System license API', () => {
   it('returns unactivated installation status on fresh system', async () => {
-    const { app } = createTestApp()
+    const { app, queries } = createTestApp()
 
     const res = await request(app).get('/api/system/license').expect(200)
 
@@ -40,10 +78,11 @@ describe('System license API', () => {
     expect(res.body.trialDaysRemaining).toBeGreaterThanOrEqual(0)
     expect(res.body.restrictedMode).toBe(false)
     expect(res.body.lastCheckAt).toBeNull()
+    expect(queries.some((query) => query.includes('FROM installation_state'))).toBe(true)
   })
 
   it('returns restricted mode when trial has expired', async () => {
-    const { app, repository } = createTestApp()
+    const { app, repository, queries } = createTestApp()
 
     await repository.saveInstallationState({
       id: 'installation-state-1',
@@ -63,5 +102,7 @@ describe('System license API', () => {
     expect(res.body.trialDaysRemaining).toBe(0)
     expect(res.body.restrictedMode).toBe(true)
     expect(res.body.lastCheckAt).toBe('2026-03-01T00:00:00.000Z')
+    expect(queries.some((query) => query.includes('INSERT INTO installation_state'))).toBe(true)
+    expect(queries.some((query) => query.includes('FROM installation_state'))).toBe(true)
   })
 })

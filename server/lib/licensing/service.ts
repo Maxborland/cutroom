@@ -96,8 +96,8 @@ function isFutureDate(dateValue: string | null, now: Date): boolean {
 }
 
 export function createLicensingService(
-  repository: LicensingRepository = createLicensingRepository(),
+  repository?: LicensingRepository,
   options: CreateLicensingServiceOptions = {},
 ): LicensingService {
-  return new DefaultLicensingService(repository, options);
+  return new DefaultLicensingService(repository ?? createLicensingRepository(), options);
 }
