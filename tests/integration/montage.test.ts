@@ -1021,6 +1021,181 @@ describe('Montage Integration', () => {
     })
   })
 
+  describe('PUT /montage/anchor-matches', () => {
+    it('persists manual shot overrides and recalculates coverage summary', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+          {
+            id: 'anchor-2',
+            sourceText: 'Игровая комната',
+            label: 'Игровая',
+            order: 2,
+            intent: 'lifestyle',
+          },
+        ]
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'terrace',
+            videoFile: 'clip-1.mp4',
+          },
+          {
+            ...proj.shots[0]!,
+            id: 'shot-2',
+            order: 2,
+            scene: 'kids room',
+            videoFile: 'clip-2.mp4',
+          },
+        ]
+        proj.anchorMatches = [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-1',
+            confidence: 0.42,
+            status: 'weak_match',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-2',
+            confidence: 0,
+            status: 'unmatched',
+            candidates: [],
+          },
+        ]
+      })
+
+      const updatedMatches = [
+        {
+          anchorId: 'anchor-1',
+          selectedShotId: 'shot-1',
+          confidence: 0.42,
+          status: 'weak_match',
+          candidates: [],
+        },
+        {
+          anchorId: 'anchor-2',
+          selectedShotId: 'shot-2',
+          confidence: 0.65,
+          status: 'matched',
+          candidates: [],
+        },
+      ]
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({ anchorMatches: updatedMatches })
+        .expect(200)
+
+      expect(res.body.anchorMatches).toEqual(updatedMatches)
+      expect(res.body.anchorCoverageSummary).toEqual({
+        totalAnchors: 2,
+        matchedAnchors: 1,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(updatedMatches)
+      expect(project?.anchorCoverageSummary).toEqual({
+        totalAnchors: 2,
+        matchedAnchors: 1,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('returns 400 when override references an unknown approved shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({
+          anchorMatches: [
+            {
+              anchorId: 'anchor-1',
+              selectedShotId: 'missing-shot',
+              confidence: 0.5,
+              status: 'matched',
+              candidates: [],
+            },
+          ],
+        })
+        .expect(400)
+
+      expect(res.body.error).toContain('шот')
+    })
+  })
+
+  describe('api.montage.updateAnchorMatches', () => {
+    it('puts manual anchor match overrides to the API', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-2',
+            confidence: 0.65,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const payload = [
+        {
+          anchorId: 'anchor-1',
+          selectedShotId: 'shot-2',
+          confidence: 0.65,
+          status: 'matched' as const,
+          candidates: [],
+        },
+      ]
+
+      const result = await api.montage.updateAnchorMatches(projectId, payload)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/anchor-matches`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anchorMatches: payload }),
+      })
+      expect(result.anchorMatches).toEqual(payload)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      })
+    })
+  })
+
   // ─── Montage Plan ─────────────────────────────────────────────────
 
   describe('POST /montage/generate-plan', () => {

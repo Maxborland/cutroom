@@ -451,6 +451,11 @@ export const api = {
       request<ExtractAnchorsResponse>(`/projects/${projectId}/montage/extract-anchors`, { method: 'POST' }),
     matchAnchors: (projectId: string) =>
       request<MatchAnchorsResponse>(`/projects/${projectId}/montage/match-anchors`, { method: 'POST' }),
+    updateAnchorMatches: (projectId: string, anchorMatches: AnchorMatch[]) =>
+      request<MatchAnchorsResponse>(`/projects/${projectId}/montage/anchor-matches`, {
+        method: 'PUT',
+        body: JSON.stringify({ anchorMatches }),
+      }),
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
     reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { RenderJob, Project } from '../types'
+import type { AnchorMatch, NarrationAnchor, Project, RenderJob } from '../types'
 import {
   Mic,
   Music,
@@ -579,6 +579,70 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
 
 // ── Plan Step ───────────────────────────────────────────────────────
 
+type SemanticAction = 'describe' | 'extract' | 'match' | 'save' | null
+
+function semanticStatusLabel(status: AnchorMatch['status'] | undefined) {
+  switch (status) {
+    case 'matched':
+      return 'Сильное совпадение'
+    case 'weak_match':
+      return 'Требует проверки'
+    case 'unmatched':
+      return 'Нет совпадения'
+    default:
+      return 'Без оценки'
+  }
+}
+
+function semanticStatusClasses(status: AnchorMatch['status'] | undefined) {
+  switch (status) {
+    case 'matched':
+      return 'border-emerald text-emerald'
+    case 'weak_match':
+      return 'border-amber text-amber'
+    case 'unmatched':
+      return 'border-red-500 text-red-400'
+    default:
+      return 'border-border text-text-muted'
+  }
+}
+
+function normalizeManualAnchorMatches(
+  anchors: NarrationAnchor[],
+  existingMatches: AnchorMatch[],
+  overrides: Record<string, string>,
+): AnchorMatch[] {
+  const matchByAnchorId = new Map(existingMatches.map((match) => [match.anchorId, match]))
+
+  return anchors.map((anchor) => {
+    const existing = matchByAnchorId.get(anchor.id)
+    const overrideShotId = overrides[anchor.id]
+    const selectedShotId = overrideShotId ?? existing?.selectedShotId
+
+    if (!selectedShotId) {
+      return {
+        anchorId: anchor.id,
+        selectedShotId: undefined,
+        selectedMomentId: undefined,
+        confidence: 0,
+        status: 'unmatched',
+        candidates: existing?.candidates ?? [],
+      }
+    }
+
+    const isManualOverride = Boolean(overrideShotId && overrideShotId !== existing?.selectedShotId)
+
+    return {
+      anchorId: anchor.id,
+      selectedShotId,
+      selectedMomentId: isManualOverride ? undefined : existing?.selectedMomentId,
+      confidence: isManualOverride ? Math.max(existing?.confidence ?? 0, 0.67) : (existing?.confidence ?? 0.67),
+      status: isManualOverride ? 'matched' : (existing?.status ?? 'matched'),
+      candidates: existing?.candidates ?? [],
+    }
+  })
+}
+
 function PlanStep({
   project,
   onRefresh,
@@ -589,11 +653,32 @@ function PlanStep({
   onOpenEditor: () => void
 }) {
   const [loading, setLoading] = useState(false)
+  const [semanticAction, setSemanticAction] = useState<SemanticAction>(null)
+  const [semanticError, setSemanticError] = useState<string | null>(null)
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
+  const [shotOverridesByAnchorId, setShotOverridesByAnchorId] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    setShotOverridesByAnchorId({})
+    setSemanticError(null)
+  }, [project.id, project.anchorMatches, project.narrationAnchors])
+
+  const approvedShots = project.shots.filter((shot) => shot.status === 'approved')
+  const plan = project.montagePlan
+  const narrationAnchors = [...(project.narrationAnchors ?? [])].sort((left, right) => left.order - right.order)
+  const anchorMatches = project.anchorMatches ?? []
+  const coverage = project.anchorCoverageSummary
+  const existingMatchesByAnchorId = new Map(anchorMatches.map((match) => [match.anchorId, match]))
+  const anchorsNeedingReview = narrationAnchors.filter((anchor) => {
+    const status = existingMatchesByAnchorId.get(anchor.id)?.status
+    return status === 'weak_match' || status === 'unmatched'
+  })
+  const hasPendingOverrides = Object.keys(shotOverridesByAnchorId).length > 0
 
   const generatePlan = async () => {
     setLoading(true)
+    setSemanticError(null)
     try {
       await api.montage.generatePlan(project.id)
       onRefresh()
@@ -614,7 +699,36 @@ function PlanStep({
     }
   }
 
-  const plan = project.montagePlan
+  const runSemanticAction = async (
+    action: Exclude<SemanticAction, 'save'>,
+    requestFn: () => Promise<unknown>,
+  ) => {
+    setSemanticAction(action)
+    setSemanticError(null)
+    try {
+      await requestFn()
+      onRefresh()
+    } catch (err) {
+      setSemanticError(err instanceof Error ? err.message : 'Не удалось выполнить семантический шаг монтажа')
+    } finally {
+      setSemanticAction(null)
+    }
+  }
+
+  const saveAnchorOverrides = async () => {
+    const nextMatches = normalizeManualAnchorMatches(narrationAnchors, anchorMatches, shotOverridesByAnchorId)
+    setSemanticAction('save')
+    setSemanticError(null)
+    try {
+      await api.montage.updateAnchorMatches(project.id, nextMatches)
+      setShotOverridesByAnchorId({})
+      onRefresh()
+    } catch (err) {
+      setSemanticError(err instanceof Error ? err.message : 'Не удалось сохранить ручные сопоставления')
+    } finally {
+      setSemanticAction(null)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -632,6 +746,149 @@ function PlanStep({
             <Clapperboard size={14} />
             Открыть в редакторе
           </button>
+        </div>
+
+        <div className="mb-4 bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h4 className="font-heading font-semibold text-sm">Семантическая сборка</h4>
+              <p className="text-xs text-text-muted mt-1">
+                Сначала опишем готовые видео, затем извлечем смысловые якоря диктора и сопоставим их с шотами.
+              </p>
+            </div>
+            {coverage && (
+              <div className="text-right">
+                <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Покрытие</p>
+                <p className="font-mono text-xs text-text-secondary mt-1">
+                  {coverage.matchedAnchors}/{coverage.totalAnchors} сильных совпадений
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => runSemanticAction('describe', () => api.montage.describeVideos(project.id))}
+              disabled={loading || semanticAction !== null || approvedShots.length === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+            >
+              {semanticAction === 'describe' ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+              Описать видео
+            </button>
+            <button
+              onClick={() => runSemanticAction('extract', () => api.montage.extractAnchors(project.id))}
+              disabled={loading || semanticAction !== null || !project.voiceoverScript?.trim()}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+            >
+              {semanticAction === 'extract' ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
+              Извлечь якоря
+            </button>
+            <button
+              onClick={() => runSemanticAction('match', () => api.montage.matchAnchors(project.id))}
+              disabled={loading || semanticAction !== null || narrationAnchors.length === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+            >
+              {semanticAction === 'match' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+              Сопоставить
+            </button>
+          </div>
+
+          {semanticError && (
+            <div className="bg-surface-2 border-2 border-red-500 rounded-[5px] p-3 flex items-start gap-2">
+              <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+              <span className="font-mono text-xs text-red-400">{semanticError}</span>
+            </div>
+          )}
+
+          {coverage && (coverage.weakMatches > 0 || coverage.unmatchedAnchors > 0) && (
+            <div className="bg-surface-2 border-2 border-amber rounded-[5px] p-3 flex items-start gap-2">
+              <AlertCircle size={14} className="text-amber mt-0.5 shrink-0" />
+              <span className="font-mono text-xs text-amber">
+                {coverage.weakMatches + coverage.unmatchedAnchors} якорей требуют проверки перед сборкой плана.
+              </span>
+            </div>
+          )}
+
+          {narrationAnchors.length > 0 ? (
+            <div className="space-y-3">
+              {narrationAnchors.map((anchor) => {
+                const match = existingMatchesByAnchorId.get(anchor.id)
+                const selectedShotId = shotOverridesByAnchorId[anchor.id] ?? match?.selectedShotId ?? ''
+                const selectedShot = approvedShots.find((shot) => shot.id === selectedShotId)
+                const needsReview = match?.status === 'weak_match' || match?.status === 'unmatched'
+
+                return (
+                  <div key={anchor.id} className="bg-surface-2 border-2 border-border rounded-[5px] p-3 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                          Якорь {anchor.order}
+                        </p>
+                        <p className="text-sm text-text-primary">{anchor.sourceText}</p>
+                        <p className="text-xs text-text-muted mt-1">
+                          {selectedShot ? `Выбран шот: ${selectedShot.scene || selectedShot.id}` : 'Шот пока не выбран'}
+                        </p>
+                      </div>
+                      <div className={`shrink-0 rounded-[5px] border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${semanticStatusClasses(match?.status)}`}>
+                        {semanticStatusLabel(match?.status)}
+                      </div>
+                    </div>
+
+                    {needsReview && (
+                      <div className="space-y-2">
+                        <label className="block">
+                          <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                            Выбор шота для якоря {anchor.label}
+                          </span>
+                          <select
+                            aria-label={`Выбор шота для якоря ${anchor.label}`}
+                            value={selectedShotId}
+                            onChange={(event) => {
+                              const value = event.target.value
+                              setShotOverridesByAnchorId((current) => ({
+                                ...current,
+                                [anchor.id]: value,
+                              }))
+                            }}
+                            className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                          >
+                            <option value="">Не выбран</option>
+                            {approvedShots.map((shot) => (
+                              <option key={shot.id} value={shot.id}>
+                                {shot.id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {typeof match?.confidence === 'number' && match.confidence > 0 && (
+                          <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                            confidence {Math.round(match.confidence * 100)}%
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-text-muted">
+              Смысловые якоря еще не извлечены. Начните с описания видео и извлечения якорей.
+            </p>
+          )}
+
+          {anchorsNeedingReview.length > 0 && (
+            <div className="flex gap-2">
+              <button
+                onClick={saveAnchorOverrides}
+                disabled={loading || semanticAction !== null || !hasPendingOverrides}
+                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
+              >
+                {semanticAction === 'save' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                Сохранить выбор
+              </button>
+            </div>
+          )}
         </div>
 
         {!plan && (

@@ -10,7 +10,7 @@ import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
-import { matchNarrationAnchors } from '../lib/montage-anchor-matching.js';
+import { matchNarrationAnchors, summarizeAnchorCoverage } from '../lib/montage-anchor-matching.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DESCRIPTION_VERSION = 1;
@@ -1077,6 +1077,102 @@ router.post('/montage/match-anchors', generationLimiter, async (req: Request, re
   } catch (err) {
     console.error('Failed to match narration anchors:', err);
     sendApiError(res, 500, 'Failed to match narration anchors');
+  }
+});
+
+// PUT /api/projects/:id/montage/anchor-matches
+router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.narrationAnchors || project.narrationAnchors.length === 0) {
+      sendApiError(res, 400, 'Сначала извлеките смысловые якоря из текста озвучки.');
+      return;
+    }
+
+    const rawAnchorMatches = req.body?.anchorMatches;
+    if (!Array.isArray(rawAnchorMatches)) {
+      sendApiError(res, 400, 'anchorMatches must be an array');
+      return;
+    }
+
+    const anchorIds = new Set(project.narrationAnchors.map((anchor) => anchor.id));
+    const approvedShotIds = new Set(project.shots.filter((shot) => shot.status === 'approved').map((shot) => shot.id));
+    const normalizedMatches = [];
+
+    for (const rawMatch of rawAnchorMatches) {
+      if (!rawMatch || typeof rawMatch !== 'object') {
+        sendApiError(res, 400, 'Некорректный формат anchorMatches.');
+        return;
+      }
+
+      const match = rawMatch as Record<string, unknown>;
+      const anchorId = typeof match.anchorId === 'string' ? match.anchorId : '';
+      const selectedShotId = typeof match.selectedShotId === 'string' && match.selectedShotId.trim()
+        ? match.selectedShotId.trim()
+        : undefined;
+      const selectedMomentId = typeof match.selectedMomentId === 'string' && match.selectedMomentId.trim()
+        ? match.selectedMomentId.trim()
+        : undefined;
+      const confidence = typeof match.confidence === 'number' && Number.isFinite(match.confidence)
+        ? match.confidence
+        : 0;
+      const status = match.status;
+      const candidates = Array.isArray(match.candidates)
+        ? match.candidates.filter((candidate): candidate is {
+          shotId: string;
+          momentId?: string;
+          confidence: number;
+          reason: string;
+        } => {
+          if (!candidate || typeof candidate !== 'object') return false;
+          const record = candidate as Record<string, unknown>;
+          return typeof record.shotId === 'string'
+            && typeof record.confidence === 'number'
+            && typeof record.reason === 'string';
+        })
+        : [];
+
+      if (!anchorId || !anchorIds.has(anchorId)) {
+        sendApiError(res, 400, 'Указан неизвестный якорь для ручного сопоставления.');
+        return;
+      }
+
+      if (selectedShotId && !approvedShotIds.has(selectedShotId)) {
+        sendApiError(res, 400, 'Для якоря выбран неизвестный или неутвержденный шот.');
+        return;
+      }
+
+      if (status !== 'matched' && status !== 'weak_match' && status !== 'unmatched') {
+        sendApiError(res, 400, 'Недопустимый статус сопоставления якоря.');
+        return;
+      }
+
+      normalizedMatches.push({
+        anchorId,
+        selectedShotId,
+        selectedMomentId,
+        confidence,
+        status,
+        candidates,
+      });
+    }
+
+    const coverage = summarizeAnchorCoverage(normalizedMatches);
+
+    await withProject(project.id, (proj) => {
+      proj.anchorMatches = normalizedMatches;
+      proj.anchorCoverageSummary = coverage;
+    });
+
+    res.json({
+      anchorMatches: normalizedMatches,
+      anchorCoverageSummary: coverage,
+    });
+  } catch (err) {
+    console.error('Failed to update anchor matches:', err);
+    sendApiError(res, 500, 'Failed to update anchor matches');
   }
 });
 

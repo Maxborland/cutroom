@@ -169,7 +169,7 @@ function buildMatch(anchor: NarrationAnchor, shotCandidates: ScoredCandidate[]):
   };
 }
 
-function summarizeCoverage(anchorMatches: AnchorMatch[]): AnchorCoverageSummary {
+export function summarizeAnchorCoverage(anchorMatches: AnchorMatch[]): AnchorCoverageSummary {
   return {
     totalAnchors: anchorMatches.length,
     matchedAnchors: anchorMatches.filter((match) => match.status === 'matched').length,
@@ -196,6 +196,6 @@ export function matchNarrationAnchors(project: Project): {
 
   return {
     anchorMatches,
-    anchorCoverageSummary: summarizeCoverage(anchorMatches),
+    anchorCoverageSummary: summarizeAnchorCoverage(anchorMatches),
   };
 }
