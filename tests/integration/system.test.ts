@@ -318,6 +318,70 @@ describe('System license API', () => {
     expect(persistedRes.body.lastCheckAt).toBeNull()
   })
 
+  it('does not surface leftover trial days for an active installation', async () => {
+    const fake = createFakeLicensingDb()
+    const repository = createLicensingRepository({ db: fake.db } as any)
+    const licensingService = createLicensingService(repository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const app = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'active',
+      trial_started_at: '2026-02-01T00:00:00.000Z',
+      trial_ends_at: '2026-03-30T00:00:00.000Z',
+      activated_at: '2026-03-10T00:00:00.000Z',
+      last_license_check_at: '2026-03-12T00:00:00.000Z',
+      grace_ends_at: null,
+    })
+
+    const res = await request(app).get('/api/system/license').expect(200)
+
+    expect(res.body.status).toBe('active')
+    expect(res.body.trialDaysRemaining).toBe(0)
+    expect(res.body.restrictedMode).toBe(false)
+    expect(res.body.lastCheckAt).toBe('2026-03-12T00:00:00.000Z')
+  })
+
+  it('does not surface leftover trial days for a grace installation', async () => {
+    const fake = createFakeLicensingDb()
+    const repository = createLicensingRepository({ db: fake.db } as any)
+    const licensingService = createLicensingService(repository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const app = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'active',
+      trial_started_at: '2026-02-01T00:00:00.000Z',
+      trial_ends_at: '2026-03-30T00:00:00.000Z',
+      activated_at: '2026-03-10T00:00:00.000Z',
+      last_license_check_at: '2026-03-12T00:00:00.000Z',
+      grace_ends_at: '2026-03-20T00:00:00.000Z',
+    })
+
+    const res = await request(app).get('/api/system/license').expect(200)
+
+    expect(res.body.status).toBe('grace')
+    expect(res.body.trialDaysRemaining).toBe(0)
+    expect(res.body.restrictedMode).toBe(false)
+    expect(res.body.lastCheckAt).toBe('2026-03-12T00:00:00.000Z')
+  })
+
   it('creates the default licensing service only once across repeated requests', async () => {
     const createDbMock = vi.fn(() => ({
       query: vi.fn(async () => ({ rows: [] })),

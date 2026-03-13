@@ -36,8 +36,9 @@ export class DefaultLicensingService implements LicensingService {
 
     const now = this.now();
     const lastCheckAt = state.lastLicenseCheckAt;
-    const trialDaysRemaining = getDaysRemaining(state.trialEndsAt, now) ?? 0;
-    const status = resolveStatus(state, now, trialDaysRemaining);
+    const rawTrialDaysRemaining = getDaysRemaining(state.trialEndsAt, now) ?? 0;
+    const status = resolveStatus(state, now, rawTrialDaysRemaining);
+    const trialDaysRemaining = resolveTrialDaysRemaining(status, rawTrialDaysRemaining);
 
     return {
       status,
@@ -71,6 +72,21 @@ function resolveStatus(state: InstallationState, now: Date, trialDaysRemaining: 
   }
 
   throw new Error(`Unhandled installation_state license_status: ${state.licenseStatus}`);
+}
+
+function resolveTrialDaysRemaining(status: LicenseStatus, rawTrialDaysRemaining: number): number {
+  switch (status) {
+    case 'trial':
+      return rawTrialDaysRemaining;
+    case 'unactivated':
+      return DEFAULT_TRIAL_DAYS;
+    case 'active':
+    case 'grace':
+    case 'trial_expired':
+      return 0;
+  }
+
+  throw new Error(`Unhandled license status: ${status}`);
 }
 
 function getDaysRemaining(dateValue: string | null, now: Date): number | null {
