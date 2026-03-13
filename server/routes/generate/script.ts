@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import {
   getProject,
-  saveProject,
+  withProject,
   ensureDir,
   resolveProjectPath,
   type ShotMeta,
@@ -73,9 +73,10 @@ router.post('/generate-script', async (req: Request, res: Response) => {
       effective.temperature
     );
 
-    project.script = script;
-    project.stage = 'script';
-    await saveProject(project);
+    await withProject(project.id, (current) => {
+      current.script = script;
+      current.stage = 'script';
+    });
 
     res.json({ script });
   } catch (err) {
@@ -244,9 +245,10 @@ router.post('/split-shots', async (req: Request, res: Response) => {
       await ensureDir(resolveProjectPath(project.id, 'shots', shot.id, 'video'));
     }
 
-    project.shots = shots;
-    project.stage = 'shots';
-    await saveProject(project);
+    await withProject(project.id, (current) => {
+      current.shots = shots;
+      current.stage = 'shots';
+    });
 
     res.json({ shots });
   } catch (err) {

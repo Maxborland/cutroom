@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ShotMeta } from './storage.js';
 import { downloadRemoteToBuffer, downloadRemoteToFile } from './safe-remote-fetch.js';
-import { resolvePathWithin } from './file-utils.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const DOWNLOAD_TIMEOUT_MS = 20000;

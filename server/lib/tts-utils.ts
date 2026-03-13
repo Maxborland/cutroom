@@ -73,7 +73,7 @@ function breakTagToPlainPause(tag: string): string {
 }
 
 function convertStageDirections(text: string, provider: TtsNormalizationProvider): string {
-  return text.replace(/(\(([^()]*)\)|\[([^\[\]]*)\])/giu, (fullMatch, _wrapped, parenInner, squareInner) => {
+  return text.replace(/(\(([^()]*)\)|\[([^\]]*)\])/giu, (fullMatch, _wrapped, parenInner, squareInner) => {
     const direction = String(parenInner ?? squareInner ?? '').trim()
     if (!direction) return fullMatch
 

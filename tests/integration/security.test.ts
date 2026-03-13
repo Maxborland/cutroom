@@ -60,9 +60,21 @@ describe('Security middleware', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
+  it('protects the system license route with the same API key middleware', async () => {
+    const app = createApp({
+      allowMissingApiKey: false,
+      apiAccessKey: 'test-secret',
+    });
+
+    const res = await request(app).get('/api/system/license').expect(401);
+
+    expect(res.body.error).toBe('Unauthorized');
+    expect(res.body.code).toBe('UNAUTHORIZED');
+  });
+
   it('defaults to requiring API key in production', async () => {
     await withEnv({ NODE_ENV: 'production' }, async () => {
-      const app = createApp({ apiAccessKey: '' });
+      const app = createApp({ apiAccessKey: '', authRepository: null });
       await request(app).get('/api/projects').expect(503);
     });
   });

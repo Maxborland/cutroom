@@ -3,8 +3,8 @@ import {
   listProjects,
   getProject,
   createProject,
-  saveProject,
   deleteProject,
+  withProject,
   type BriefAsset,
 } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
@@ -80,41 +80,45 @@ router.get('/:id', async (req: Request, res: Response) => {
 // PUT /api/projects/:id — update a project (merge body into existing, preserve id/created)
 router.put('/:id', async (req: Request, res: Response) => {
   try {
-    const existing = await getProject(req.params.id);
-    if (!existing) {
+    const updates = req.body as Record<string, unknown>;
+    const saved = await withProject(req.params.id, (existing) => {
+      if (typeof updates.name === 'string') {
+        existing.name = updates.name;
+      }
+
+      if (typeof updates.stage === 'string') {
+        existing.stage = updates.stage;
+      }
+
+      if (typeof updates.script === 'string') {
+        existing.script = updates.script;
+      }
+
+      if (updates.settings && typeof updates.settings === 'object') {
+        existing.settings = {
+          ...existing.settings,
+          ...updates.settings,
+        };
+      }
+
+      if (updates.brief && typeof updates.brief === 'object') {
+        existing.brief = {
+          ...existing.brief,
+          ...updates.brief,
+          assets: mergeAssetLabelsOnly(existing.brief.assets || [], (updates.brief as any).assets),
+        };
+      }
+
+      return existing;
+    });
+
+    res.json(saved);
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Project not found') {
       sendApiError(res, 404, 'Project not found', 'PROJECT_NOT_FOUND');
       return;
     }
 
-    // Merge request body into existing project, preserving id and created
-    const updates = req.body;
-    const merged = {
-      ...existing,
-      ...updates,
-      id: existing.id,
-      created: existing.created,
-    };
-
-    // Deep-merge settings if provided
-    if (updates.settings && typeof updates.settings === 'object') {
-      merged.settings = {
-        ...existing.settings,
-        ...updates.settings,
-      };
-    }
-
-    // Deep-merge brief fields while keeping existing asset file metadata immutable.
-    if (updates.brief && typeof updates.brief === 'object') {
-      merged.brief = {
-        ...existing.brief,
-        ...updates.brief,
-        assets: mergeAssetLabelsOnly(existing.brief.assets || [], (updates.brief as any).assets),
-      };
-    }
-
-    const saved = await saveProject(merged);
-    res.json(saved);
-  } catch (err) {
     console.error('Failed to update project:', err);
     sendApiError(res, 500, 'Failed to update project', 'PROJECT_UPDATE_FAILED');
   }

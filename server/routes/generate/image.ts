@@ -1,12 +1,10 @@
 import { Router, Request, Response } from 'express';
-import fs from 'node:fs/promises';
 import { readLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
   saveProject,
-  ensureDir,
-  resolveProjectPath,
 } from '../../lib/storage.js';
+import { getProjectStorageAdapter } from '../../lib/storage-adapters/index.js';
 import { chatCompletion, generateImage as generateImageOpenRouter, type ReferenceImage, type ImageGenOptions } from '../../lib/openrouter.js';
 import { generateImage as generateImageMulti } from '../../lib/generation.js';
 import { resolveImageModel, resolveOpenRouterImageFallbackModel } from '../../lib/generation-models.js';
@@ -17,6 +15,7 @@ import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
 const router = Router({ mergeParams: true });
+const mediaStorage = getProjectStorageAdapter();
 
 type OpenRouterImageQuality = 'low' | 'medium' | 'high';
 
@@ -111,8 +110,12 @@ async function toReferenceImage(projectId: string, shotId: string, sourceImage: 
     return { kind: 'url', url: sourceImage };
   }
 
-  const sourcePath = resolveProjectPath(projectId, 'shots', shotId, 'generated', sourceImage);
-  const sourceBuffer = await fs.readFile(sourcePath);
+  const sourceBuffer = await mediaStorage.readBuffer({
+    projectId,
+    scope: 'shot-generated',
+    shotId,
+    filename: sourceImage,
+  });
   const mimeType = getMimeType(sourceImage);
   return { base64: sourceBuffer.toString('base64'), mimeType };
 }
@@ -131,7 +134,7 @@ async function toLocalReferenceImage(projectId: string, shotId: string, sourceIm
     const buffer = await fetchRemoteMediaBuffer(sourceImage);
     const mimeType = getMimeType(sourceImage);
     return { base64: buffer.toString('base64'), mimeType };
-  } catch (err) {
+  } catch {
     console.warn('[external-cache] Failed to fetch external image for local fallback');
     return null;
   }
@@ -142,8 +145,12 @@ async function toReviewImageUrl(projectId: string, shotId: string, sourceImage: 
     return sourceImage;
   }
 
-  const sourcePath = resolveProjectPath(projectId, 'shots', shotId, 'generated', sourceImage);
-  const sourceBuffer = await fs.readFile(sourcePath);
+  const sourceBuffer = await mediaStorage.readBuffer({
+    projectId,
+    scope: 'shot-generated',
+    shotId,
+    filename: sourceImage,
+  });
   const mimeType = getMimeType(sourceImage);
   return `data:${mimeType};base64,${sourceBuffer.toString('base64')}`;
 }
@@ -316,17 +323,25 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
     let responseUrl: string;
     let needsBackgroundCache = false;
 
-    const shotDir = resolveProjectPath(project.id, 'shots', shot.id, 'generated');
-    await ensureDir(shotDir);
-
     const timestamp = Date.now();
     const filename = `gen_${timestamp}.png`;
-    const filePath = resolveProjectPath(project.id, 'shots', shot.id, 'generated', filename);
+    const fileRef = {
+      projectId: project.id,
+      scope: 'shot-generated',
+      shotId: shot.id,
+      filename,
+    } as const;
+    await mediaStorage.ensureContainer({
+      projectId: project.id,
+      scope: 'shot-generated',
+      shotId: shot.id,
+    });
+    const filePath = mediaStorage.getReadablePathForServer(fileRef);
 
     try {
       await saveImageResult(resultUrl, filePath);
       storedImageRef = filename;
-      responseUrl = `/api/projects/${project.id}/shots/${shot.id}/generated/${filename}`;
+      responseUrl = mediaStorage.getPublicUrl(fileRef) || `/api/projects/${project.id}/shots/${shot.id}/generated/${filename}`;
     } catch (saveErr) {
       if (resultUrl.startsWith('http') && isTransientDownloadError(saveErr)) {
         console.warn('[generate-image] Could not cache image locally, storing external URL reference');
@@ -466,22 +481,21 @@ router.get('/shots/:shotId/generated/:filename', readLimiter, async (req: Reques
     }
 
     const { shotId, filename } = req.params;
-    let filePath: string;
-    try {
-      filePath = resolveProjectPath(project.id, 'shots', shotId, 'generated', filename);
-    } catch {
-      sendApiError(res, 403, 'Forbidden');
-      return;
-    }
-
-    try {
-      await fs.access(filePath);
-    } catch {
+    const fileRef = {
+      projectId: project.id,
+      scope: 'shot-generated',
+      shotId,
+      filename,
+    } as const;
+    const exists = await mediaStorage.exists(fileRef);
+    if (!exists) {
       sendApiError(res, 404, 'File not found');
       return;
     }
 
-    res.sendFile(filePath);
+    const fileBuffer = await mediaStorage.readBuffer(fileRef);
+    res.type(filename);
+    res.send(fileBuffer);
   } catch (err) {
     console.error('Failed to serve generated image:', err);
     sendApiError(res, 500, 'Failed to serve generated image');
@@ -555,12 +569,20 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
       }
     }
 
-    const shotDir = resolveProjectPath(project.id, 'shots', shotId, 'generated');
-    await ensureDir(shotDir);
-
     const timestamp = Date.now();
     const filename = `enh_${timestamp}.png`;
-    const filePath = resolveProjectPath(project.id, 'shots', shotId, 'generated', filename);
+    const fileRef = {
+      projectId: project.id,
+      scope: 'shot-generated',
+      shotId,
+      filename,
+    } as const;
+    await mediaStorage.ensureContainer({
+      projectId: project.id,
+      scope: 'shot-generated',
+      shotId,
+    });
+    const filePath = mediaStorage.getReadablePathForServer(fileRef);
 
     await saveImageResult(result, filePath);
 
@@ -576,7 +598,7 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
 
     res.json({
       filename,
-      url: `/api/projects/${req.params.id}/shots/${shotId}/generated/${filename}`,
+      url: mediaStorage.getPublicUrl(fileRef) || `/api/projects/${req.params.id}/shots/${shotId}/generated/${filename}`,
     });
   } catch (err) {
     console.error('Failed to enhance image:', err);
@@ -642,12 +664,20 @@ router.post('/enhance-all', async (req: Request, res: Response) => {
           }
         }
 
-        const shotDir = resolveProjectPath(project.id, 'shots', shot.id, 'generated');
-        await ensureDir(shotDir);
-
         const timestamp = Date.now();
         const filename = `enh_${timestamp}.png`;
-        const filePath = resolveProjectPath(project.id, 'shots', shot.id, 'generated', filename);
+        const fileRef = {
+          projectId: project.id,
+          scope: 'shot-generated',
+          shotId: shot.id,
+          filename,
+        } as const;
+        await mediaStorage.ensureContainer({
+          projectId: project.id,
+          scope: 'shot-generated',
+          shotId: shot.id,
+        });
+        const filePath = mediaStorage.getReadablePathForServer(fileRef);
 
         await saveImageResult(result, filePath);
 

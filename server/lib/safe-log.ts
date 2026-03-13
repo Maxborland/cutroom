@@ -4,5 +4,8 @@
  * Prevents log injection / log forging attacks (CodeQL js/log-injection).
  */
 export function safeLogValue(value: unknown, maxLen = 200): string {
-  return String(value ?? '').replace(/[\r\n\t\x00-\x1f]/g, ' ').slice(0, maxLen);
+  return Array.from(String(value ?? ''))
+    .map((char) => (char.charCodeAt(0) < 32 ? ' ' : char))
+    .join('')
+    .slice(0, maxLen);
 }

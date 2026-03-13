@@ -79,7 +79,7 @@ export async function cacheExternalImageReference(
 
     try {
       await saveImageResult(externalRef, filePath);
-    } catch (err) {
+    } catch {
       console.warn('[external-cache] Failed to cache external image');
       return null;
     }

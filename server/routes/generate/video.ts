@@ -1,44 +1,26 @@
 import { Router, Request, Response } from 'express';
-import fs from 'node:fs/promises';
 import { readLimiter, generationLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
   saveProject,
-  ensureDir,
-  resolveProjectPath,
 } from '../../lib/storage.js';
+import { getProjectStorageAdapter } from '../../lib/storage-adapters/index.js';
+import {
+  cacheVideoLocally,
+  enqueueVideoCacheJob,
+  InvalidExternalVideoUrlError,
+} from '../../lib/jobs/video-cache.js';
 import { generateVideoFromImage } from '../../lib/generation.js';
 import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generation-models.js';
-import { fetchRemoteMediaToFile, getBestImageFile, getMimeType } from '../../lib/media-utils.js';
+import { getBestImageFile, getMimeType } from '../../lib/media-utils.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
 const router = Router({ mergeParams: true });
-const VIDEO_DOWNLOAD_ATTEMPTS = 5;
-const VIDEO_DOWNLOAD_TIMEOUT_MS = 60000;
+const mediaStorage = getProjectStorageAdapter();
 
 function isExternalMediaRef(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
-}
-
-async function downloadVideoToLocalFile(
-  projectId: string,
-  shotId: string,
-  videoUrl: string,
-): Promise<{ filename: string; url: string }> {
-  const videoDir = resolveProjectPath(projectId, 'shots', shotId, 'video');
-  await ensureDir(videoDir);
-
-  const timestamp = Date.now();
-  const videoFilename = `vid_${timestamp}.mp4`;
-  const videoPath = resolveProjectPath(projectId, 'shots', shotId, 'video', videoFilename);
-
-  await fetchRemoteMediaToFile(videoUrl, videoPath, VIDEO_DOWNLOAD_ATTEMPTS, VIDEO_DOWNLOAD_TIMEOUT_MS, 250 * 1024 * 1024); // 250MB // lgtm [js/http-to-file-access]
-
-  return {
-    filename: videoFilename,
-    url: `/api/projects/${projectId}/shots/${shotId}/video/${videoFilename}`,
-  };
 }
 
 async function setShotVideoFile(
@@ -55,31 +37,6 @@ async function setShotVideoFile(
   refreshedShot.videoFile = videoFile;
   refreshedShot.status = 'vid_review';
   await saveProject(refreshed);
-}
-
-async function cacheExternalVideoInBackground(
-  projectId: string,
-  shotId: string,
-  externalUrl: string,
-): Promise<void> {
-  try {
-    const local = await downloadVideoToLocalFile(projectId, shotId, externalUrl);
-    const refreshed = await getProject(projectId);
-    if (!refreshed) return;
-
-    const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
-    if (!refreshedShot) return;
-
-    // Do not override if user has already changed this shot manually.
-    if (refreshedShot.videoFile !== externalUrl) return;
-
-    refreshedShot.videoFile = local.filename;
-    refreshedShot.status = 'vid_review';
-    await saveProject(refreshed);
-    console.log('[video-cache] Cached external video');
-  } catch {
-    console.warn('[video-cache] Background cache failed');
-  }
 }
 
 // POST /api/projects/:id/shots/:shotId/generate-video
@@ -117,10 +74,14 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
     if (isExternalMediaRef(sourceFile)) {
       sourceImageUrl = sourceFile;
     } else {
-      const sourcePath = resolveProjectPath(project.id, 'shots', shotId, 'generated', sourceFile);
       let sourceBuffer: Buffer;
       try {
-        sourceBuffer = await fs.readFile(sourcePath);
+        sourceBuffer = await mediaStorage.readBuffer({
+          projectId: project.id,
+          scope: 'shot-generated',
+          shotId,
+          filename: sourceFile,
+        });
       } catch {
         sendApiError(res, 404, `Source image file not found: ${sourceFile}`);
         return;
@@ -167,7 +128,7 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
       };
 
       try {
-        const local = await downloadVideoToLocalFile(project.id, shotId, videoUrl);
+        const local = await cacheVideoLocally(project.id, shotId, videoUrl);
         await setShotVideoFile(project.id, shotId, local.filename);
         payload = {
           filename: local.filename,
@@ -179,10 +140,12 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
           appliedQualityParam,
         };
       } catch (downloadErr) {
-        console.warn('[generate-video] Local download failed; keeping external URL');
+        if (downloadErr instanceof InvalidExternalVideoUrlError) {
+          throw downloadErr;
+        }
+        console.warn(`[generate-video] Local download failed for shot ${shotId}; keeping external URL`, downloadErr);
         await setShotVideoFile(project.id, shotId, videoUrl);
-        // Try to recover local cache asynchronously without blocking user flow.
-        void cacheExternalVideoInBackground(project.id, shotId, videoUrl);
+        await enqueueVideoCacheJob({ projectId: project.id, shotId, externalUrl: videoUrl });
         payload = {
           filename: videoUrl,
           url: videoUrl,
@@ -209,12 +172,16 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
       throw genErr;
     }
   } catch (err) {
-    console.error('Failed to generate video:', err);
     const isCancelled = err instanceof Error && err.message === 'Generation cancelled';
     if (isCancelled) {
       sendApiError(res, 499, 'Generation cancelled', 'GENERATION_CANCELLED');
       return;
     }
+    if (err instanceof InvalidExternalVideoUrlError) {
+      sendApiError(res, 400, err.message, 'VIDEO_CACHE_URL_FORBIDDEN');
+      return;
+    }
+    console.error('Failed to generate video:', err);
     sendApiError(res, 500, getErrorMessage(err, 'Failed to generate video'), 'VIDEO_GENERATION_FAILED');
   }
 });
@@ -241,10 +208,14 @@ router.post('/shots/:shotId/cache-video', async (req: Request, res: Response) =>
       return;
     }
 
-    const local = await downloadVideoToLocalFile(project.id, shotId, externalUrl);
+    const local = await cacheVideoLocally(project.id, shotId, externalUrl);
     await setShotVideoFile(project.id, shotId, local.filename);
     res.json(local);
   } catch (err) {
+    if (err instanceof InvalidExternalVideoUrlError) {
+      sendApiError(res, 400, err.message, 'VIDEO_CACHE_URL_FORBIDDEN');
+      return;
+    }
     console.error('Failed to cache external video locally:', err);
     sendApiError(res, 500, 'Failed to cache external video locally', 'VIDEO_CACHE_FAILED');
   }
@@ -260,22 +231,21 @@ router.get('/shots/:shotId/video/:filename', readLimiter, async (req: Request, r
     }
 
     const { shotId, filename } = req.params;
-    let filePath: string;
-    try {
-      filePath = resolveProjectPath(project.id, 'shots', shotId, 'video', filename);
-    } catch {
-      sendApiError(res, 403, 'Forbidden');
-      return;
-    }
-
-    try {
-      await fs.access(filePath);
-    } catch {
+    const fileRef = {
+      projectId: project.id,
+      scope: 'shot-video',
+      shotId,
+      filename,
+    } as const;
+    const exists = await mediaStorage.exists(fileRef);
+    if (!exists) {
       sendApiError(res, 404, 'File not found');
       return;
     }
 
-    res.sendFile(filePath);
+    const fileBuffer = await mediaStorage.readBuffer(fileRef);
+    res.type(filename);
+    res.send(fileBuffer);
   } catch (err) {
     console.error('Failed to serve video:', err);
     sendApiError(res, 500, 'Failed to serve video', 'VIDEO_SERVE_FAILED');
@@ -314,10 +284,14 @@ router.post('/generate-all-videos', generationLimiter, async (req: Request, res:
       if (isExternalMediaRef(sourceFile)) {
         sourceImageUrl = sourceFile;
       } else {
-        const sourcePath = resolveProjectPath(project.id, 'shots', shot.id, 'generated', sourceFile);
         let sourceBuffer: Buffer;
         try {
-          sourceBuffer = await fs.readFile(sourcePath);
+          sourceBuffer = await mediaStorage.readBuffer({
+            projectId: project.id,
+            scope: 'shot-generated',
+            shotId: shot.id,
+            filename: sourceFile,
+          });
         } catch {
           console.warn(`[generate-all-videos] Skipping ${shot.id}: source not found`);
           continue;
@@ -337,15 +311,19 @@ router.post('/generate-all-videos', generationLimiter, async (req: Request, res:
         });
 
         try {
-          const local = await downloadVideoToLocalFile(project.id, shot.id, videoUrl);
+          const local = await cacheVideoLocally(project.id, shot.id, videoUrl);
           await setShotVideoFile(project.id, shot.id, local.filename);
+          generated++;
         } catch (downloadErr) {
+          if (downloadErr instanceof InvalidExternalVideoUrlError) {
+            console.warn(`[generate-all-videos] Blocked forbidden external fallback for ${shot.id}`);
+            continue;
+          }
           console.warn(`[generate-all-videos] Local download failed for ${shot.id}; keeping external URL`, downloadErr);
           await setShotVideoFile(project.id, shot.id, videoUrl);
-          void cacheExternalVideoInBackground(project.id, shot.id, videoUrl);
+          await enqueueVideoCacheJob({ projectId: project.id, shotId: shot.id, externalUrl: videoUrl });
+          generated++;
         }
-
-        generated++;
       } catch (err) {
         console.error(`[generate-all-videos] Failed for ${shot.id}:`, err);
       }

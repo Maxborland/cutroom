@@ -1,5 +1,7 @@
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import projectRoutes from './routes/projects.js';
@@ -10,14 +12,29 @@ import generateRoutes from './routes/generate/index.js';
 import shotRoutes from './routes/shots.js';
 import exportRoutes from './routes/export.js';
 import montageRoutes from './routes/montage.js';
+import { createSystemRoutes } from './routes/system.js';
 import openreelRoutes from './routes/openreel.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
+import type { LicensingService } from './lib/licensing/types.js';
+import { createDefaultLicensingService } from './lib/licensing/service.js';
+import { createDefaultAuthRepository, type AuthRepository } from './lib/auth/repository.js';
+import { createAuthSessionMiddleware, requireAuthenticatedUser, requireUserRoles } from './lib/auth/middleware.js';
+import { createAuthRoutes } from './routes/auth.js';
+import { createUsersRoutes } from './routes/users.js';
 
 interface CreateAppOptions {
   apiAccessKey?: string;
   allowMissingApiKey?: boolean;
   rateLimitWindowMs?: number;
   rateLimitMax?: number;
+  authRateLimitWindowMs?: number;
+  authRateLimitMax?: number;
+  userInviteRateLimitWindowMs?: number;
+  userInviteRateLimitMax?: number;
+  licensingService?: LicensingService;
+  authRepository?: AuthRepository | null;
+  bootstrapSetupToken?: string;
+  clientDistDir?: string | null;
 }
 
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
@@ -52,9 +69,51 @@ function isPrivateNetworkOrigin(origin: string): boolean {
   }
 }
 
+function normalizeOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRequestOrigin(req: Request): string | null {
+  const host = req.get('host');
+  if (!host) {
+    return null;
+  }
+
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const protocol = forwardedProto || req.protocol || 'http';
+  return normalizeOrigin(`${protocol}://${host}`);
+}
+
 export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
   const isDev = process.env.NODE_ENV !== 'production';
+  const clientDistDir = options.clientDistDir ?? (isDev ? null : path.resolve(process.cwd(), 'dist'));
+  const hasClientBundle = typeof clientDistDir === 'string' && clientDistDir.length > 0 && existsSync(clientDistDir);
+  let licensingService = options.licensingService;
+  const authRepository = options.authRepository !== undefined
+    ? options.authRepository
+    : (process.env.NODE_ENV === 'test' ? null : createDefaultAuthRepository());
+  const bootstrapTokenFromEnv = (process.env.BOOTSTRAP_SETUP_TOKEN ?? '').trim();
+  const bootstrapSetupToken = (
+    options.bootstrapSetupToken
+    ?? (process.env.NODE_ENV === 'test' ? '' : bootstrapTokenFromEnv || randomBytes(18).toString('hex'))
+  ).trim();
+
+  if (authRepository && process.env.NODE_ENV !== 'test' && !bootstrapTokenFromEnv && !options.bootstrapSetupToken) {
+    console.info('[auth] Generated bootstrap setup token for initial owner onboarding:', bootstrapSetupToken);
+  }
+
+  const resolveLicensingService = (): LicensingService => {
+    if (!licensingService) {
+      licensingService = createDefaultLicensingService();
+    }
+
+    return licensingService;
+  };
 
   const corsAllowlist = new Set<string>([
     'http://localhost:5173',
@@ -78,22 +137,26 @@ export function createApp(options: CreateAppOptions = {}): Express {
   const rateLimitStore = new Map<string, RateLimitEntry>();
   let nextRateLimitCleanupAt = Date.now() + rateLimitWindowMs;
 
-  app.use(
-    cors({
-      origin: (origin, callback) => {
-        if (!origin || corsAllowlist.has(origin)) {
-          callback(null, true);
-          return;
-        }
+  app.use(cors((req, callback) => {
+    const origin = req.header('origin');
+    const normalizedOrigin = origin ? normalizeOrigin(origin) : null;
+    const requestOrigin = resolveRequestOrigin(req);
+    const sameOrigin = Boolean(normalizedOrigin && requestOrigin && normalizedOrigin === requestOrigin);
+    const isAllowed = !origin
+      || (normalizedOrigin ? corsAllowlist.has(normalizedOrigin) : false)
+      || sameOrigin
+      || (isDev && normalizedOrigin ? isPrivateNetworkOrigin(normalizedOrigin) : false);
 
-        if (isDev && isPrivateNetworkOrigin(origin)) {
-          callback(null, true);
-          return;
-        }
-        callback(new Error('Not allowed by CORS'));
-      },
-    }),
-  );
+    if (!isAllowed) {
+      callback(new Error('Not allowed by CORS'), { credentials: true, origin: false });
+      return;
+    }
+
+    callback(null, {
+      credentials: true,
+      origin: origin ? true : false,
+    });
+  }));
 
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -178,6 +241,26 @@ export function createApp(options: CreateAppOptions = {}): Express {
     sendApiError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
   });
 
+  if (authRepository) {
+    app.use('/api', createAuthSessionMiddleware(authRepository));
+    app.use('/api/auth', createAuthRoutes(authRepository, {
+      rateLimitMax: options.authRateLimitMax,
+      rateLimitWindowMs: options.authRateLimitWindowMs,
+    }));
+    app.use('/api/users', createUsersRoutes(authRepository, {
+      bootstrapSetupToken,
+      inviteRateLimitMax: options.userInviteRateLimitMax,
+      inviteRateLimitWindowMs: options.userInviteRateLimitWindowMs,
+    }));
+    app.use('/api', (req, res, next) => {
+      if (req.path === '/health' || req.path.startsWith('/auth/')) {
+        next();
+        return;
+      }
+
+      requireAuthenticatedUser(req, res, next);
+    });
+  }
   // Serve OpenReel editor: wrapper + bridge at /openreel/, built app at /openreel/app/
   const serverDir = path.dirname(fileURLToPath(import.meta.url));
   const openreelWrapper = path.resolve(serverDir, 'static', 'openreel');
@@ -191,20 +274,33 @@ export function createApp(options: CreateAppOptions = {}): Express {
   app.use('/openreel', express.static(openreelWrapper, { setHeaders: coopHeaders }));
 
   app.use('/api/projects', projectRoutes);
-  app.use('/api/settings', settingsRoutes);
+  if (authRepository) {
+    app.use('/api/settings', requireUserRoles(['owner', 'admin']), settingsRoutes);
+  } else {
+    app.use('/api/settings', settingsRoutes);
+  }
   app.use('/api/models', modelRoutes);
   app.use('/api/projects/:id/assets', assetRoutes);
   app.use('/api/projects/:id', generateRoutes);
   app.use('/api/projects/:id/shots', shotRoutes);
   app.use('/api/projects/:id', exportRoutes);
   app.use('/api/projects/:id', montageRoutes);
+  app.use('/api/system', createSystemRoutes(resolveLicensingService));
   app.use('/api/projects/:id', openreelRoutes);
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  if (hasClientBundle && clientDistDir) {
+    app.use(express.static(clientDistDir, { index: false }));
+    app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
+      res.sendFile(path.join(clientDistDir, 'index.html'));
+    });
+  }
+
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    void _next;
     console.error('[api] Unhandled error:', err);
     const details = process.env.NODE_ENV === 'development'
       ? { message: getErrorMessage(err, 'Unknown error') }

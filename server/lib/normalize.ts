@@ -1,6 +1,7 @@
 import * as childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getBestImageFile } from './media-utils.js';
 import { resolveProjectPath, ensureDir, type ShotMeta } from './storage.js';
 
 // Use namespace import so vitest can intercept the mock at call time
@@ -26,6 +27,45 @@ const TARGET_WIDTH = 3840;
 const TARGET_HEIGHT = 2160;
 const TARGET_FPS = 30;
 const TARGET_CODEC = 'h264';
+
+function isExternalMediaRef(value: string): boolean {
+  return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
+}
+
+function isWithinDir(baseDir: string, candidatePath: string): boolean {
+  const relative = path.relative(baseDir, candidatePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveShotMediaPath(
+  projectId: string,
+  shot: ShotMeta,
+  kind: 'generated' | 'video',
+  mediaRef: string,
+): string | null {
+  const trimmed = mediaRef.trim();
+  if (!trimmed || isExternalMediaRef(trimmed)) {
+    return null;
+  }
+
+  const shotRoot = resolveProjectPath(projectId, 'shots', shot.id);
+  const managedDir = resolveProjectPath(projectId, 'shots', shot.id, kind);
+
+  if (trimmed === path.basename(trimmed)) {
+    return resolveProjectPath(projectId, 'shots', shot.id, kind, trimmed);
+  }
+
+  try {
+    const candidate = resolveProjectPath(projectId, trimmed);
+    if (isWithinDir(managedDir, candidate) || isWithinDir(shotRoot, candidate)) {
+      return candidate;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
 
 // ── FFprobe helpers ──────────────────────────────────────────────────
 
@@ -144,38 +184,39 @@ export async function normalizeClips(
 
     const outputPath = resolveProjectPath(projectId, 'montage', 'normalized', `${shot.id}.mp4`);
 
-    if (shot.videoFile) {
+    if (shot.videoFile && isExternalMediaRef(shot.videoFile)) {
+      throw new Error(`Shot ${shot.id} video must be cached locally before montage normalization`);
+    }
+
+    const videoPath = shot.videoFile
+      ? resolveShotMediaPath(projectId, shot, 'video', shot.videoFile)
+      : null;
+
+    if (shot.videoFile && !videoPath) {
+      throw new Error(`Shot ${shot.id} video file could not be resolved for montage normalization`);
+    }
+
+    if (videoPath) {
       // Shot has video — probe and potentially normalize
-      // videoFile is usually a bare filename (e.g. "vid_123.mp4") stored
-      // at shots/<shotId>/video/<filename>. Legacy data may already contain
-      // a path separator — in that case treat it as project-relative.
-      const inputPath = shot.videoFile.includes('/') || shot.videoFile.includes('\\')
-        ? resolveProjectPath(projectId, shot.videoFile)
-        : resolveProjectPath(projectId, 'shots', shot.id, 'video', shot.videoFile);
-      const probe = await probeFile(inputPath);
+      const probe = await probeFile(videoPath);
 
       if (needsNormalization(probe)) {
-        await normalizeVideo(inputPath, outputPath);
+        await normalizeVideo(videoPath, outputPath);
       } else {
         // Already in target format — copy
-        await fs.copyFile(inputPath, outputPath);
+        await fs.copyFile(videoPath, outputPath);
       }
 
       result.set(shot.id, outputPath);
     } else {
       // No video — generate from best image
-      // Image refs are usually bare filenames at shots/<shotId>/generated/.
-      // Legacy data may store project-relative paths — detect by separator.
-      const resolveImageRef = (ref: string): string =>
-        ref.includes('/') || ref.includes('\\')
-          ? resolveProjectPath(projectId, ref)
-          : resolveProjectPath(projectId, 'shots', shot.id, 'generated', ref);
-
-      const imagePath = shot.selectedImage
-        ? resolveImageRef(shot.selectedImage)
-        : shot.generatedImages.length > 0
-          ? resolveImageRef(shot.generatedImages[0])
-          : null;
+      const imageCandidates = [
+        getBestImageFile(shot),
+        shot.selectedImage,
+      ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      const imagePath = imageCandidates
+        .map((mediaRef) => resolveShotMediaPath(projectId, shot, 'generated', mediaRef))
+        .find((candidate): candidate is string => Boolean(candidate)) ?? null;
 
       if (imagePath) {
         await imageToVideo(imagePath, outputPath, shot.duration);

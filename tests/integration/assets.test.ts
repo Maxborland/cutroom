@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterAll, beforeAll } from 'vitest'
 import request from 'supertest'
 import path from 'node:path'
+import fs from 'node:fs/promises'
 import { createApp } from './setup.js'
-import { createProject, deleteProject, getProject, type Project } from '../../server/lib/storage.js'
+import { createProject, deleteProject, getProject, getProjectDir, type Project } from '../../server/lib/storage.js'
 
 vi.mock('../../server/lib/openrouter.js', () => ({
   chatCompletion: vi.fn().mockResolvedValue('Mock asset label'),
@@ -40,11 +41,15 @@ describe('Assets API', () => {
 
     it('should return 404 for non-existent project', async () => {
       const testFile = path.join(process.cwd(), 'public', 'vite.svg')
+      const orphanPath = path.join(getProjectDir('non-existent-id'), 'brief', 'images', 'vite.svg')
+      await fs.rm(getProjectDir('non-existent-id'), { recursive: true, force: true })
 
       await request(app)
         .post('/api/projects/non-existent-id/assets')
         .attach('files', testFile)
         .expect(404)
+
+      await expect(fs.access(orphanPath)).rejects.toThrow()
     })
   })
 

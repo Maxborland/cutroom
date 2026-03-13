@@ -322,7 +322,7 @@ function getMimeForExt(ext: string): string {
 
 const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
 
-function createAudioUpload(fieldName: string) {
+function createAudioUpload() {
   return multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
@@ -339,8 +339,8 @@ function createAudioUpload(fieldName: string) {
   });
 }
 
-const voiceoverUpload = createAudioUpload('voiceover');
-const musicUpload = createAudioUpload('music');
+const voiceoverUpload = createAudioUpload();
+const musicUpload = createAudioUpload();
 
 // DELETE /api/projects/:id/montage/voiceover
 router.delete('/montage/voiceover', mutationLimiter, async (req: Request, res: Response) => {
@@ -741,11 +741,12 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       return;
     }
 
-    const { timeline } = req.body;
-    if (!Array.isArray(timeline)) {
+    const rawTimeline = req.body.timeline;
+    if (!Array.isArray(rawTimeline)) {
       sendApiError(res, 400, 'timeline must be an array');
       return;
     }
+    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; durationSec: number }>;
 
     // Validate: all entries must have shotId and durationSec
     for (const entry of timeline) {
@@ -757,7 +758,7 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
 
     // Validate: incoming shot IDs must match existing plan
     const existingIds = new Set(project.montagePlan.timeline.map(e => e.shotId));
-    const newIds = new Set(timeline.map((e: any) => e.shotId));
+    const newIds = new Set(timeline.map((entry) => entry.shotId));
     for (const id of newIds) {
       if (!existingIds.has(id)) {
         sendApiError(res, 400, `Unknown shot ID: ${String(id).slice(0, 50)}`);
@@ -773,7 +774,7 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     // Rebuild startSec based on new order
     const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
     let cursor = introSec;
-    const reordered = timeline.map((entry: any) => {
+    const reordered = timeline.map((entry) => {
       const existing = project.montagePlan!.timeline.find(e => e.shotId === entry.shotId);
       const result = {
         ...existing,
@@ -1060,6 +1061,107 @@ router.post('/montage/refine-plan', generationLimiter, async (req: Request, res:
   } catch (err) {
     console.error('Failed to refine montage plan:', err);
     sendApiError(res, 500, 'Failed to refine montage plan');
+  }
+});
+
+// POST /api/projects/:id/montage/render
+router.post('/montage/render', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'No montage plan exists. Generate a plan first.');
+      return;
+    }
+
+    const requestedQuality = req.body?.quality;
+    const quality = requestedQuality === 'final' ? 'final' : 'preview';
+    const { startRender } = await import('../lib/render-worker.js');
+    const jobId = await startRender(project.id, project.montagePlan, quality);
+    res.json({ jobId, status: 'queued', quality });
+  } catch (err) {
+    console.error('Failed to start montage render:', err);
+    sendApiError(res, 500, 'Failed to start montage render');
+  }
+});
+
+// GET /api/projects/:id/montage/render/:jobId
+router.get('/montage/render/:jobId', readLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { getRenderJob } = await import('../lib/render-worker.js');
+    const job = await getRenderJob(project.id, req.params.jobId);
+    if (!job) {
+      sendApiError(res, 404, 'Render job not found');
+      return;
+    }
+
+    res.json(job);
+  } catch (err) {
+    console.error('Failed to read render status:', err);
+    sendApiError(res, 500, 'Failed to read render status');
+  }
+});
+
+// DELETE /api/projects/:id/montage/render/:jobId
+router.delete('/montage/render/:jobId', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { deleteRenderJob } = await import('../lib/render-worker.js');
+    const deleted = await deleteRenderJob(project.id, req.params.jobId);
+    if (!deleted) {
+      sendApiError(res, 404, 'Render job not found');
+      return;
+    }
+
+    res.json({ deleted: true });
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('currently rendering')) {
+      sendApiError(res, 409, err.message);
+      return;
+    }
+
+    console.error('Failed to delete render job:', err);
+    sendApiError(res, 500, 'Failed to delete render job');
+  }
+});
+
+// GET /api/projects/:id/montage/render/:jobId/download
+router.get('/montage/render/:jobId/download', readLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { getRenderJob } = await import('../lib/render-worker.js');
+    const job = await getRenderJob(project.id, req.params.jobId);
+    if (!job) {
+      sendApiError(res, 404, 'Render job not found');
+      return;
+    }
+
+    if (job.status !== 'done' || !job.outputFile) {
+      sendApiError(res, 400, `Render not complete. Status: ${job.status}`);
+      return;
+    }
+
+    const outputPath = resolveProjectPath(project.id, job.outputFile);
+    const stat = await fs.stat(outputPath).catch(() => null);
+    if (!stat?.isFile()) {
+      sendApiError(res, 404, 'Rendered file not found');
+      return;
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(outputPath)}"`);
+    fsCb.createReadStream(outputPath).pipe(res);
+  } catch (err) {
+    console.error('Failed to download render:', err);
+    sendApiError(res, 500, 'Failed to download render');
   }
 });
 

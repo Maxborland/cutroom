@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SettingsView } from '../../src/components/SettingsView'
+import { api } from '../../src/lib/api'
 
 vi.mock('../../src/lib/api', () => ({
   api: {
@@ -51,6 +52,43 @@ vi.mock('../../src/lib/api', () => ({
         audioGenModels: [{ id: 'fal/minimax/speech-02-hd', name: 'MiniMax Speech 02 HD' }],
       }),
     },
+    users: {
+      list: vi.fn().mockResolvedValue({
+        users: [
+          {
+            id: 'user-owner',
+            email: 'owner@example.com',
+            name: 'Владелец',
+            role: 'owner',
+            createdAt: '2026-03-13T00:00:00.000Z',
+          },
+          {
+            id: 'user-editor',
+            email: 'editor@example.com',
+            name: 'Монтажер',
+            role: 'editor',
+            createdAt: '2026-03-13T00:00:00.000Z',
+          },
+        ],
+      }),
+      invite: vi.fn().mockResolvedValue({
+        invite: {
+          token: 'team-invite-token',
+          email: 'editor@example.com',
+          role: 'editor',
+          createdAt: '2026-03-13T00:00:00.000Z',
+          inviteUrl: '/accept-invite/team-invite-token',
+        },
+      }),
+    },
+    system: {
+      getLicense: vi.fn().mockResolvedValue({
+        status: 'trial',
+        trialDaysRemaining: 5,
+        restrictedMode: false,
+        lastCheckAt: '2026-03-13T10:00:00.000Z',
+      }),
+    },
   },
 }))
 
@@ -72,6 +110,7 @@ describe('SettingsView', () => {
     expect(container.querySelector('#generation')).toBeTruthy()
     expect(container.querySelector('#quality')).toBeTruthy()
     expect(container.querySelector('#director')).toBeTruthy()
+    expect(container.querySelector('#access')).toBeTruthy()
     expect(container.querySelector('#prompts')).toBeTruthy()
   })
 
@@ -96,13 +135,36 @@ describe('SettingsView', () => {
   })
 
   it('calls api.settings.get on mount', async () => {
-    const { api } = await import('../../src/lib/api')
-
     render(<SettingsView />)
 
     await waitFor(() => {
       expect(api.settings.get).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('loads and shows license status details', async () => {
+    render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(api.system.getLicense).toHaveBeenCalledTimes(1)
+    })
+
+    expect(screen.getByText('Статус лицензии')).toBeInTheDocument()
+    expect(screen.getByText('Пробный период')).toBeInTheDocument()
+    expect(screen.getByText(/осталось 5 дн/i)).toBeInTheDocument()
+  })
+
+  it('loads and shows current team members', async () => {
+    render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(api.users.list).toHaveBeenCalledTimes(1)
+    })
+
+    expect(screen.getAllByText('Владелец').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('owner@example.com')).toBeInTheDocument()
+    expect(screen.getByText('Монтажер')).toBeInTheDocument()
+    expect(screen.getByText('editor@example.com')).toBeInTheDocument()
   })
 
   it('reloads models after saving settings', async () => {
@@ -131,8 +193,7 @@ describe('SettingsView', () => {
   })
 
   it('saves videoQuality as auto when model has no explicit quality support', async () => {
-    const { api } = await import('../../src/lib/api')
-    ;(api.settings.get as any).mockResolvedValueOnce({
+    vi.mocked(api.settings.get).mockResolvedValueOnce({
       defaultVideoGenModel: 'fal/kling-2.1-pro',
       videoQuality: 'high',
     })
@@ -149,7 +210,7 @@ describe('SettingsView', () => {
       expect(api.settings.update).toHaveBeenCalled()
     })
 
-    const lastCall = (api.settings.update as any).mock.calls.at(-1)?.[0]
+    const lastCall = vi.mocked(api.settings.update).mock.calls.at(-1)?.[0]
     expect(lastCall.videoQuality).toBe('auto')
   })
 
@@ -162,5 +223,24 @@ describe('SettingsView', () => {
 
     expect(screen.queryByText('High (4K)')).not.toBeInTheDocument()
     expect(screen.getByText(/4K/)).toBeInTheDocument()
+  })
+
+  it('creates a teammate invite link from settings', async () => {
+    render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Email участника')).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByLabelText('Email участника'), {
+      target: { value: 'editor@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать приглашение' }))
+
+    await waitFor(() => {
+      expect(api.users.invite).toHaveBeenCalledWith('editor@example.com', 'editor')
+    })
+
+    expect(screen.getByDisplayValue(/accept-invite\/team-invite-token/)).toBeInTheDocument()
   })
 })

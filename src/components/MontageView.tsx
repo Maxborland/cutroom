@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { Project } from '../types'
+import type { RenderJob, Project } from '../types'
 import {
   Mic,
   Music,
@@ -21,9 +21,11 @@ import {
   Send,
   AlertCircle,
   Trash2,
+  Play,
+  Download,
 } from 'lucide-react'
 
-type MontageStep = 'voiceover' | 'music' | 'plan'
+type MontageStep = 'voiceover' | 'music' | 'plan' | 'render'
 
 export function MontageView() {
   const project = useProjectStore((s) => s.activeProject())
@@ -68,6 +70,12 @@ export function MontageView() {
       icon: <Film size={16} />,
       done: !!project.montagePlan,
     },
+    {
+      id: 'render',
+      label: 'Рендер',
+      icon: <Clapperboard size={16} />,
+      done: Boolean(project.renders?.some((render) => render.status === 'done')),
+    },
   ]
 
   return (
@@ -106,6 +114,9 @@ export function MontageView() {
             onRefresh={() => refreshProject(project.id)}
             onOpenEditor={() => navigate(`/editor/${project.id}`)}
           />
+        )}
+        {activeStep === 'render' && (
+          <RenderStep project={project} onRefresh={() => refreshProject(project.id)} />
         )}
       </div>
     </div>
@@ -684,6 +695,156 @@ function PlanStep({
   )
 }
 
+// ── Render Step ─────────────────────────────────────────────────────
+
+function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
+  const [loading, setLoading] = useState(false)
+  const [polling, setPolling] = useState<string | null>(null)
+  const [currentJob, setCurrentJob] = useState<RenderJob | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Poll render status
+  useEffect(() => {
+    if (!polling) return
+    const poll = async () => {
+      try {
+        const job = await api.montage.getRenderStatus(project.id, polling)
+        setCurrentJob(job)
+        if (job.status === 'done' || job.status === 'failed') {
+          setPolling(null)
+          onRefresh()
+        }
+      } catch {
+        setPolling(null)
+      }
+    }
+    intervalRef.current = setInterval(poll, 3000)
+    poll()
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [polling, project.id])
+
+  const startRender = async (quality: 'preview' | 'final') => {
+    setLoading(true)
+    try {
+      const result = await api.montage.render(project.id, quality)
+      setPolling(result.jobId)
+      setCurrentJob({
+        id: result.jobId,
+        createdAt: new Date().toISOString(),
+        quality: result.quality,
+        resolution: quality === 'final' ? '3840x2160' : '1280x720',
+        status: result.status,
+        progress: 0,
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const renders = project.renders || []
+  const doneRenders = renders.filter((r) => r.status === 'done')
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-surface-2 border-2 border-border rounded-[5px] p-6 shadow-brutal-sm">
+        <h3 className="font-heading font-semibold text-base mb-4 flex items-center gap-2">
+          <Clapperboard size={18} />
+          Рендер
+        </h3>
+
+        {!project.montagePlan && (
+          <div className="flex items-center gap-2 text-amber">
+            <AlertCircle size={16} />
+            <span className="text-sm">Сначала сгенерируйте план монтажа</span>
+          </div>
+        )}
+
+        {project.montagePlan && (
+          <div className="space-y-4">
+            {/* Start render buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => startRender('preview')}
+                disabled={loading || !!polling}
+                className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+              >
+                <Play size={14} /> Превью (720p)
+              </button>
+              <button
+                onClick={() => startRender('final')}
+                disabled={loading || !!polling}
+                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
+              >
+                <Film size={14} /> Финальный (4K)
+              </button>
+            </div>
+
+            {/* Current render progress */}
+            {currentJob && (currentJob.status === 'queued' || currentJob.status === 'rendering') && (
+              <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Loader2 size={14} className="animate-spin text-sky" />
+                  <span className="font-mono text-xs uppercase text-sky">
+                    {currentJob.status === 'queued' ? 'В очереди...' : `Рендер ${currentJob.progress ?? 0}%`}
+                  </span>
+                </div>
+                <div className="w-full bg-surface-2 rounded-full h-2">
+                  <div
+                    className="bg-sky h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${currentJob.progress ?? 0}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {currentJob?.status === 'failed' && (
+              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4">
+                <div className="flex items-center gap-2 text-red-400">
+                  <X size={14} />
+                  <span className="font-mono text-xs">Ошибка: {currentJob.errorMessage || 'Unknown'}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Completed renders */}
+            {doneRenders.length > 0 && (
+              <div className="pt-4 border-t border-border">
+                <h4 className="font-mono text-[10px] uppercase tracking-wider text-text-muted mb-3">
+                  Готовые рендеры
+                </h4>
+                <div className="space-y-2">
+                  {doneRenders.map((render) => (
+                    <div
+                      key={render.id}
+                      className="flex items-center justify-between bg-surface-1 border-2 border-emerald rounded-[5px] p-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Check size={14} className="text-emerald" />
+                        <span className="font-mono text-xs text-text-secondary">
+                          {render.quality === 'final' ? '4K' : '720p'} — {render.resolution}
+                        </span>
+                        <span className="font-mono text-[10px] text-text-muted">
+                          {new Date(render.createdAt).toLocaleString('ru')}
+                        </span>
+                      </div>
+                      <a
+                        href={api.montage.getRenderDownloadUrl(project.id, render.id)}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all"
+                        download
+                      >
+                        <Download size={14} /> Скачать
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function Stat({ label, value }: { label: string; value: string | number }) {

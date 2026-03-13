@@ -196,6 +196,52 @@ describe('Projects API', () => {
       })
     })
 
+    it('updates allowed project fields without replacing server-managed shots', async () => {
+      const createRes = await request(app)
+        .post('/api/projects')
+        .send({ name: 'Server-managed shots test' })
+        .expect(201)
+      createdIds.push(createRes.body.id)
+
+      const stored = await getProject(createRes.body.id)
+      expect(stored).toBeTruthy()
+      if (!stored) return
+
+      stored.shots = [
+        {
+          id: 'shot-001',
+          order: 0,
+          scene: 'Facade',
+          audioDescription: '',
+          imagePrompt: 'Prompt',
+          videoPrompt: 'Video prompt',
+          duration: 5,
+          assetRefs: [],
+          status: 'draft',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: null,
+        },
+      ]
+      await saveProject(stored)
+
+      const res = await request(app)
+        .put(`/api/projects/${createRes.body.id}`)
+        .send({
+          brief: { text: 'Обновленный бриф' },
+          shots: [],
+        })
+        .expect(200)
+
+      expect(res.body.brief.text).toBe('Обновленный бриф')
+      expect(res.body.shots).toHaveLength(1)
+      expect(res.body.shots[0]).toMatchObject({
+        id: 'shot-001',
+        scene: 'Facade',
+      })
+    })
+
     it('should return 404 for non-existent project', async () => {
       await request(app)
         .put('/api/projects/non-existent-id-12345')

@@ -15,6 +15,10 @@ import { Lightbox } from './components/Lightbox'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { OpenReelEditorPage } from './routes/OpenReelEditorPage'
 import { useProjectStore } from './stores/projectStore'
+import { useAuthStore } from './stores/authStore'
+import { LoginView } from './components/auth/LoginView'
+import { AcceptInviteView } from './components/auth/AcceptInviteView'
+import { BootstrapAccessView } from './components/auth/BootstrapAccessView'
 import type { PipelineStage } from './types'
 import { Clapperboard, Plus, Loader2 } from 'lucide-react'
 
@@ -49,7 +53,10 @@ function AppShell() {
   const error = useProjectStore((s) => s.error)
   const clearError = useProjectStore((s) => s.clearError)
   const updateProjectStage = useProjectStore((s) => s.updateProjectStage)
-  const activeView = normalizeView(routeView, project?.stage)
+  const currentUser = useAuthStore((s) => s.user)
+  const canAccessSettings = currentUser ? ['owner', 'admin'].includes(currentUser.role) : false
+  const effectiveRouteView = routeView === 'settings' && !canAccessSettings ? undefined : routeView
+  const activeView = normalizeView(effectiveRouteView, project?.stage)
 
   useEffect(() => {
     let cancelled = false
@@ -86,12 +93,12 @@ function AppShell() {
     if (!project) return
     if (routeProjectId && routeProjectId !== project.id) return
 
-    const canonicalView = normalizeView(routeView, project.stage)
+    const canonicalView = normalizeView(effectiveRouteView, project.stage)
     const canonicalPath = `/projects/${project.id}/${canonicalView}`
     if (location.pathname !== canonicalPath) {
       navigate(canonicalPath, { replace: true })
     }
-  }, [projectsLoaded, projects.length, project, routeProjectId, routeView, location.pathname, navigate])
+  }, [projectsLoaded, projects.length, project, routeProjectId, effectiveRouteView, location.pathname, navigate])
 
   const handleCreateProject = async () => {
     const name = newProjectName.trim()
@@ -217,11 +224,46 @@ function AppShell() {
 }
 
 function App() {
+  const status = useAuthStore((state) => state.status)
+  const loading = useAuthStore((state) => state.loading)
+  const hydrate = useAuthStore((state) => state.hydrate)
+
+  useEffect(() => {
+    if (status === 'idle') {
+      void hydrate()
+    }
+  }, [status, hydrate])
+
+  if (status === 'idle' || loading) {
+    return (
+      <div className="flex h-screen w-screen bg-bg items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 size={32} className="text-amber animate-spin" />
+          <p className="text-sm text-text-muted font-mono uppercase tracking-wider">Проверка сессии...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (status !== 'authenticated') {
+    return (
+      <Routes>
+        <Route path="/bootstrap" element={<BootstrapAccessView />} />
+        <Route path="/accept-invite" element={<AcceptInviteView />} />
+        <Route path="/accept-invite/:token" element={<AcceptInviteView />} />
+        <Route path="*" element={<LoginView />} />
+      </Routes>
+    )
+  }
+
   return (
     <Routes>
       <Route path="/" element={<AppShell />} />
       <Route path="/projects/:projectId" element={<AppShell />} />
       <Route path="/projects/:projectId/:view" element={<AppShell />} />
+      <Route path="/bootstrap" element={<Navigate to="/" replace />} />
+      <Route path="/accept-invite" element={<Navigate to="/" replace />} />
+      <Route path="/accept-invite/:token" element={<Navigate to="/" replace />} />
       <Route path="/editor/:projectId" element={<OpenReelEditorPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

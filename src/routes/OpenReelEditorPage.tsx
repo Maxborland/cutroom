@@ -42,6 +42,7 @@ export function OpenReelEditorPage() {
     const payload = pendingSaveRef.current
     pendingSaveRef.current = null
     isSavingRef.current = true
+    let shouldReschedule = false
 
     setSyncStatus('saving')
     setSaveError(null)
@@ -54,13 +55,15 @@ export function OpenReelEditorPage() {
       setSaveError(getErrorMessage(error, 'Ошибка сохранения'))
     } finally {
       isSavingRef.current = false
-      if (!pendingSaveRef.current) return
-
-      clearSaveTimer()
-      saveTimerRef.current = setTimeout(() => {
-        void flushPendingSave()
-      }, SAVE_DEBOUNCE_MS)
+      shouldReschedule = Boolean(pendingSaveRef.current)
     }
+
+    if (!shouldReschedule) return
+
+    clearSaveTimer()
+    saveTimerRef.current = setTimeout(() => {
+      void flushPendingSave()
+    }, SAVE_DEBOUNCE_MS)
   }, [clearSaveTimer, projectId])
 
   const queueSave = useCallback((payload: { version: string; project: unknown }) => {

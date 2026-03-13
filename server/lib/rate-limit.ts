@@ -2,6 +2,7 @@
  * Rate limiting middleware using express-rate-limit.
  * Recognized by CodeQL as a proper rate-limiting solution.
  */
+import type { Request } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 /**
@@ -21,7 +22,12 @@ export function createRateLimit(max = 60, windowMs = 60_000) {
       const forwarded = req.headers['x-forwarded-for'];
       if (typeof forwarded === 'string') {
         const ip = forwarded.split(',')[0].trim();
-        return ipKeyGenerator({ ...req, ip } as any);
+        const forwardedRequest = Object.assign(
+          Object.create(Object.getPrototypeOf(req)) as Request,
+          req,
+          { ip },
+        );
+        return ipKeyGenerator(forwardedRequest);
       }
       return ipKeyGenerator(req);
     },

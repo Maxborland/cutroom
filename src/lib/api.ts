@@ -6,8 +6,10 @@ import type {
   AppSettings,
   DirectorReview,
   DirectorState,
+  SystemLicenseState,
   VideoGenerationResult,
   MontagePlan,
+  RenderJob,
 } from '../types/index'
 import type { OpenReelBundle } from './openreel-bridge'
 
@@ -19,6 +21,38 @@ type DeepPartial<T> = {
     : T[K] extends object
       ? DeepPartial<T[K]>
       : T[K]
+}
+
+export interface AuthUser {
+  id: string
+  email: string
+  name: string
+  role: 'owner' | 'admin' | 'editor' | 'viewer'
+  createdAt: string
+}
+
+export interface AuthSessionResponse {
+  user: AuthUser
+}
+
+export interface UsersListResponse {
+  users: AuthUser[]
+}
+
+export interface InviteResponse {
+  invite: {
+    token: string
+    email: string
+    role: 'owner' | 'admin' | 'editor' | 'viewer'
+    createdAt: string
+    inviteUrl: string
+  }
+}
+
+export interface RenderStartResponse {
+  jobId: string
+  status: 'queued'
+  quality: RenderJob['quality']
 }
 
 export class ApiRequestError extends Error {
@@ -39,6 +73,45 @@ export class ApiRequestError extends Error {
 
 export function isApiRequestError(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError
+}
+
+const API_ERROR_MESSAGES: Record<string, string> = {
+  ACCEPT_INVITE_FAILED: 'Не удалось принять приглашение',
+  AUTH_REQUIRED: 'Требуется вход в систему',
+  AUTH_FORBIDDEN: 'Недостаточно прав для этого действия.',
+  BOOTSTRAP_INVITE_CLOSED: 'Первичная настройка уже завершена.',
+  BOOTSTRAP_TOKEN_INVALID: 'Неверный код первичной настройки.',
+  INVALID_CREDENTIALS: 'Неверный email или пароль.',
+  INVITE_ALREADY_ACCEPTED: 'Приглашение уже использовано.',
+  INVITE_EMAIL_REQUIRED: 'Укажите email.',
+  INVITE_NOT_FOUND: 'Приглашение не найдено или уже недействительно.',
+  LOGIN_FIELDS_REQUIRED: 'Укажите email и пароль.',
+  INVITE_ROLE_INVALID: 'Выбрана недопустимая роль приглашения.',
+  NAME_REQUIRED: 'Укажите имя.',
+  PASSWORD_INVALID: 'Пароль не соответствует требованиям.',
+  USER_ALREADY_EXISTS: 'Пользователь с таким email уже существует.',
+}
+
+export function getApiErrorMessage(error: unknown, fallback = 'Произошла ошибка'): string {
+  if (isApiRequestError(error)) {
+    if (error.code && API_ERROR_MESSAGES[error.code]) {
+      return API_ERROR_MESSAGES[error.code]
+    }
+
+    if (error.message.trim()) {
+      return error.message
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error
+  }
+
+  return fallback
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,6 +147,7 @@ async function throwRequestError(res: Response, path: string): Promise<never> {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   })
   if (!res.ok) {
@@ -93,6 +167,45 @@ export const api = {
       request<Project>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   },
+  auth: {
+    login: (email: string, password: string) =>
+      request<AuthSessionResponse>('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      }),
+    logout: () => request<void>('/auth/logout', { method: 'POST' }),
+    me: () => request<AuthSessionResponse>('/auth/me'),
+    acceptInvite: (token: string, name: string, password: string) =>
+      request<AuthSessionResponse>('/auth/accept-invite', {
+        method: 'POST',
+        body: JSON.stringify({ token, name, password }),
+      }),
+  },
+  users: {
+    list: () => request<UsersListResponse>('/users'),
+    bootstrapInvite: (
+      email: string,
+      bootstrapToken?: string,
+    ) =>
+      request<InviteResponse>('/users/bootstrap-owner-invite', {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          ...(bootstrapToken?.trim() ? { bootstrapToken: bootstrapToken.trim() } : {}),
+        }),
+      }),
+    invite: (
+      email: string,
+      role?: 'owner' | 'admin' | 'editor' | 'viewer',
+    ) =>
+      request<InviteResponse>('/users/invite', {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          ...(role ? { role } : {}),
+        }),
+      }),
+  },
   assets: {
     upload: async (projectId: string, files: File[]) => {
       const form = new FormData()
@@ -100,6 +213,7 @@ export const api = {
       const path = `/projects/${projectId}/assets`
       const res = await fetch(`${BASE}/projects/${projectId}/assets`, {
         method: 'POST',
+        credentials: 'include',
         body: form,
       })
       if (!res.ok) await throwRequestError(res, path)
@@ -165,6 +279,7 @@ export const api = {
       const path = `/projects/${projectId}/shots/${shotId}/video`
       const res = await fetch(`${BASE}/projects/${projectId}/shots/${shotId}/video`, {
         method: 'POST',
+        credentials: 'include',
         body: form,
       })
       if (!res.ok) await throwRequestError(res, path)
@@ -188,6 +303,9 @@ export const api = {
   settings: {
     get: () => request<AppSettings>('/settings'),
     update: (data: Partial<AppSettings>) => request<AppSettings>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  },
+  system: {
+    getLicense: () => request<SystemLicenseState>('/system/license'),
   },
   models: {
     list: () => request<{
@@ -229,7 +347,7 @@ export const api = {
       shotId?: string,
       shotIds?: string[],
     ) =>
-      request<any>(`/projects/${projectId}/director/apply-feedback`, {
+      request<unknown>(`/projects/${projectId}/director/apply-feedback`, {
         method: 'POST',
         body: JSON.stringify({ reviewId, action, shotId, shotIds }),
       }),
@@ -295,7 +413,7 @@ export const api = {
       const form = new FormData()
       form.append('music', file)
       const path = `/projects/${projectId}/montage/upload-music`
-      const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form })
+      const res = await fetch(`${BASE}${path}`, { method: 'POST', credentials: 'include', body: form })
       if (!res.ok) await throwRequestError(res, path)
       return res.json() as Promise<{ musicFile: string; provider: string }>
     },
@@ -333,5 +451,14 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ feedback }),
       }),
+    render: (projectId: string, quality: 'preview' | 'final') =>
+      request<RenderStartResponse>(`/projects/${projectId}/montage/render`, {
+        method: 'POST',
+        body: JSON.stringify({ quality }),
+      }),
+    getRenderStatus: (projectId: string, jobId: string) =>
+      request<RenderJob>(`/projects/${projectId}/montage/render/${jobId}`),
+    getRenderDownloadUrl: (projectId: string, jobId: string) =>
+      `${BASE}/projects/${projectId}/montage/render/${jobId}/download`,
   },
 }

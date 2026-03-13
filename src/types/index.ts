@@ -8,6 +8,15 @@ export interface ApiErrorResponse {
   details?: unknown
 }
 
+export type SystemLicenseStatus = 'unactivated' | 'trial' | 'active' | 'grace' | 'trial_expired'
+
+export interface SystemLicenseState {
+  status: SystemLicenseStatus
+  trialDaysRemaining: number
+  restrictedMode: boolean
+  lastCheckAt: string | null
+}
+
 export interface BriefAsset {
   id: string
   filename: string
@@ -78,6 +87,7 @@ export interface Project {
   musicPrompt?: string
   musicProvider?: string
   montagePlan?: MontagePlan
+  renders?: RenderJob[]
 }
 
 // ── Montage Types ────────────────────────────────────────────────────
@@ -156,6 +166,17 @@ export interface MontagePlan {
     }
   }
   style: MontageStyle
+}
+
+export interface RenderJob {
+  id: string
+  createdAt: string
+  quality: 'preview' | 'final'
+  resolution: string
+  status: 'queued' | 'rendering' | 'done' | 'failed'
+  progress?: number
+  outputFile?: string
+  errorMessage?: string
 }
 
 

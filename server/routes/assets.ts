@@ -5,29 +5,25 @@ import fs from 'node:fs/promises';
 import { randomUUID } from 'crypto';
 import {
   getProject,
-  saveProject,
-  ensureDir,
-  resolveProjectPath,
+  withProject,
   validateProjectId,
   type BriefAsset,
 } from '../lib/storage.js';
+import { getProjectStorageAdapter } from '../lib/storage-adapters/index.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getGlobalSettings } from '../lib/config.js';
 import { DEFAULT_DESCRIBE_PROMPT } from './generate/shared.js';
-import { sanitizeUploadedFilename, resolvePathWithin } from '../lib/file-utils.js';
+import { sanitizeUploadedFilename } from '../lib/file-utils.js';
 import { prepareBriefReference } from '../lib/reference-media.js';
 import { getErrorMessage, sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
+const mediaStorage = getProjectStorageAdapter();
 
 type VisionMessagePart = { type: string; text?: string; image_url?: { url: string } };
 
-function getProjectImagesDir(projectId: string): string {
-  return resolveProjectPath(projectId, 'brief', 'images');
-}
-
-function resolveAssetFilePath(projectId: string, filename: string): string {
-  return resolvePathWithin(getProjectImagesDir(projectId), filename);
+function isErrorWithMessage(error: unknown, message: string): boolean {
+  return error instanceof Error && error.message === message;
 }
 
 function buildDescribeUserContent(
@@ -64,14 +60,14 @@ const upload = multer({
         const projectId = validateProjectId((req as Request).params.id);
         const project = await getProject(projectId);
         if (!project) {
-          const errNotFound: any = new Error('Project not found');
-          errNotFound.code = 'PROJECT_NOT_FOUND';
+          const errNotFound = new Error('Project not found');
           cb(errNotFound, '');
           return;
         }
 
-        const dir = getProjectImagesDir(projectId);
-        await ensureDir(dir);
+        const prefix = { projectId, scope: 'brief-images' } as const;
+        await mediaStorage.ensureContainer(prefix);
+        const dir = mediaStorage.getReadablePathForServer(prefix);
         cb(null, dir);
       } catch (err) {
         cb(err as Error, '');
@@ -90,44 +86,57 @@ const upload = multer({
 });
 
 // POST /api/projects/:id/assets - upload files
-router.post('/', (req: Request, res: Response, next: NextFunction) => {
-  upload.array('files', 50)(req, res, (err) => {
-    if (err) {
-      next(err);
-      return;
-    }
-    next();
-  });
-}, async (req: Request, res: Response) => {
-  try {
-    const project = await getProject(req.params.id);
-    if (!project) {
-      sendApiError(res, 404, 'Project not found');
-      return;
-    }
-
-    const files = req.files as Express.Multer.File[];
-    if (!files || files.length === 0) {
-      sendApiError(res, 400, 'No files uploaded');
-      return;
-    }
-
-    const newAssets: BriefAsset[] = files.map((file) => ({
-      id: randomUUID(),
-      filename: file.filename,
-      label: '',
-      url: `/api/projects/${project.id}/assets/file/${encodeURIComponent(file.filename)}`,
-      uploadedAt: new Date().toISOString(),
-    }));
-
-    project.brief.assets = [...(project.brief.assets || []), ...newAssets];
-    await saveProject(project);
-
-    res.status(201).json(newAssets);
-  } catch (err) {
-    console.error('Failed to upload assets:', err);
-    sendApiError(res, 500, 'Failed to upload assets');
+router.post('/', mutationLimiter, async (req: Request, res: Response) => {
+  const project = await getProject(req.params.id);
+  if (!project) {
+    sendApiError(res, 404, 'Project not found');
+    return;
   }
+
+  upload.array('files', 50)(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        sendApiError(res, 400, multerErr.message);
+        return;
+      }
+
+      const files = req.files as Express.Multer.File[];
+      if (!files || files.length === 0) {
+        sendApiError(res, 400, 'No files uploaded');
+        return;
+      }
+
+      const newAssets: BriefAsset[] = files.map((file) => ({
+        id: randomUUID(),
+        filename: file.filename,
+        label: '',
+        url: mediaStorage.getPublicUrl({
+          projectId: project.id,
+          scope: 'brief-images',
+          filename: file.filename,
+        }) || `/api/projects/${project.id}/assets/file/${encodeURIComponent(file.filename)}`,
+        uploadedAt: new Date().toISOString(),
+      }));
+
+      await withProject(project.id, (current) => {
+        current.brief.assets = [...(current.brief.assets || []), ...newAssets];
+      });
+
+      res.status(201).json(newAssets);
+    } catch (err) {
+      const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+      for (const file of uploadedFiles) {
+        try {
+          await fs.unlink(file.path);
+        } catch {
+          // ignore orphan cleanup errors
+        }
+      }
+
+      console.error('Failed to upload assets:', err);
+      sendApiError(res, 500, 'Failed to upload assets');
+    }
+  });
 });
 
 // GET /api/projects/:id/assets/file/:filename - serve a file
@@ -146,16 +155,20 @@ router.get('/file/:filename', readLimiter, async (req: Request, res: Response) =
       return;
     }
 
-    const filePath = resolveAssetFilePath(project.id, asset.filename);
-
-    try {
-      await fs.access(filePath);
-    } catch {
+    const assetRef = {
+      projectId: project.id,
+      scope: 'brief-images',
+      filename: asset.filename,
+    } as const;
+    const exists = await mediaStorage.exists(assetRef);
+    if (!exists) {
       sendApiError(res, 404, 'File not found');
       return;
     }
 
-    res.sendFile(filePath);
+    const file = await mediaStorage.readBuffer(assetRef);
+    res.type(asset.filename);
+    res.send(file);
   } catch (err) {
     console.error('Failed to serve asset:', err);
     sendApiError(res, 500, 'Failed to serve asset');
@@ -172,24 +185,28 @@ router.delete('/:assetId', mutationLimiter, async (req: Request, res: Response) 
     }
 
     const assetId = req.params.assetId;
-    const asset = project.brief.assets.find((a) => a.id === assetId);
-    if (!asset) {
+    await withProject(project.id, async (current) => {
+      const asset = current.brief.assets.find((a) => a.id === assetId);
+      if (!asset) {
+        throw new Error('Asset not found');
+      }
+
+      await mediaStorage.deleteObject({
+        projectId: current.id,
+        scope: 'brief-images',
+        filename: asset.filename,
+      });
+
+      current.brief.assets = current.brief.assets.filter((a) => a.id !== assetId);
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    if (isErrorWithMessage(err, 'Asset not found')) {
       sendApiError(res, 404, 'Asset not found');
       return;
     }
 
-    const filePath = resolveAssetFilePath(project.id, asset.filename);
-    try {
-      await fs.unlink(filePath);
-    } catch {
-      // File might already be gone.
-    }
-
-    project.brief.assets = project.brief.assets.filter((a) => a.id !== assetId);
-    await saveProject(project);
-
-    res.json({ ok: true });
-  } catch (err) {
     console.error('Failed to delete asset:', err);
     sendApiError(res, 500, 'Failed to delete asset');
   }
@@ -204,16 +221,23 @@ router.put('/:assetId/label', async (req: Request, res: Response) => {
       return;
     }
 
-    const asset = project.brief.assets.find((a) => a.id === req.params.assetId);
-    if (!asset) {
+    const asset = await withProject(project.id, (current) => {
+      const target = current.brief.assets.find((item) => item.id === req.params.assetId);
+      if (!target) {
+        throw new Error('Asset not found');
+      }
+
+      target.label = req.body.label || '';
+      return target;
+    });
+
+    res.json(asset);
+  } catch (err) {
+    if (isErrorWithMessage(err, 'Asset not found')) {
       sendApiError(res, 404, 'Asset not found');
       return;
     }
 
-    asset.label = req.body.label || '';
-    await saveProject(project);
-    res.json(asset);
-  } catch (err) {
     sendApiError(res, 500, getErrorMessage(err, 'Failed to update asset label'));
   }
 });
@@ -256,11 +280,24 @@ router.post('/:assetId/describe', async (req: Request, res: Response) => {
       { role: 'user', content: buildDescribeUserContent(prepared, asset.filename) },
     ], 0.3);
 
-    asset.label = label.trim();
-    await saveProject(project);
+    const trimmedLabel = label.trim();
+    const updated = await withProject(project.id, (current) => {
+      const target = current.brief.assets.find((item) => item.id === req.params.assetId);
+      if (!target) {
+        throw new Error('Asset not found');
+      }
 
-    res.json({ id: asset.id, label: asset.label });
+      target.label = trimmedLabel;
+      return { id: target.id, label: target.label };
+    });
+
+    res.json(updated);
   } catch (err) {
+    if (isErrorWithMessage(err, 'Asset not found')) {
+      sendApiError(res, 404, 'Asset not found');
+      return;
+    }
+
     console.error('Failed to describe asset:', err);
     sendApiError(res, 500, getErrorMessage(err, 'Failed to describe asset'));
   }
@@ -288,7 +325,7 @@ router.post('/describe-all', async (req: Request, res: Response) => {
     console.log(`[describe-all] Describing ${toDescribe.length} assets with ${model} (vision)`);
 
     let described = 0;
-    let hasUpdates = false;
+    const labelUpdates = new Map<string, string>();
     for (const asset of toDescribe) {
       try {
         const prepared = await prepareBriefReference(project.id, asset.filename, {
@@ -308,17 +345,24 @@ router.post('/describe-all', async (req: Request, res: Response) => {
           { role: 'user', content: buildDescribeUserContent(prepared, asset.filename) },
         ], 0.3);
 
-        asset.label = label.trim();
+        const trimmedLabel = label.trim();
+        labelUpdates.set(asset.id, trimmedLabel);
         described++;
-        hasUpdates = true;
-        console.log(`[describe-all] ${described}/${toDescribe.length}: ${asset.filename} -> ${asset.label.slice(0, 60)}...`);
+        console.log(`[describe-all] ${described}/${toDescribe.length}: ${asset.filename} -> ${trimmedLabel.slice(0, 60)}...`);
       } catch (err) {
         console.error(`[describe-all] Failed for ${asset.filename}:`, err);
       }
     }
 
-    if (hasUpdates) {
-      await saveProject(project);
+    if (labelUpdates.size > 0) {
+      await withProject(project.id, (current) => {
+        for (const asset of current.brief.assets) {
+          const nextLabel = labelUpdates.get(asset.id);
+          if (nextLabel) {
+            asset.label = nextLabel;
+          }
+        }
+      });
     }
 
     res.json({ described, total: toDescribe.length });
@@ -329,12 +373,12 @@ router.post('/describe-all', async (req: Request, res: Response) => {
 });
 
 router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
-  const anyErr = err as any;
-  if (anyErr?.code === 'PROJECT_NOT_FOUND') {
+  const errorWithCode = err as { code?: string };
+  if (errorWithCode?.code === 'PROJECT_NOT_FOUND') {
     sendApiError(res, 404, 'Project not found');
     return;
   }
-  if (anyErr?.code === 'LIMIT_FILE_SIZE') {
+  if (errorWithCode?.code === 'LIMIT_FILE_SIZE') {
     sendApiError(res, 413, 'Uploaded file is too large');
     return;
   }

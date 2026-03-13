@@ -55,6 +55,45 @@ npm run dev:all
 - Frontend: `http://localhost:5173`
 - API: `http://localhost:3001`
 
+## Self-Hosted Bundle
+
+The repository now includes a single-tenant self-hosted profile:
+
+- [docs/self-hosted.md](docs/self-hosted.md)
+- `Dockerfile`
+- `docker-compose.self-hosted.yml`
+- `.env.self-hosted.example`
+
+Quick start:
+
+```bash
+cp .env.self-hosted.example .env.self-hosted
+docker compose -f docker-compose.self-hosted.yml up -d --build
+```
+
+This profile runs:
+
+- one `app` container serving both the frontend and `/api`
+- one `worker` container for background jobs
+- one `postgres` container
+
+## Database Bootstrap
+
+PostgreSQL support is scaffolded for future backend work without changing the current file-based routes yet.
+
+```powershell
+$env:DATABASE_URL = "postgres://postgres:postgres@localhost:5432/cut_room"
+npm run db:migrate
+npm run db:check
+```
+
+- `server/db/index.ts` creates a shared `pg` pool and exposes a simple healthcheck.
+- `server/db/migrations/0001_initial.sql` is the first tracked migration.
+- `npm run db:migrate` uses a PostgreSQL advisory lock so concurrent migration processes cannot both execute the same migration body.
+- `npm run db:check` now behaves like a real verification command: it fails if `DATABASE_URL` is missing or if tracked migrations are still pending.
+- `tests/integration/setup.ts` stays as the shared helper module for app/test bootstrap.
+- `tests/integration/setup.test.ts` smoke-tests `createDb(...)` with an explicit connection string and closes the pool without requiring a live PostgreSQL server.
+
 ## Architecture
 
 ```

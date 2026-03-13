@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useProjectStore } from '../stores/projectStore'
 import { useLightboxStore } from '../stores/lightboxStore'
-import { api } from '../lib/api'
+import { api, getApiErrorMessage } from '../lib/api'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   ChevronLeft,
@@ -127,8 +127,8 @@ export function ReviewView() {
     try {
       const { review } = await api.generate.aiReview(project.id, currentShot.id)
       setAiReview(review)
-    } catch (e: any) {
-      setAiReview(`Ошибка: ${e.message}`)
+    } catch (error: unknown) {
+      setAiReview(`Ошибка: ${getApiErrorMessage(error, 'Не удалось выполнить AI-ревью')}`)
     } finally {
       setAiReviewing(false)
     }

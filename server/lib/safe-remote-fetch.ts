@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
-import { Readable, Transform } from 'node:stream';
+import { Readable, Transform, type TransformCallback } from 'node:stream';
 import * as dns from 'node:dns/promises';
 import net from 'node:net';
 import path from 'node:path';
@@ -188,7 +188,11 @@ class ByteLimitTransform extends Transform {
     super();
   }
 
-  public override _transform(chunk: any, _enc: BufferEncoding, cb: (error?: Error | null, data?: any) => void): void {
+  public override _transform(
+    chunk: Buffer | Uint8Array | string,
+    _enc: BufferEncoding,
+    cb: TransformCallback,
+  ): void {
     try {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       this.seen += buf.length;
@@ -208,8 +212,8 @@ export async function downloadRemoteToBuffer(url: string, options: SafeRemoteFet
 
   const response = await safeFetchResponse(url, options);
   if (!response.ok) {
-    const err = new Error(`Failed to download media: ${response.status}`);
-    (err as any).status = response.status;
+    const err = new Error(`Failed to download media: ${response.status}`) as Error & { status?: number };
+    err.status = response.status;
     throw err;
   }
 
@@ -224,7 +228,7 @@ export async function downloadRemoteToBuffer(url: string, options: SafeRemoteFet
       throw new Error('Remote response has no body');
     }
 
-    const nodeStream = Readable.fromWeb(body as any);
+    const nodeStream = Readable.fromWeb(body as ReadableStream<Uint8Array>);
     const limiter = new ByteLimitTransform(maxBytes);
 
     const chunks: Buffer[] = [];
@@ -246,8 +250,8 @@ export async function downloadRemoteToFile(
 
   const response = await safeFetchResponse(url, options);
   if (!response.ok) {
-    const err = new Error(`Failed to download media: ${response.status}`);
-    (err as any).status = response.status;
+    const err = new Error(`Failed to download media: ${response.status}`) as Error & { status?: number };
+    err.status = response.status;
     throw err;
   }
 
@@ -265,7 +269,7 @@ export async function downloadRemoteToFile(
 
   await mkdir(path.dirname(filePath), { recursive: true });
 
-  const nodeStream = Readable.fromWeb(body as any);
+  const nodeStream = Readable.fromWeb(body as ReadableStream<Uint8Array>);
   const limiter = typeof maxBytes === 'number' ? new ByteLimitTransform(maxBytes) : undefined;
 
   let bytes = 0;

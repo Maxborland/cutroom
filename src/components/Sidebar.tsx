@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import type { PipelineStage } from '../types'
 import { useProjectStore } from '../stores/projectStore'
+import { useAuthStore } from '../stores/authStore'
 import { motion, AnimatePresence } from 'framer-motion'
 
 const STAGES: { id: PipelineStage | 'montage'; label: string; icon: React.ReactNode }[] = [
@@ -35,6 +36,8 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const projects = useProjectStore((s) => s.projects)
   const createProject = useProjectStore((s) => s.createProject)
   const loading = useProjectStore((s) => s.loading)
+  const currentUser = useAuthStore((s) => s.user)
+  const canManageSettings = currentUser ? ['owner', 'admin'].includes(currentUser.role) : false
 
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -294,21 +297,23 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       </div>
 
       {/* Settings */}
-      <div className="p-3 border-t-2 border-border">
-        <button
-          onClick={() => onViewChange('settings')}
-          className={`
-            w-full flex items-center gap-3 px-3 py-2 rounded-[5px] text-sm
-            ${activeView === 'settings'
-              ? 'bg-amber text-black font-bold border-2 border-border shadow-brutal-sm'
-              : 'text-text-secondary hover:text-text-primary hover:bg-surface-2'
-            }
-          `}
-        >
-          <Settings size={18} />
-          <span>Настройки</span>
-        </button>
-      </div>
+      {canManageSettings && (
+        <div className="p-3 border-t-2 border-border">
+          <button
+            onClick={() => onViewChange('settings')}
+            className={`
+              w-full flex items-center gap-3 px-3 py-2 rounded-[5px] text-sm
+              ${activeView === 'settings'
+                ? 'bg-amber text-black font-bold border-2 border-border shadow-brutal-sm'
+                : 'text-text-secondary hover:text-text-primary hover:bg-surface-2'
+              }
+            `}
+          >
+            <Settings size={18} />
+            <span>Настройки</span>
+          </button>
+        </div>
+      )}
     </aside>
   )
 }

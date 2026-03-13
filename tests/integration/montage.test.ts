@@ -56,6 +56,11 @@ vi.mock('../../server/lib/montage-plan.js', () => ({
     style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
   }),
 }))
+vi.mock('../../server/lib/render-worker.js', () => ({
+  startRender: vi.fn(),
+  getRenderJob: vi.fn(),
+  deleteRenderJob: vi.fn(),
+}))
 
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
@@ -846,4 +851,256 @@ describe('Montage Integration', () => {
     })
   })
 
+  describe('normalizeClips path resolution', () => {
+    it('resolves shot video files from the shot video directory', async () => {
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+      })
+
+      const execFileMock = vi.fn((cmd: string, _args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        const output = cmd === 'ffprobe'
+          ? JSON.stringify({
+              format: { duration: '5' },
+              streams: [{
+                codec_type: 'video',
+                width: 3840,
+                height: 2160,
+                r_frame_rate: '30/1',
+                codec_name: 'h264',
+              }],
+            })
+          : ''
+        callback(null, output, '')
+        return {} as any
+      })
+
+      try {
+        vi.resetModules()
+        vi.doMock('node:child_process', () => ({ execFile: execFileMock }))
+        const { normalizeClips } = await vi.importActual<typeof import('../../server/lib/normalize.js')>('../../server/lib/normalize.js')
+        const project = await getProject(projectId)
+        const result = await normalizeClips(projectId, project!.shots as any)
+
+        expect(result.has('shot-1')).toBe(true)
+        const probeCall = execFileMock.mock.calls.find(([cmd]) => cmd === 'ffprobe')
+        expect(probeCall?.[1]).toContain(videoPath)
+      } finally {
+        vi.doUnmock('node:child_process')
+        vi.resetModules()
+      }
+    })
+
+    it('resolves generated image files from the shot generated directory', async () => {
+      const imagePath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame.png')
+      await ensureDir(path.dirname(imagePath))
+      await fs.writeFile(imagePath, 'image-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = null
+        proj.shots[0]!.generatedImages = ['frame.png']
+      })
+
+      const execFileMock = vi.fn((cmd: string, args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        if (cmd === 'ffmpeg' && args.includes(imagePath)) {
+          callback(null, '', '')
+          return {} as any
+        }
+
+        callback(new Error(`Unexpected media input: ${args.join(' ')}`), '', '')
+        return {} as any
+      })
+
+      try {
+        vi.resetModules()
+        vi.doMock('node:child_process', () => ({ execFile: execFileMock }))
+        const { normalizeClips } = await vi.importActual<typeof import('../../server/lib/normalize.js')>('../../server/lib/normalize.js')
+        const project = await getProject(projectId)
+        const result = await normalizeClips(projectId, project!.shots as any)
+
+        expect(result.has('shot-1')).toBe(true)
+      } finally {
+        vi.doUnmock('node:child_process')
+        vi.resetModules()
+      }
+    })
+
+    it('prefers enhanced images over older generated frames for image-only clips', async () => {
+      const generatedPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame.png')
+      const enhancedPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame-enhanced.png')
+      await ensureDir(path.dirname(generatedPath))
+      await fs.writeFile(generatedPath, 'generated-image-bytes')
+      await fs.writeFile(enhancedPath, 'enhanced-image-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = null
+        proj.shots[0]!.selectedImage = 'frame.png'
+        proj.shots[0]!.generatedImages = ['frame.png']
+        proj.shots[0]!.enhancedImages = ['frame-enhanced.png']
+      })
+
+      const execFileMock = vi.fn((cmd: string, args: string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        if (cmd === 'ffmpeg' && args.includes(enhancedPath)) {
+          callback(null, '', '')
+          return {} as any
+        }
+
+        callback(new Error(`Unexpected media input: ${args.join(' ')}`), '', '')
+        return {} as any
+      })
+
+      try {
+        vi.resetModules()
+        vi.doMock('node:child_process', () => ({ execFile: execFileMock }))
+        const { normalizeClips } = await vi.importActual<typeof import('../../server/lib/normalize.js')>('../../server/lib/normalize.js')
+        const project = await getProject(projectId)
+        const result = await normalizeClips(projectId, project!.shots as any)
+
+        expect(result.has('shot-1')).toBe(true)
+      } finally {
+        vi.doUnmock('node:child_process')
+        vi.resetModules()
+      }
+    })
+
+    it('fails explicitly when an approved shot still points at an external video URL', async () => {
+      const imagePath = resolveProjectPath(projectId, 'shots', 'shot-1', 'generated', 'frame.png')
+      await ensureDir(path.dirname(imagePath))
+      await fs.writeFile(imagePath, 'image-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'https://cdn.example.com/final.mp4'
+        proj.shots[0]!.generatedImages = ['frame.png']
+      })
+
+      const execFileMock = vi.fn()
+
+      try {
+        vi.resetModules()
+        vi.doMock('node:child_process', () => ({ execFile: execFileMock }))
+        const { normalizeClips } = await vi.importActual<typeof import('../../server/lib/normalize.js')>('../../server/lib/normalize.js')
+        const project = await getProject(projectId)
+
+        await expect(normalizeClips(projectId, project!.shots as any)).rejects.toThrow(
+          'Shot shot-1 video must be cached locally before montage normalization',
+        )
+        expect(execFileMock).not.toHaveBeenCalled()
+      } finally {
+        vi.doUnmock('node:child_process')
+        vi.resetModules()
+      }
+    })
+  })
+
+  describe('GET /montage/render/:jobId', () => {
+    it('returns render job status', async () => {
+      const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockResolvedValueOnce({
+        id: 'job-1',
+        createdAt: new Date().toISOString(),
+        quality: 'preview',
+        resolution: '1280x720',
+        status: 'done',
+        progress: 100,
+        outputFile: 'montage/renders/job-1.mp4',
+      })
+
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/montage/render/job-1`)
+        .expect(200)
+
+      expect(res.body.id).toBe('job-1')
+      expect(res.body.status).toBe('done')
+    })
+
+    it('returns 404 for unknown job', async () => {
+      const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockResolvedValueOnce(null)
+
+      await request(app)
+        .get(`/api/projects/${projectId}/montage/render/unknown`)
+        .expect(404)
+    })
+  })
+
+  describe('DELETE /montage/render/:jobId', () => {
+    it('deletes a render job', async () => {
+      const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(deleteRenderJob).mockResolvedValueOnce(true)
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/montage/render/job-1`)
+        .expect(200)
+
+      expect(res.body.deleted).toBe(true)
+    })
+
+    it('returns 404 for unknown job', async () => {
+      const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(deleteRenderJob).mockResolvedValueOnce(false)
+
+      await request(app)
+        .delete(`/api/projects/${projectId}/montage/render/unknown`)
+        .expect(404)
+    })
+
+    it('returns 409 when job is currently rendering', async () => {
+      const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(deleteRenderJob).mockRejectedValueOnce(
+        new Error('Cannot delete a render job that is currently rendering')
+      )
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/montage/render/active-job`)
+        .expect(409)
+
+      expect(res.body.error).toContain('currently rendering')
+    })
+  })
+
+  describe('GET /montage/render/:jobId/download', () => {
+    it('streams rendered video file', async () => {
+      const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      const rendersDir = resolveProjectPath(projectId, 'montage', 'renders')
+      await ensureDir(rendersDir)
+      const videoContent = Buffer.from('fake-mp4-content')
+      await fs.writeFile(path.join(rendersDir, 'job-1.mp4'), videoContent)
+
+      vi.mocked(getRenderJob).mockResolvedValueOnce({
+        id: 'job-1',
+        createdAt: new Date().toISOString(),
+        quality: 'preview',
+        resolution: '1280x720',
+        status: 'done',
+        progress: 100,
+        outputFile: 'montage/renders/job-1.mp4',
+      })
+
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/montage/render/job-1/download`)
+        .expect(200)
+
+      expect(res.headers['content-type']).toContain('video/mp4')
+      expect(Buffer.from(res.body).toString()).toBe('fake-mp4-content')
+    })
+
+    it('returns 400 when render not complete', async () => {
+      const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockResolvedValueOnce({
+        id: 'job-1',
+        createdAt: new Date().toISOString(),
+        quality: 'preview',
+        resolution: '1280x720',
+        status: 'rendering',
+        progress: 50,
+      })
+
+      await request(app)
+        .get(`/api/projects/${projectId}/montage/render/job-1/download`)
+        .expect(400)
+    })
+  })
 })

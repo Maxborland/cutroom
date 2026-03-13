@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { resolvePathWithin } from './file-utils.js';
+import { createProjectRepository, type ProjectRepository } from './projects/repository.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ export interface Project {
   musicPrompt?: string;
   musicProvider?: string;
   montagePlan?: MontagePlan;
+  renders?: RenderJob[];
 }
 
 export interface ShotMeta {
@@ -145,12 +147,24 @@ export interface MontagePlan {
   style: MontageStyle;
 }
 
+export interface RenderJob {
+  id: string;
+  createdAt: string;
+  quality: 'preview' | 'final';
+  resolution: string;
+  status: 'queued' | 'rendering' | 'done' | 'failed';
+  progress?: number;
+  outputFile?: string;
+  errorMessage?: string;
+}
+
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const DATA_DIR = path.resolve(process.cwd(), 'data', 'projects');
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const projectWriteQueues = new Map<string, Promise<unknown>>();
+let cachedProjectRepository: ProjectRepository | null | undefined;
 
 const DEFAULT_SETTINGS: ProjectSettings = {
   scriptwriterPrompt: `Ты — сценарист премиальных рекламных роликов для элитной недвижимости. Ты создаёшь сценарии, которые ПРОДАЮТ мечту о жизни, а не квадратные метры.
@@ -302,6 +316,46 @@ async function writeFileAtomic(filePath: string, contents: string): Promise<void
   }
 }
 
+async function readProjectFromFile(projectId: string): Promise<Project | null> {
+  try {
+    const raw = await fs.readFile(projectFilePath(projectId), 'utf-8');
+    return normalizeProject(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+async function listProjectsFromFiles(): Promise<Project[]> {
+  await ensureDir(DATA_DIR);
+
+  const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
+  const projects: Project[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const project = await readProjectFromFile(entry.name);
+    if (project) {
+      projects.push(project);
+    }
+  }
+
+  projects.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
+  return projects;
+}
+
+async function backfillLegacyProject(
+  repository: ProjectRepository,
+  projectId: string,
+): Promise<Project | null> {
+  const legacyProject = await readProjectFromFile(projectId);
+  if (!legacyProject) {
+    return null;
+  }
+
+  return normalizeProject(await repository.saveProject(legacyProject));
+}
+
 /**
  * Serialized read-modify-write for a project.
  * Prevents race conditions where two concurrent requests read stale data.
@@ -313,11 +367,24 @@ export async function withProject<T>(
   fn: (project: Project) => T | Promise<T>,
 ): Promise<T> {
   return serializeProjectWrite(projectId, async () => {
-    const raw = await fs.readFile(projectFilePath(projectId), 'utf-8');
-    const project = normalizeProject(JSON.parse(raw));
+    const repository = getDefaultProjectRepository();
+    const project = repository
+      ? (await repository.getProject(projectId)) ?? (await backfillLegacyProject(repository, projectId))
+      : await readProjectFromFile(projectId);
+
+    if (!project) {
+      throw new Error('Project not found');
+    }
+
     const result = await fn(project);
     project.updated = new Date().toISOString();
-    await writeFileAtomic(projectFilePath(project.id), JSON.stringify(project, null, 2));
+
+    if (repository) {
+      await repository.saveProject(project);
+    } else {
+      await writeFileAtomic(projectFilePath(project.id), JSON.stringify(project, null, 2));
+    }
+
     return result;
   });
 }
@@ -413,34 +480,37 @@ function normalizeProject(data: any): Project {
 // ── CRUD ─────────────────────────────────────────────────────────────
 
 export async function listProjects(): Promise<Project[]> {
-  await ensureDir(DATA_DIR);
+  const repository = getDefaultProjectRepository();
+  if (repository) {
+    const repositoryProjects = (await repository.listProjects()).map((project) => normalizeProject(project));
+    const projectsById = new Map(repositoryProjects.map((project) => [project.id, project]));
+    const fileProjects = await listProjectsFromFiles();
 
-  const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
-  const projects: Project[] = [];
+    for (const fileProject of fileProjects) {
+      if (projectsById.has(fileProject.id)) {
+        continue;
+      }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    try {
-      const filePath = projectFilePath(entry.name);
-      const raw = await fs.readFile(filePath, 'utf-8');
-      projects.push(normalizeProject(JSON.parse(raw)));
-    } catch {
-      // skip folders without a valid project.json
+      const importedProject = normalizeProject(await repository.saveProject(fileProject));
+      projectsById.set(importedProject.id, importedProject);
     }
+
+    return [...projectsById.values()].sort(
+      (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime(),
+    );
   }
 
-  // newest first
-  projects.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
-  return projects;
+  return listProjectsFromFiles();
 }
 
 export async function getProject(id: string): Promise<Project | null> {
-  try {
-    const raw = await fs.readFile(projectFilePath(id), 'utf-8');
-    return normalizeProject(JSON.parse(raw));
-  } catch {
-    return null;
+  const repository = getDefaultProjectRepository();
+  if (repository) {
+    const project = (await repository.getProject(id)) ?? (await backfillLegacyProject(repository, id));
+    return project ? normalizeProject(project) : null;
   }
+
+  return readProjectFromFile(id);
 }
 
 export async function createProject(name: string): Promise<Project> {
@@ -464,6 +534,13 @@ export async function createProject(name: string): Promise<Project> {
     await ensureDir(projectDir);
     await ensureDir(resolveProjectPath(id, 'brief', 'images'));
     await ensureDir(resolveProjectPath(id, 'shots'));
+
+    const repository = getDefaultProjectRepository();
+    if (repository) {
+      await repository.saveProject(project);
+      return;
+    }
+
     await writeFileAtomic(projectFilePath(id), JSON.stringify(project, null, 2));
   });
 
@@ -474,6 +551,13 @@ export async function saveProject(project: Project): Promise<Project> {
   project.updated = new Date().toISOString();
   await serializeProjectWrite(project.id, async () => {
     await ensureDir(getProjectDir(project.id));
+
+    const repository = getDefaultProjectRepository();
+    if (repository) {
+      await repository.saveProject(project);
+      return;
+    }
+
     await writeFileAtomic(projectFilePath(project.id), JSON.stringify(project, null, 2));
   });
   return project;
@@ -482,10 +566,28 @@ export async function saveProject(project: Project): Promise<Project> {
 export async function deleteProject(id: string): Promise<boolean> {
   try {
     await serializeProjectWrite(id, async () => {
+      const repository = getDefaultProjectRepository();
+      if (repository) {
+        await repository.deleteProject(id);
+      }
       await fs.rm(getProjectDir(id), { recursive: true, force: true });
     });
     return true;
   } catch {
     return false;
   }
+}
+
+function getDefaultProjectRepository(): ProjectRepository | null {
+  if (cachedProjectRepository !== undefined) {
+    return cachedProjectRepository
+  }
+
+  try {
+    cachedProjectRepository = createProjectRepository()
+  } catch {
+    cachedProjectRepository = null
+  }
+
+  return cachedProjectRepository
 }

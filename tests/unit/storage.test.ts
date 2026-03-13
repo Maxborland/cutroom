@@ -7,6 +7,7 @@ import {
   deleteProject,
   ensureDir,
   getProjectDir,
+  withProject,
 } from '../../server/lib/storage'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -130,6 +131,40 @@ describe('storage', () => {
       // Verify it was persisted
       const fetched = await getProject(project.id)
       expect(fetched!.script).toBe('Updated script content')
+    })
+
+    it('serializes concurrent project mutations through withProject', async () => {
+      const project = await createProject('Concurrent Save Test')
+      createdIds.push(project.id)
+
+      let releaseFirst!: () => void
+      let notifyFirstEntered!: () => void
+      const firstReady = new Promise<void>((resolve) => {
+        notifyFirstEntered = resolve
+      })
+      const releaseGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+
+      const firstMutation = withProject(project.id, async (current) => {
+        current.brief.text = 'Preserved brief'
+        notifyFirstEntered()
+        await releaseGate
+      })
+
+      await firstReady
+
+      const secondMutation = withProject(project.id, (current) => {
+        expect(current.brief.text).toBe('Preserved brief')
+        current.stage = 'script'
+      })
+
+      releaseFirst()
+      await Promise.all([firstMutation, secondMutation])
+
+      const saved = await getProject(project.id)
+      expect(saved?.brief.text).toBe('Preserved brief')
+      expect(saved?.stage).toBe('script')
     })
   })
 

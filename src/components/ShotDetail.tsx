@@ -53,6 +53,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
   const [uploadingVideo, setUploadingVideo] = useState(false)
   const [cachingVideo, setCachingVideo] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  const [brokenMediaKeys, setBrokenMediaKeys] = useState<Set<string>>(() => new Set())
   const videoInputRef = useRef<HTMLInputElement>(null)
 
   const [videoEditHint, setVideoEditHint] = useState('')
@@ -132,6 +133,21 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     }
   }
 
+  const mediaKeyFor = (kind: 'generated' | 'enhanced', filename: string) =>
+    `${shot.id}:${kind}:${filename}`
+
+  const markMediaBroken = (kind: 'generated' | 'enhanced', filename: string) => {
+    const mediaKey = mediaKeyFor(kind, filename)
+    setBrokenMediaKeys((prev) => {
+      if (prev.has(mediaKey)) return prev
+      const next = new Set(prev)
+      next.add(mediaKey)
+      return next
+    })
+  }
+
+  const isMediaBroken = (kind: 'generated' | 'enhanced', filename: string) =>
+    brokenMediaKeys.has(mediaKeyFor(kind, filename))
   const applyVideoEditHint = (basePrompt: string, hint: string): string => {
     const trimmedHint = hint.trim()
     if (!trimmedHint) return basePrompt
@@ -388,16 +404,18 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                         useLightboxStore.getState().show(urls, i)
                       }}
                     >
-                      <img
-                        src={api.shots.generatedImageUrl(project.id, shot.id, img)}
-                        alt={img}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          const target = e.target as HTMLImageElement
-                          target.style.display = 'none'
-                          target.parentElement!.innerHTML = `<span class="font-mono text-[10px] text-text-muted">${img}</span>`
-                        }}
-                      />
+                      {isMediaBroken('generated', img) ? (
+                        <span className="px-2 text-center font-mono text-[10px] text-text-muted break-all">
+                          {img}
+                        </span>
+                      ) : (
+                        <img
+                          src={api.shots.generatedImageUrl(project.id, shot.id, img)}
+                          alt={img}
+                          className="w-full h-full object-cover"
+                          onError={() => markMediaBroken('generated', img)}
+                        />
+                      )}
                     </button>
                     <button
                       onClick={(e) => {
@@ -448,17 +466,19 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
                       const urls = shot.enhancedImages.map((f) => api.shots.generatedImageUrl(project.id, shot.id, f))
                       useLightboxStore.getState().show(urls, i)
                     }}
-                  >
-                    <img
-                      src={api.shots.generatedImageUrl(project.id, shot.id, img)}
-                      alt={img}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement
-                        target.style.display = 'none'
-                        target.parentElement!.innerHTML = `<span class="font-mono text-[10px] text-text-muted">${img}</span>`
-                      }}
-                    />
+                    >
+                    {isMediaBroken('enhanced', img) ? (
+                      <span className="px-2 text-center font-mono text-[10px] text-text-muted break-all">
+                        {img}
+                      </span>
+                    ) : (
+                      <img
+                        src={api.shots.generatedImageUrl(project.id, shot.id, img)}
+                        alt={img}
+                        className="w-full h-full object-cover"
+                        onError={() => markMediaBroken('enhanced', img)}
+                      />
+                    )}
                   </button>
                   <button
                     onClick={(e) => {
