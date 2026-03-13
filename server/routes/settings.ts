@@ -13,12 +13,35 @@ interface Settings {
   openRouterApiKey: string;
   falApiKey: string;
   replicateApiToken: string;
+  elevenLabsApiKey?: string;
+  sunoApiKey?: string;
   // Legacy field names kept for migration.
   openrouterApiKey?: string;
   higgsfieldCredentials?: string;
   higgsfieldKeyId?: string;
   higgsfieldKeySecret?: string;
   [key: string]: unknown;
+}
+
+type LegacySettingsKeys =
+  | 'openrouterApiKey'
+  | 'higgsfieldCredentials'
+  | 'higgsfieldKeyId'
+  | 'higgsfieldKeySecret';
+
+function stripLegacySettingsFields(settings: Settings): Omit<Settings, LegacySettingsKeys> {
+  const {
+    openrouterApiKey,
+    higgsfieldCredentials,
+    higgsfieldKeyId,
+    higgsfieldKeySecret,
+    ...rest
+  } = settings;
+  void openrouterApiKey;
+  void higgsfieldCredentials;
+  void higgsfieldKeyId;
+  void higgsfieldKeySecret;
+  return rest;
 }
 
 async function readSettings(): Promise<Settings> {
@@ -56,22 +79,15 @@ router.get('/', async (_req: Request, res: Response) => {
   try {
     const settings = await readSettings();
     const apiKey = settings.openRouterApiKey || settings.openrouterApiKey || '';
-
-    const {
-      openrouterApiKey: _legacy,
-      higgsfieldCredentials: _legacyHf,
-      higgsfieldKeyId: _legacyHfId,
-      higgsfieldKeySecret: _legacyHfSecret,
-      ...rest
-    } = settings;
+    const rest = stripLegacySettingsFields(settings);
 
     res.json({
       ...rest,
       openRouterApiKey: maskApiKey(apiKey),
       falApiKey: maskApiKey(settings.falApiKey || ''),
       replicateApiToken: maskApiKey(settings.replicateApiToken || ''),
-      elevenLabsApiKey: maskApiKey((settings as any).elevenLabsApiKey || ''),
-      sunoApiKey: maskApiKey((settings as any).sunoApiKey || ''),
+      elevenLabsApiKey: maskApiKey(settings.elevenLabsApiKey || ''),
+      sunoApiKey: maskApiKey(settings.sunoApiKey || ''),
     });
   } catch (err) {
     console.error('Failed to read settings:', err);
@@ -99,21 +115,15 @@ router.put('/', async (req: Request, res: Response) => {
       updates.replicateApiToken = existing.replicateApiToken || '';
     }
 
-    if (isMaskedKey((updates as any).elevenLabsApiKey)) {
-      (updates as any).elevenLabsApiKey = (existing as any).elevenLabsApiKey || '';
+    if (isMaskedKey(updates.elevenLabsApiKey)) {
+      updates.elevenLabsApiKey = existing.elevenLabsApiKey || '';
     }
 
-    if (isMaskedKey((updates as any).sunoApiKey)) {
-      (updates as any).sunoApiKey = (existing as any).sunoApiKey || '';
+    if (isMaskedKey(updates.sunoApiKey)) {
+      updates.sunoApiKey = existing.sunoApiKey || '';
     }
 
-    const {
-      openrouterApiKey: _legacy,
-      higgsfieldCredentials: _legacyHf,
-      higgsfieldKeyId: _legacyHfId,
-      higgsfieldKeySecret: _legacyHfSecret,
-      ...existingClean
-    } = existing;
+    const existingClean = stripLegacySettingsFields(existing);
 
     const merged: Settings = {
       ...existingClean,
@@ -127,8 +137,8 @@ router.put('/', async (req: Request, res: Response) => {
       openRouterApiKey: maskApiKey(merged.openRouterApiKey || ''),
       falApiKey: maskApiKey(merged.falApiKey || ''),
       replicateApiToken: maskApiKey(merged.replicateApiToken || ''),
-      elevenLabsApiKey: maskApiKey((merged as any).elevenLabsApiKey || ''),
-      sunoApiKey: maskApiKey((merged as any).sunoApiKey || ''),
+      elevenLabsApiKey: maskApiKey(merged.elevenLabsApiKey || ''),
+      sunoApiKey: maskApiKey(merged.sunoApiKey || ''),
     });
   } catch (err) {
     console.error('Failed to update settings:', err);

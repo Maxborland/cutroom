@@ -1,32 +1,16 @@
 import { Router, Request, Response } from 'express';
 import fs from 'node:fs/promises';
+import fsCb from 'node:fs';
 import path from 'node:path';
 import archiver from 'archiver';
-import { getProject, resolveProjectPath } from '../lib/storage.js';
+import { getProject } from '../lib/storage.js';
+import { getProjectStorageAdapter } from '../lib/storage-adapters/index.js';
+import { appendProjectArchiveEntries, getExportDownloadFilename } from '../lib/export-archive.js';
+import { enqueueExportJob, getExportJob } from '../lib/jobs/export.js';
 import { sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
-
-function isExternalMediaRef(value: string): boolean {
-  return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
-}
-
-function isSafeManagedFilename(value: string): boolean {
-  const trimmed = value.trim();
-  return Boolean(trimmed) && trimmed === path.basename(trimmed) && trimmed !== '.' && trimmed !== '..';
-}
-
-function resolveGeneratedImagePath(projectId: string, shotId: string, filename: string): string | null {
-  if (isExternalMediaRef(filename) || !isSafeManagedFilename(filename)) {
-    return null;
-  }
-
-  try {
-    return resolveProjectPath(projectId, 'shots', shotId, 'generated', filename);
-  } catch {
-    return null;
-  }
-}
+const mediaStorage = getProjectStorageAdapter();
 
 // GET /api/projects/:id/export — stream ZIP of the entire project
 router.get('/export', async (req: Request, res: Response) => {
@@ -53,100 +37,7 @@ router.get('/export', async (req: Request, res: Response) => {
     });
 
     archive.pipe(res);
-
-    // Add metadata.json (full project)
-    archive.append(JSON.stringify(project, null, 2), { name: 'metadata.json' });
-
-    // Add per-shot folders
-    for (const shot of project.shots) {
-      const shotIndex = String(shot.order + 1).padStart(2, '0');
-      const folderName = `${shotIndex}_${shot.id}`;
-
-      // Add prompts.txt
-      const promptsContent = [
-        `Shot: ${shot.id}`,
-        `Order: ${shot.order}`,
-        `Scene: ${shot.scene || ''}`,
-        `Duration: ${shot.duration}s`,
-        `Status: ${shot.status}`,
-        '',
-        'Image Prompt:',
-        shot.imagePrompt || '',
-        '',
-        'Video Prompt:',
-        shot.videoPrompt || '',
-        '',
-        'Audio Description:',
-        shot.audioDescription || '',
-      ].join('\n');
-      archive.append(promptsContent, { name: `${folderName}/prompts.txt` });
-
-      // Determine best images: prefer enhanced, fallback to generated
-      const enhancedImages = Array.isArray((shot as any).enhancedImages) ? (shot as any).enhancedImages as string[] : [];
-      const generatedImages = Array.isArray(shot.generatedImages) ? shot.generatedImages : [];
-      const bestImages = enhancedImages.length > 0 ? enhancedImages : generatedImages;
-
-      // Add best images as final/
-      const generatedDir = resolveProjectPath(project.id, 'shots', shot.id, 'generated');
-      if (bestImages.length > 0) {
-        for (const file of bestImages) {
-          const filePath = resolveGeneratedImagePath(project.id, shot.id, file);
-          if (!filePath) continue;
-          try {
-            const stat = await fs.stat(filePath);
-            if (stat.isFile()) {
-              archive.file(filePath, { name: `${folderName}/final/${path.basename(file)}` });
-            }
-          } catch {
-            // File might be missing, skip
-          }
-        }
-      }
-
-      // Add all images (generated + enhanced) for reference
-      try {
-        const allFiles = await fs.readdir(generatedDir);
-        for (const file of allFiles) {
-          const filePath = path.join(generatedDir, file);
-          const stat = await fs.stat(filePath);
-          if (stat.isFile()) {
-            archive.file(filePath, { name: `${folderName}/images/${file}` });
-          }
-        }
-      } catch {
-        // Directory might not exist, skip
-      }
-
-      // Add video
-      const videoDir = resolveProjectPath(project.id, 'shots', shot.id, 'video');
-      try {
-        const videoFiles = await fs.readdir(videoDir);
-        for (const file of videoFiles) {
-          const filePath = path.join(videoDir, file);
-          const stat = await fs.stat(filePath);
-          if (stat.isFile()) {
-            archive.file(filePath, { name: `${folderName}/video/${file}` });
-          }
-        }
-      } catch {
-        // Directory might not exist, skip
-      }
-
-      // Add reference
-      const referenceDir = resolveProjectPath(project.id, 'shots', shot.id, 'reference');
-      try {
-        const referenceFiles = await fs.readdir(referenceDir);
-        for (const file of referenceFiles) {
-          const filePath = path.join(referenceDir, file);
-          const stat = await fs.stat(filePath);
-          if (stat.isFile()) {
-            archive.file(filePath, { name: `${folderName}/reference/${file}` });
-          }
-        }
-      } catch {
-        // Directory might not exist, skip
-      }
-    }
+    await appendProjectArchiveEntries(archive, project.id);
 
     await archive.finalize();
   } catch (err) {
@@ -154,6 +45,101 @@ router.get('/export', async (req: Request, res: Response) => {
     if (!res.headersSent) {
       sendApiError(res, 500, 'Failed to export project');
     }
+  }
+});
+
+router.post('/export/prepare', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) {
+      sendApiError(res, 404, 'Project not found');
+      return;
+    }
+
+    const jobId = await enqueueExportJob(project.id);
+    if (!jobId) {
+      res.json({
+        jobId: null,
+        status: 'done',
+        downloadUrl: `/api/projects/${project.id}/export`,
+      });
+      return;
+    }
+
+    res.json({ jobId, status: 'queued' });
+  } catch (err) {
+    console.error('Failed to prepare export:', err);
+    sendApiError(res, 500, 'Failed to prepare export');
+  }
+});
+
+router.get('/export/jobs/:jobId', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) {
+      sendApiError(res, 404, 'Project not found');
+      return;
+    }
+
+    const job = await getExportJob(req.params.jobId);
+    if (!job || job.projectId !== project.id) {
+      sendApiError(res, 404, 'Export job not found');
+      return;
+    }
+
+    res.json({
+      id: job.id,
+      status: job.status,
+      errorMessage: job.errorMessage,
+      outputFile: job.result?.outputFile ?? null,
+      downloadUrl: job.result?.outputFile
+        ? `/api/projects/${project.id}/export/jobs/${job.id}/download`
+        : null,
+    });
+  } catch (err) {
+    console.error('Failed to get export job:', err);
+    sendApiError(res, 500, 'Failed to get export job');
+  }
+});
+
+router.get('/export/jobs/:jobId/download', async (req: Request, res: Response) => {
+  try {
+    const project = await getProject(req.params.id);
+    if (!project) {
+      sendApiError(res, 404, 'Project not found');
+      return;
+    }
+
+    const job = await getExportJob(req.params.jobId);
+    if (!job || job.projectId !== project.id) {
+      sendApiError(res, 404, 'Export job not found');
+      return;
+    }
+
+    if (job.status !== 'done' || !job.result?.outputFile) {
+      sendApiError(res, 400, `Export not complete. Status: ${job.status}`);
+      return;
+    }
+
+    const filename = path.basename(job.result.outputFile);
+    const filePath = mediaStorage.getReadablePathForServer({
+      projectId: project.id,
+      scope: 'export',
+      filename,
+    });
+    const stat = await fs.stat(filePath).catch(() => null);
+    if (!stat?.isFile()) {
+      sendApiError(res, 404, 'Prepared export file not found');
+      return;
+    }
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${getExportDownloadFilename(project.name)}"`);
+    const stream = fsCb.createReadStream(filePath);
+    stream.pipe(res);
+  } catch (err) {
+    console.error('Failed to download prepared export:', err);
+    sendApiError(res, 500, 'Failed to download prepared export');
   }
 });
 

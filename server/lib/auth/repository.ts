@@ -6,15 +6,21 @@ export interface AuthUserRecord {
   id: string;
   email: string;
   name: string;
+  role: AuthRole;
   passwordHash: string;
   createdAt: string;
   updatedAt: string;
 }
 
+export const AUTH_ROLES = ['owner', 'admin', 'editor', 'viewer'] as const;
+
+export type AuthRole = (typeof AUTH_ROLES)[number];
+
 export interface AuthInviteRecord {
   token: string;
   email: string;
   invitedByUserId: string | null;
+  role: AuthRole;
   createdAt: string;
   acceptedAt: string | null;
 }
@@ -35,6 +41,7 @@ interface AuthState {
 export interface CreateInviteInput {
   email: string;
   invitedByUserId: string | null;
+  role: AuthRole;
 }
 
 export interface AcceptInviteInput {
@@ -55,6 +62,7 @@ export class AuthRepositoryError extends Error {
 
 export interface AuthRepository {
   countUsers(): Promise<number>;
+  listUsers(): Promise<AuthUserRecord[]>;
   findUserById(userId: string): Promise<AuthUserRecord | null>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   createInvite(input: CreateInviteInput): Promise<AuthInviteRecord>;
@@ -69,6 +77,7 @@ export interface AuthUser {
   id: string;
   email: string;
   name: string;
+  role: AuthRole;
   createdAt: string;
 }
 
@@ -88,8 +97,12 @@ function cloneSession(session: AuthSessionRecord): AuthSessionRecord {
   return { ...session };
 }
 
-function emptyState(): AuthState {
-  return { users: [], invites: [], sessions: [] };
+function isBootstrapInvite(invite: Pick<AuthInviteRecord, 'invitedByUserId'>): boolean {
+  return invite.invitedByUserId === null;
+}
+
+export function isAuthRole(value: string): value is AuthRole {
+  return AUTH_ROLES.includes(value as AuthRole);
 }
 
 class InMemoryAuthRepository implements AuthRepository {
@@ -105,6 +118,13 @@ class InMemoryAuthRepository implements AuthRepository {
 
   async countUsers(): Promise<number> {
     return this.state.users.length;
+  }
+
+  async listUsers(): Promise<AuthUserRecord[]> {
+    return this.state.users
+      .slice()
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((user) => cloneUser(user));
   }
 
   async findUserById(userId: string): Promise<AuthUserRecord | null> {
@@ -125,11 +145,23 @@ class InMemoryAuthRepository implements AuthRepository {
       token: randomBytes(24).toString('hex'),
       email,
       invitedByUserId: input.invitedByUserId,
+      role: input.role,
       createdAt,
       acceptedAt: null,
     };
 
-    this.state.invites = this.state.invites.filter((entry) => !(entry.email === email && entry.acceptedAt === null));
+    this.state.invites = this.state.invites.filter((entry) => {
+      if (entry.acceptedAt !== null) {
+        return true;
+      }
+
+      if (input.invitedByUserId === null && isBootstrapInvite(entry)) {
+        return false;
+      }
+
+      return entry.email !== email;
+    });
+
     this.state.invites.push(invite);
     return cloneInvite(invite);
   }
@@ -149,6 +181,10 @@ class InMemoryAuthRepository implements AuthRepository {
       throw new AuthRepositoryError('INVITE_ALREADY_ACCEPTED', 'Invite has already been accepted');
     }
 
+    if (isBootstrapInvite(invite) && this.state.users.length > 0) {
+      throw new AuthRepositoryError('BOOTSTRAP_INVITE_CLOSED', 'Bootstrap invite is no longer valid');
+    }
+
     const existingUser = this.state.users.find((entry) => entry.email === invite.email);
     if (existingUser) {
       throw new AuthRepositoryError('USER_ALREADY_EXISTS', 'User already exists');
@@ -159,6 +195,7 @@ class InMemoryAuthRepository implements AuthRepository {
       id: randomUUID(),
       email: invite.email,
       name: input.name.trim(),
+      role: invite.role,
       passwordHash: input.passwordHash,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -166,6 +203,12 @@ class InMemoryAuthRepository implements AuthRepository {
 
     invite.acceptedAt = timestamp;
     this.state.users.push(user);
+    if (isBootstrapInvite(invite)) {
+      this.state.invites = this.state.invites.filter(
+        (entry) => entry.token === invite.token || !isBootstrapInvite(entry) || entry.acceptedAt !== null,
+      );
+    }
+
     return cloneUser(user);
   }
 
@@ -204,6 +247,7 @@ type AuthUserRow = {
   id: string;
   email: string;
   name: string;
+  role: string;
   password_hash: string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -213,6 +257,7 @@ type AuthInviteRow = {
   token: string;
   email: string;
   invited_by_user_id: string | null;
+  role: string;
   created_at: Date | string;
   accepted_at: Date | string | null;
 };
@@ -246,6 +291,7 @@ function mapUserRow(row: AuthUserRow | undefined): AuthUserRecord | null {
     id: row.id,
     email: row.email,
     name: row.name,
+    role: isAuthRole(row.role) ? row.role : 'editor',
     passwordHash: row.password_hash,
     createdAt: normalizeTimestampValue(row.created_at) ?? new Date().toISOString(),
     updatedAt: normalizeTimestampValue(row.updated_at) ?? new Date().toISOString(),
@@ -261,6 +307,7 @@ function mapInviteRow(row: AuthInviteRow | undefined): AuthInviteRecord | null {
     token: row.token,
     email: row.email,
     invitedByUserId: row.invited_by_user_id,
+    role: isAuthRole(row.role) ? row.role : 'editor',
     createdAt: normalizeTimestampValue(row.created_at) ?? new Date().toISOString(),
     acceptedAt: normalizeTimestampValue(row.accepted_at),
   };
@@ -307,10 +354,24 @@ export class PostgresAuthRepository implements AuthRepository {
     return Number(result.rows[0]?.count ?? 0);
   }
 
+  async listUsers(): Promise<AuthUserRecord[]> {
+    const result = await this.db.query<AuthUserRow>(
+      `
+        SELECT id, email, name, role, password_hash, created_at, updated_at
+        FROM auth_users
+        ORDER BY created_at ASC
+      `,
+    );
+
+    return result.rows
+      .map((row) => mapUserRow(row))
+      .filter((user): user is AuthUserRecord => Boolean(user));
+  }
+
   async findUserById(userId: string): Promise<AuthUserRecord | null> {
     const result = await this.db.query<AuthUserRow>(
       `
-        SELECT id, email, name, password_hash, created_at, updated_at
+        SELECT id, email, name, role, password_hash, created_at, updated_at
         FROM auth_users
         WHERE id = $1
         LIMIT 1
@@ -324,7 +385,7 @@ export class PostgresAuthRepository implements AuthRepository {
   async findUserByEmail(email: string): Promise<AuthUserRecord | null> {
     const result = await this.db.query<AuthUserRow>(
       `
-        SELECT id, email, name, password_hash, created_at, updated_at
+        SELECT id, email, name, role, password_hash, created_at, updated_at
         FROM auth_users
         WHERE email = $1
         LIMIT 1
@@ -341,21 +402,31 @@ export class PostgresAuthRepository implements AuthRepository {
       const token = randomBytes(24).toString('hex');
       const createdAt = new Date().toISOString();
 
-      await client.query(
-        `
-          DELETE FROM auth_invites
-          WHERE email = $1 AND accepted_at IS NULL
-        `,
-        [email],
-      );
+      if (input.invitedByUserId === null) {
+        await client.query('LOCK TABLE auth_invites IN EXCLUSIVE MODE');
+        await client.query(
+          `
+            DELETE FROM auth_invites
+            WHERE invited_by_user_id IS NULL AND accepted_at IS NULL
+          `,
+        );
+      } else {
+        await client.query(
+          `
+            DELETE FROM auth_invites
+            WHERE email = $1 AND accepted_at IS NULL
+          `,
+          [email],
+        );
+      }
 
       const result = await client.query<AuthInviteRow>(
         `
-          INSERT INTO auth_invites (token, email, invited_by_user_id, created_at, accepted_at)
-          VALUES ($1, $2, $3, $4, NULL)
-          RETURNING token, email, invited_by_user_id, created_at, accepted_at
+          INSERT INTO auth_invites (token, email, invited_by_user_id, role, created_at, accepted_at)
+          VALUES ($1, $2, $3, $4, $5, NULL)
+          RETURNING token, email, invited_by_user_id, role, created_at, accepted_at
         `,
-        [token, email, input.invitedByUserId, createdAt],
+        [token, email, input.invitedByUserId, input.role, createdAt],
       );
 
       return mapInviteRow(result.rows[0]) as AuthInviteRecord;
@@ -365,7 +436,7 @@ export class PostgresAuthRepository implements AuthRepository {
   async findInviteByToken(token: string): Promise<AuthInviteRecord | null> {
     const result = await this.db.query<AuthInviteRow>(
       `
-        SELECT token, email, invited_by_user_id, created_at, accepted_at
+        SELECT token, email, invited_by_user_id, role, created_at, accepted_at
         FROM auth_invites
         WHERE token = $1
         LIMIT 1
@@ -380,7 +451,7 @@ export class PostgresAuthRepository implements AuthRepository {
     return withTransaction(this.db, async (client) => {
       const inviteResult = await client.query<AuthInviteRow>(
         `
-          SELECT token, email, invited_by_user_id, created_at, accepted_at
+          SELECT token, email, invited_by_user_id, role, created_at, accepted_at
           FROM auth_invites
           WHERE token = $1
           FOR UPDATE
@@ -395,6 +466,19 @@ export class PostgresAuthRepository implements AuthRepository {
 
       if (invite.acceptedAt) {
         throw new AuthRepositoryError('INVITE_ALREADY_ACCEPTED', 'Invite has already been accepted');
+      }
+
+      if (isBootstrapInvite(invite)) {
+        const userCountResult = await client.query<{ count: string | number }>(
+          `
+            SELECT COUNT(*) AS count
+            FROM auth_users
+          `,
+        );
+
+        if (Number(userCountResult.rows[0]?.count ?? 0) > 0) {
+          throw new AuthRepositoryError('BOOTSTRAP_INVITE_CLOSED', 'Bootstrap invite is no longer valid');
+        }
       }
 
       const existingUserResult = await client.query<{ id: string }>(
@@ -416,11 +500,11 @@ export class PostgresAuthRepository implements AuthRepository {
 
       const userResult = await client.query<AuthUserRow>(
         `
-          INSERT INTO auth_users (id, email, name, password_hash, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6)
-          RETURNING id, email, name, password_hash, created_at, updated_at
+          INSERT INTO auth_users (id, email, name, role, password_hash, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING id, email, name, role, password_hash, created_at, updated_at
         `,
-        [userId, invite.email, input.name.trim(), input.passwordHash, timestamp, timestamp],
+        [userId, invite.email, input.name.trim(), invite.role, input.passwordHash, timestamp, timestamp],
       );
 
       await client.query(
@@ -431,6 +515,16 @@ export class PostgresAuthRepository implements AuthRepository {
         `,
         [invite.token, timestamp],
       );
+
+      if (isBootstrapInvite(invite)) {
+        await client.query(
+          `
+            DELETE FROM auth_invites
+            WHERE invited_by_user_id IS NULL AND accepted_at IS NULL AND token <> $1
+          `,
+          [invite.token],
+        );
+      }
 
       return mapUserRow(userResult.rows[0]) as AuthUserRecord;
     });
@@ -488,6 +582,7 @@ export function toAuthUser(user: AuthUserRecord): AuthUser {
     id: user.id,
     email: user.email,
     name: user.name,
+    role: user.role,
     createdAt: user.createdAt,
   };
 }

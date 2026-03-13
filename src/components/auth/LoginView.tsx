@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { Loader2, LockKeyhole, LogIn } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 
@@ -77,6 +78,13 @@ export function LoginView() {
             Войти
           </button>
         </form>
+
+        <div className="mt-4 border-t-2 border-border pt-4 text-sm text-text-muted">
+          Первый запуск на новом инстансе?{' '}
+          <Link to="/bootstrap" className="font-bold text-text underline">
+            Создать первый доступ
+          </Link>
+        </div>
       </div>
     </div>
   )

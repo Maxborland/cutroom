@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { beforeEach, afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import request from 'supertest'
 import fs from 'node:fs/promises'
@@ -18,7 +20,7 @@ import {
 
 // Mock child_process — namespace import so normalize.ts picks it up
 vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal() as any
+  const actual = await importOriginal<typeof import('node:child_process')>()
   return {
     ...actual,
     execFile: vi.fn(),
@@ -445,8 +447,8 @@ describe('Montage Plan Generation (Phase 4)', () => {
       // Create project with approved shots and voiceover file
       projectId = await setupProject(
         [
-          makeShot({ id: 'shot-001', order: 0, scene: 'Фасад exterior', duration: 5, videoFile: 'shots/shot-001.mp4' }),
-          makeShot({ id: 'shot-002', order: 1, scene: 'Интерьер гостиная', duration: 4, videoFile: 'shots/shot-002.mp4' }),
+          makeShot({ id: 'shot-001', order: 0, scene: 'Фасад exterior', duration: 5, videoFile: 'shot-001.mp4' }),
+          makeShot({ id: 'shot-002', order: 1, scene: 'Интерьер гостиная', duration: 4, videoFile: 'shot-002.mp4' }),
         ],
         { voiceoverFile: 'montage/voiceover.mp3', musicFile: 'montage/music.mp3' },
       )
@@ -457,10 +459,12 @@ describe('Montage Plan Generation (Phase 4)', () => {
       await ensureDir(montageDir)
       await fs.writeFile(path.join(montageDir, 'voiceover.mp3'), 'fake-audio')
 
-      const shotsDir = resolveProjectPath(projectId, 'shots')
-      await ensureDir(shotsDir)
-      await fs.writeFile(path.join(shotsDir, 'shot-001.mp4'), 'fake-video')
-      await fs.writeFile(path.join(shotsDir, 'shot-002.mp4'), 'fake-video')
+      const shotOneVideoDir = resolveProjectPath(projectId, 'shots', 'shot-001', 'video')
+      const shotTwoVideoDir = resolveProjectPath(projectId, 'shots', 'shot-002', 'video')
+      await ensureDir(shotOneVideoDir)
+      await ensureDir(shotTwoVideoDir)
+      await fs.writeFile(path.join(shotOneVideoDir, 'shot-001.mp4'), 'fake-video')
+      await fs.writeFile(path.join(shotTwoVideoDir, 'shot-002.mp4'), 'fake-video')
 
       // Mock ffprobe to return 45.2 seconds for voiceover, and video info for clips
       mockFfprobe(45.2)
@@ -491,15 +495,15 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
       projectId = await setupProject(
         [
-          makeShot({ id: 'shot-001', order: 0, scene: 'Test exterior', duration: 5, videoFile: 'shots/shot-001.mp4' }),
+          makeShot({ id: 'shot-001', order: 0, scene: 'Test exterior', duration: 5, videoFile: 'shot-001.mp4' }),
         ],
         { script, musicFile: 'montage/music.mp3' },
       )
       createdIds.push(projectId)
 
-      const shotsDir = resolveProjectPath(projectId, 'shots')
-      await ensureDir(shotsDir)
-      await fs.writeFile(path.join(shotsDir, 'shot-001.mp4'), 'fake-video')
+      const shotVideoDir = resolveProjectPath(projectId, 'shots', 'shot-001', 'video')
+      await ensureDir(shotVideoDir)
+      await fs.writeFile(path.join(shotVideoDir, 'shot-001.mp4'), 'fake-video')
 
       // Mock ffprobe for video clips only (no voiceover file)
       mockFfprobe(5)
@@ -690,19 +694,18 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
     it('should return a map of shotId -> normalized file path', async () => {
       projectId = await setupProject([
-        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shots/shot-001.mp4' }),
+        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shot-001.mp4' }),
       ])
       createdIds.push(projectId)
 
-      // Create fake video file
-      const shotsDir = resolveProjectPath(projectId, 'shots')
-      await ensureDir(shotsDir)
-      await fs.writeFile(path.join(shotsDir, 'shot-001.mp4'), 'fake-video')
+      const shotVideoDir = resolveProjectPath(projectId, 'shots', 'shot-001', 'video')
+      await ensureDir(shotVideoDir)
+      await fs.writeFile(path.join(shotVideoDir, 'shot-001.mp4'), 'fake-video')
 
       mockFfprobe(5)
 
       const result = await normalizeClips(projectId, [
-        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shots/shot-001.mp4' }),
+        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shot-001.mp4' }),
       ])
 
       expect(result).toBeInstanceOf(Map)
@@ -713,24 +716,24 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
     it('should call ffmpeg for clips needing normalization', async () => {
       projectId = await setupProject([
-        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shots/shot-001.mp4' }),
+        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shot-001.mp4' }),
       ])
       createdIds.push(projectId)
 
-      const shotsDir = resolveProjectPath(projectId, 'shots')
-      await ensureDir(shotsDir)
-      await fs.writeFile(path.join(shotsDir, 'shot-001.mp4'), 'fake-video')
+      const shotVideoDir = resolveProjectPath(projectId, 'shots', 'shot-001', 'video')
+      await ensureDir(shotVideoDir)
+      await fs.writeFile(path.join(shotVideoDir, 'shot-001.mp4'), 'fake-video')
 
       mockFfprobeNeedsNormalize(5)
 
       await normalizeClips(projectId, [
-        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shots/shot-001.mp4' }),
+        makeShot({ id: 'shot-001', order: 0, duration: 5, videoFile: 'shot-001.mp4' }),
       ])
 
       // Should have called ffprobe then ffmpeg
       const calls = mockExecFile.mock.calls
-      const ffprobeCalls = calls.filter((c: any[]) => c[0].includes('ffprobe'))
-      const ffmpegCalls = calls.filter((c: any[]) => c[0].includes('ffmpeg'))
+      const ffprobeCalls = calls.filter((call) => String(call[0]).includes('ffprobe'))
+      const ffmpegCalls = calls.filter((call) => String(call[0]).includes('ffmpeg'))
       expect(ffprobeCalls.length).toBeGreaterThanOrEqual(1)
       expect(ffmpegCalls.length).toBeGreaterThanOrEqual(1)
     })
@@ -742,8 +745,8 @@ describe('Montage Plan Generation (Phase 4)', () => {
           order: 0,
           duration: 5,
           videoFile: null,
-          selectedImage: 'shots/shot-001/best.jpg',
-          generatedImages: ['shots/shot-001/best.jpg'],
+          selectedImage: 'best.jpg',
+          generatedImages: ['best.jpg'],
         }),
       ])
       createdIds.push(projectId)
@@ -769,15 +772,15 @@ describe('Montage Plan Generation (Phase 4)', () => {
           order: 0,
           duration: 5,
           videoFile: null,
-          selectedImage: 'shots/shot-001/best.jpg',
-          generatedImages: ['shots/shot-001/best.jpg'],
+          selectedImage: 'best.jpg',
+          generatedImages: ['best.jpg'],
         }),
       ])
 
       expect(result.has('shot-001')).toBe(true)
 
       // Should have called ffmpeg with -loop 1 for image to video
-      const ffmpegCalls = mockExecFile.mock.calls.filter((c: any[]) => c[0].includes('ffmpeg'))
+      const ffmpegCalls = mockExecFile.mock.calls.filter((call) => String(call[0]).includes('ffmpeg'))
       expect(ffmpegCalls.length).toBeGreaterThanOrEqual(1)
     })
   })

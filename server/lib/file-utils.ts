@@ -22,7 +22,12 @@ export function resolvePathWithin(baseDir: string, ...segments: string[]): strin
  */
 export function sanitizeUploadedFilename(originalname: string, fallbackPrefix = 'upload'): string {
   const baseName = path.basename((originalname || '').replace(/\\/g, '/'));
-  const noControl = baseName.replace(/[\x00-\x1f\x7f]/g, '');
+  const noControl = Array.from(baseName)
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join('');
   const cleaned = noControl.replace(/[<>:"/\\|?*]/g, '_').trim();
   const safe = cleaned && cleaned !== '.' && cleaned !== '..'
     ? cleaned

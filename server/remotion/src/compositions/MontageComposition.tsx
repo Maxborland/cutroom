@@ -29,7 +29,6 @@ export const MontageComposition: React.FC<MontageCompositionProps> = ({ plan }) 
         <VideoClip
           key={clip.shotId}
           clip={clip}
-          fps={plan.fps}
           width={plan.width}
           height={plan.height}
         />

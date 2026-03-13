@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS auth_users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('owner', 'admin', 'editor', 'viewer')),
   password_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -11,6 +12,7 @@ CREATE TABLE IF NOT EXISTS auth_invites (
   token TEXT PRIMARY KEY,
   email TEXT NOT NULL,
   invited_by_user_id TEXT REFERENCES auth_users(id) ON DELETE SET NULL,
+  role TEXT NOT NULL DEFAULT 'editor' CHECK (role IN ('owner', 'admin', 'editor', 'viewer')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   accepted_at TIMESTAMPTZ
 );

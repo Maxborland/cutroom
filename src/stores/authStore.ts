@@ -1,14 +1,7 @@
 import { create } from 'zustand'
-import { ApiRequestError, api, isApiRequestError, type AuthUser } from '../lib/api'
+import { ApiRequestError, api, getApiErrorMessage, type AuthUser } from '../lib/api'
 
 export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'unauthenticated'
-
-const getErrorMessage = (error: unknown, fallback = 'Произошла ошибка') => {
-  if (isApiRequestError(error) && error.message.trim()) return error.message
-  if (error instanceof Error && error.message.trim()) return error.message
-  if (typeof error === 'string' && error.trim()) return error
-  return fallback
-}
 
 interface AuthState {
   status: AuthStatus
@@ -60,7 +53,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user: null,
         status: 'unauthenticated',
         loading: false,
-        error: getErrorMessage(error, 'Не удалось проверить текущую сессию'),
+        error: getApiErrorMessage(error, 'Не удалось проверить текущую сессию'),
       })
     }
   },
@@ -82,7 +75,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user: null,
         status: 'unauthenticated',
         loading: false,
-        error: getErrorMessage(error, 'Не удалось войти'),
+        error: getApiErrorMessage(error, 'Не удалось войти'),
       })
       return false
     }
@@ -122,7 +115,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user: null,
         status: 'unauthenticated',
         loading: false,
-        error: getErrorMessage(error, 'Не удалось принять приглашение'),
+        error: getApiErrorMessage(error, 'Не удалось принять приглашение'),
       })
       return false
     }

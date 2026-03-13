@@ -24,7 +24,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { Shot, ShotStatus } from '../types'
+import type { BriefAsset, Shot, ShotStatus } from '../types'
 import { mapWithConcurrency } from '../lib/async-pool'
 
 const COLUMN_PREFIX = 'column:'
@@ -75,7 +75,7 @@ function SortableShotCard({
 }: {
   shot: Shot
   isActive: boolean
-  briefAssets: any[]
+  briefAssets: BriefAsset[]
   onClick: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({

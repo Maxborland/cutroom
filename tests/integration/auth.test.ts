@@ -3,12 +3,13 @@ import request from 'supertest'
 import { createApp } from '../../server/app.js'
 import { createInMemoryAuthRepository } from '../../server/lib/auth/repository.js'
 
-function createAuthApp() {
+function createAuthApp(options: { bootstrapSetupToken?: string } = {}) {
   const authRepository = createInMemoryAuthRepository()
   const app = createApp({
     allowMissingApiKey: true,
     apiAccessKey: '',
     authRepository,
+    bootstrapSetupToken: options.bootstrapSetupToken,
   })
 
   return { app, authRepository }
@@ -36,6 +37,24 @@ describe('Authentication API', () => {
     expect(inviteResponse.body.invite.inviteUrl).toContain(inviteResponse.body.invite.token)
   })
 
+  it('requires a bootstrap setup token when the instance is configured with one', async () => {
+    const { app } = createAuthApp({ bootstrapSetupToken: 'setup-secret' })
+
+    await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(403)
+
+    const inviteResponse = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com', bootstrapToken: 'setup-secret' })
+      .expect(201)
+
+    expect(inviteResponse.body.invite).toMatchObject({
+      email: 'owner@example.com',
+    })
+  })
+
   it('accepts invite and creates first session', async () => {
     const { app } = createAuthApp()
     const inviteResponse = await request(app)
@@ -57,6 +76,7 @@ describe('Authentication API', () => {
     expect(acceptResponse.body.user).toMatchObject({
       email: 'owner@example.com',
       name: 'Owner',
+      role: 'owner',
     })
     expect(acceptResponse.headers['set-cookie']).toEqual(
       expect.arrayContaining([expect.stringContaining('cutroom_session=')]),
@@ -76,6 +96,7 @@ describe('Authentication API', () => {
     expect(meResponse.body.user).toMatchObject({
       email: 'owner@example.com',
       name: 'Owner',
+      role: 'owner',
     })
 
     await request(app)
@@ -115,11 +136,247 @@ describe('Authentication API', () => {
     const secondInvite = await request(app)
       .post('/api/users/invite')
       .set('Cookie', sessionCookie)
-      .send({ email: 'editor@example.com' })
+      .send({ email: 'editor@example.com', role: 'editor' })
       .expect(201)
 
     expect(secondInvite.body.invite).toMatchObject({
       email: 'editor@example.com',
+      role: 'editor',
     })
+  })
+
+  it('rejects stale bootstrap invites after the first user is created', async () => {
+    const { app } = createAuthApp()
+
+    const firstBootstrapInvite = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner-one@example.com' })
+      .expect(201)
+
+    const secondBootstrapInvite = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner-two@example.com' })
+      .expect(201)
+
+    await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: secondBootstrapInvite.body.invite.token,
+        name: 'Owner Two',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const staleAcceptResponse = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: firstBootstrapInvite.body.invite.token,
+        name: 'Owner One',
+        password: 'super-secret-pass',
+      })
+      .expect(404)
+
+    expect(staleAcceptResponse.body).toMatchObject({
+      code: 'INVITE_NOT_FOUND',
+    })
+  })
+
+  it('prevents editors from inviting more users or reading system settings', async () => {
+    const { app } = createAuthApp()
+
+    const bootstrapInvite = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    const bootstrapSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: bootstrapInvite.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const ownerSessionCookie = bootstrapSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(ownerSessionCookie).toBeTruthy()
+    if (!ownerSessionCookie) return
+
+    const editorInvite = await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', ownerSessionCookie)
+      .send({ email: 'editor@example.com', role: 'editor' })
+      .expect(201)
+
+    const editorSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: editorInvite.body.invite.token,
+        name: 'Editor',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    expect(editorSession.body.user).toMatchObject({
+      email: 'editor@example.com',
+      role: 'editor',
+    })
+
+    const editorSessionCookie = editorSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(editorSessionCookie).toBeTruthy()
+    if (!editorSessionCookie) return
+
+    await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', editorSessionCookie)
+      .send({ email: 'viewer@example.com', role: 'viewer' })
+      .expect(403)
+
+    await request(app)
+      .get('/api/settings')
+      .set('Cookie', editorSessionCookie)
+      .expect(403)
+
+    await request(app)
+      .get('/api/users')
+      .set('Cookie', editorSessionCookie)
+      .expect(403)
+  })
+
+  it('does not allow admins to issue owner invites', async () => {
+    const { app } = createAuthApp()
+
+    const bootstrapInvite = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    const ownerSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: bootstrapInvite.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const ownerSessionCookie = ownerSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(ownerSessionCookie).toBeTruthy()
+    if (!ownerSessionCookie) return
+
+    const adminInvite = await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', ownerSessionCookie)
+      .send({ email: 'admin@example.com', role: 'admin' })
+      .expect(201)
+
+    const adminSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: adminInvite.body.invite.token,
+        name: 'Admin',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const adminSessionCookie = adminSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(adminSessionCookie).toBeTruthy()
+    if (!adminSessionCookie) return
+
+    await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', adminSessionCookie)
+      .send({ email: 'new-owner@example.com', role: 'owner' })
+      .expect(403)
+  })
+
+  it('allows owners and admins to list current users', async () => {
+    const { app } = createAuthApp()
+
+    const bootstrapInvite = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    const ownerSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: bootstrapInvite.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const ownerSessionCookie = ownerSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(ownerSessionCookie).toBeTruthy()
+    if (!ownerSessionCookie) return
+
+    const adminInvite = await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', ownerSessionCookie)
+      .send({ email: 'admin@example.com', role: 'admin' })
+      .expect(201)
+
+    await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: adminInvite.body.invite.token,
+        name: 'Admin',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const ownerListResponse = await request(app)
+      .get('/api/users')
+      .set('Cookie', ownerSessionCookie)
+      .expect(200)
+
+    expect(ownerListResponse.body.users).toEqual([
+      expect.objectContaining({
+        email: 'owner@example.com',
+        role: 'owner',
+        name: 'Owner',
+      }),
+      expect.objectContaining({
+        email: 'admin@example.com',
+        role: 'admin',
+        name: 'Admin',
+      }),
+    ])
+
+    const adminSession = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'admin@example.com',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const adminSessionCookie = adminSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(adminSessionCookie).toBeTruthy()
+    if (!adminSessionCookie) return
+
+    const adminListResponse = await request(app)
+      .get('/api/users')
+      .set('Cookie', adminSessionCookie)
+      .expect(200)
+
+    expect(adminListResponse.body.users).toHaveLength(2)
+    expect(adminListResponse.body.users.map((user: { email: string }) => user.email)).toEqual([
+      'owner@example.com',
+      'admin@example.com',
+    ])
   })
 })

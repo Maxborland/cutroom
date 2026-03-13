@@ -114,7 +114,7 @@ function sanitizeDetailText(raw?: string): string {
   if (!raw) return '';
   return raw
     .replace(/^['"`]+|['"`]+$/g, '')
-    .replace(/^[*\-]+\s*/, '')
+    .replace(/^[*-]+\s*/, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -195,7 +195,7 @@ function parseDetailReviewResponse(raw: string): {
     const candidate = objectMatch[0]
       .replace(/[\u201C\u201D]/g, '"')
       .replace(/[\u2018\u2019]/g, "'")
-      .replace(/([\{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
+      .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
       .replace(/,\s*([}\]])/g, '$1')
       .replace(/'/g, '"');
     try {
@@ -1119,4 +1119,3 @@ router.post('/director/apply-feedback', async (req: Request, res: Response) => {
 });
 
 export default router;
-

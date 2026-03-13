@@ -40,6 +40,7 @@ vi.mock('../../src/components/Lightbox', () => ({ Lightbox: () => <div /> }))
 vi.mock('../../src/components/ErrorBoundary', () => ({ ErrorBoundary: ({ children }: any) => <>{children}</> }))
 vi.mock('../../src/components/auth/LoginView', () => ({ LoginView: () => <div>Login View</div> }))
 vi.mock('../../src/components/auth/AcceptInviteView', () => ({ AcceptInviteView: () => <div>Accept Invite View</div> }))
+vi.mock('../../src/components/auth/BootstrapAccessView', () => ({ BootstrapAccessView: () => <div>Bootstrap Access View</div> }))
 
 const mockedUseProjectStore = useProjectStore as any
 const mockedUseAuthStore = useAuthStore as any
@@ -92,7 +93,7 @@ describe('App stage sync', () => {
 
     const authState = {
       status: 'authenticated',
-      user: { id: 'user-1', email: 'owner@example.com', name: 'Owner' },
+      user: { id: 'user-1', email: 'owner@example.com', name: 'Owner', role: 'owner' },
       loading: false,
       error: null,
       hydrate: vi.fn().mockResolvedValue(undefined),
@@ -129,6 +130,30 @@ describe('App stage sync', () => {
     expect(await screen.findByText('Login View')).toBeInTheDocument()
   })
 
+  it('shows the bootstrap access view on the setup route when there is no active session', async () => {
+    const authState = {
+      status: 'unauthenticated',
+      user: null,
+      loading: false,
+      error: null,
+      hydrate: vi.fn().mockResolvedValue(undefined),
+      login: vi.fn(),
+      logout: vi.fn(),
+      acceptInvite: vi.fn(),
+      clearError: vi.fn(),
+    }
+
+    mockedUseAuthStore.mockImplementation((selector: any) => selector(authState))
+
+    render(
+      <MemoryRouter initialEntries={['/bootstrap']}>
+        <App />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('Bootstrap Access View')).toBeInTheDocument()
+  })
+
   it('updates project stage only for review/export navigation', async () => {
     render(
       <MemoryRouter initialEntries={['/projects/project-1/brief']}>
@@ -161,5 +186,31 @@ describe('App stage sync', () => {
     })
 
     expect(updateProjectStageMock).not.toHaveBeenCalled()
+  })
+
+  it('redirects editors away from the settings route', async () => {
+    const authState = {
+      status: 'authenticated',
+      user: { id: 'user-2', email: 'editor@example.com', name: 'Editor', role: 'editor' },
+      loading: false,
+      error: null,
+      hydrate: vi.fn().mockResolvedValue(undefined),
+      login: vi.fn(),
+      logout: vi.fn(),
+      acceptInvite: vi.fn(),
+      clearError: vi.fn(),
+    }
+
+    mockedUseAuthStore.mockImplementation((selector: any) => selector(authState))
+
+    render(
+      <MemoryRouter initialEntries={['/projects/project-1/settings']}>
+        <App />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('active-view')).toHaveTextContent('shots')
+    })
   })
 })

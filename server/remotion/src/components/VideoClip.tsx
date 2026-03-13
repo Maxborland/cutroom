@@ -11,12 +11,11 @@ function toFileUrl(filePath: string): string {
 
 interface VideoClipProps {
   clip: ResolvedClip;
-  fps: number;
   width: number;
   height: number;
 }
 
-export const VideoClip: React.FC<VideoClipProps> = ({ clip, fps, width, height }) => {
+export const VideoClip: React.FC<VideoClipProps> = ({ clip, width, height }) => {
   const isImage = clip.file.match(/\.(jpg|jpeg|png|webp)$/i);
   const src = toFileUrl(clip.file);
 

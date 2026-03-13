@@ -173,15 +173,13 @@ async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal.aborted) throw new Error('Generation cancelled');
 
   await new Promise<void>((resolve, reject) => {
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-
     const onAbort = () => {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
       signal.removeEventListener('abort', onAbort);
       reject(new Error('Generation cancelled'));
     };
 
-    timeout = setTimeout(() => {
+    const timeout = setTimeout(() => {
       signal.removeEventListener('abort', onAbort);
       resolve();
     }, ms);

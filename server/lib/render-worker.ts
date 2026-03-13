@@ -7,7 +7,10 @@ import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition } from '@remotion/renderer';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { resolveProjectPath, ensureDir, withProject, getProject, type RenderJob } from './storage.js';
+import { resolveProjectPath, withProject, getProject, type RenderJob } from './storage.js';
+import { getProjectStorageAdapter } from './storage-adapters/index.js';
+import { getDefaultJobsRepository as getSharedJobsRepository } from './jobs/default-repository.js';
+import type { JobsRepository } from './jobs/types.js';
 import { resolvePlan } from '../remotion/src/lib/plan-reader.js';
 import type { MontagePlan } from './storage.js';
 
@@ -15,6 +18,7 @@ const REMOTION_ENTRY = path.resolve(
   import.meta.dirname ?? __dirname,
   '../remotion/src/Root.tsx',
 );
+const mediaStorage = getProjectStorageAdapter();
 
 export type RenderQuality = 'preview' | 'final';
 
@@ -49,6 +53,11 @@ const PRESETS: Record<RenderQuality, RenderConfig> = {
 /** Maximum number of completed preview renders to keep per project */
 const MAX_PREVIEW_RENDERS = 3;
 
+interface RenderQueuePayload {
+  quality: RenderQuality;
+  plan: MontagePlan;
+}
+
 /**
  * Start a render job. Returns immediately with a jobId.
  * Progress is tracked in the project's RenderJob entry.
@@ -59,11 +68,7 @@ export async function startRender(
   plan: MontagePlan,
   quality: RenderQuality = 'preview',
 ): Promise<string> {
-  const config = PRESETS[quality];
   const jobId = `render-${Date.now()}-${quality}`;
-  const outputDir = resolveProjectPath(projectId, 'montage', 'renders');
-  await ensureDir(outputDir);
-  const outputFile = path.join(outputDir, `${jobId}.mp4`);
 
   // Create initial render job entry
   const job: RenderJob = {
@@ -85,6 +90,24 @@ export async function startRender(
     console.warn(`[render] Cleanup failed for ${projectId}:`, err.message);
   });
 
+  const jobsRepository = getDefaultJobsRepository();
+  if (jobsRepository) {
+    await jobsRepository.enqueueJob<RenderQueuePayload>({
+      id: jobId,
+      projectId,
+      jobType: 'render',
+      payload: {
+        quality,
+        plan,
+      },
+    });
+
+    return jobId;
+  }
+
+  const config = PRESETS[quality];
+  const outputFile = await prepareRenderOutput(projectId, jobId);
+
   // Fire and forget — run render in background
   doRender(projectId, plan, jobId, outputFile, config).catch((err) => {
     console.error(`[render] Job ${jobId} failed:`, err);
@@ -95,6 +118,48 @@ export async function startRender(
   });
 
   return jobId;
+}
+
+export async function runNextRenderJob(workerId = `render-worker-${process.pid}`): Promise<boolean> {
+  const jobsRepository = getDefaultJobsRepository();
+  if (!jobsRepository) {
+    return false;
+  }
+
+  const claimedJob = await jobsRepository.claimNextJob<RenderQueuePayload>('render', workerId);
+  if (!claimedJob) {
+    return false;
+  }
+
+  const payload = claimedJob.payload;
+  const config = PRESETS[payload.quality];
+  const outputFile = await prepareRenderOutput(claimedJob.projectId, claimedJob.id);
+
+  try {
+    await doRender(claimedJob.projectId, payload.plan, claimedJob.id, outputFile, config);
+    await jobsRepository.markJobDone(claimedJob.id, {
+      outputFile: `montage/renders/${claimedJob.id}.mp4`,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[render] Job ${claimedJob.id} failed:`, err);
+    await jobsRepository.markJobFailed(claimedJob.id, message);
+    await updateJob(claimedJob.projectId, claimedJob.id, {
+      status: 'failed',
+      errorMessage: message,
+    }).catch(() => {});
+  }
+
+  return true;
+}
+
+async function prepareRenderOutput(projectId: string, jobId: string): Promise<string> {
+  await mediaStorage.ensureContainer({ projectId, scope: 'render' });
+  return mediaStorage.getReadablePathForServer({
+    projectId,
+    scope: 'render',
+    filename: `${jobId}.mp4`,
+  });
 }
 
 async function doRender(
@@ -147,7 +212,7 @@ async function doRender(
     await renderMedia({
       composition: compositionWithOverrides,
       serveUrl: bundled,
-      codec: config.codec as any,
+      codec: config.codec,
       outputLocation: outputFile,
       inputProps: { plan: resolvedPlan },
       crf: config.crf,
@@ -220,8 +285,11 @@ export async function deleteRenderJob(
 
   // Delete output file if it exists
   if (job.outputFile) {
-    const filePath = resolveProjectPath(projectId, job.outputFile);
-    await fs.unlink(filePath).catch(() => {});
+    await mediaStorage.deleteObject({
+      projectId,
+      scope: 'render',
+      filename: path.basename(job.outputFile),
+    });
   }
 
   // Remove from project renders list
@@ -230,6 +298,11 @@ export async function deleteRenderJob(
       p.renders = p.renders.filter(r => r.id !== jobId);
     }
   });
+
+  const jobsRepository = getDefaultJobsRepository();
+  if (jobsRepository) {
+    await jobsRepository.deleteJob(jobId).catch(() => {});
+  }
 
   return true;
 }
@@ -256,8 +329,11 @@ async function cleanupOldRenders(
   // Delete output files
   for (const job of toRemove) {
     if (job.outputFile) {
-      const filePath = resolveProjectPath(projectId, job.outputFile);
-      await fs.unlink(filePath).catch(() => {});
+      await mediaStorage.deleteObject({
+        projectId,
+        scope: 'render',
+        filename: path.basename(job.outputFile),
+      });
     }
   }
 
@@ -270,4 +346,8 @@ async function cleanupOldRenders(
   });
 
   console.log(`[render] Cleaned up ${toRemove.length} old ${quality} render(s) for project ${projectId}`);
+}
+
+function getDefaultJobsRepository(): JobsRepository | null {
+  return getSharedJobsRepository();
 }

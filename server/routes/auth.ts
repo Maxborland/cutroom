@@ -16,6 +16,7 @@ function sendRepositoryError(res: Response, error: AuthRepositoryError): void {
       return;
     case 'INVITE_ALREADY_ACCEPTED':
     case 'USER_ALREADY_EXISTS':
+    case 'BOOTSTRAP_INVITE_CLOSED':
       sendApiError(res, 409, error.message, error.code);
       return;
     default:

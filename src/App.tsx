@@ -17,6 +17,7 @@ import { useProjectStore } from './stores/projectStore'
 import { useAuthStore } from './stores/authStore'
 import { LoginView } from './components/auth/LoginView'
 import { AcceptInviteView } from './components/auth/AcceptInviteView'
+import { BootstrapAccessView } from './components/auth/BootstrapAccessView'
 import type { PipelineStage } from './types'
 import { Clapperboard, Plus, Loader2 } from 'lucide-react'
 
@@ -51,7 +52,10 @@ function AppShell() {
   const error = useProjectStore((s) => s.error)
   const clearError = useProjectStore((s) => s.clearError)
   const updateProjectStage = useProjectStore((s) => s.updateProjectStage)
-  const activeView = normalizeView(routeView, project?.stage)
+  const currentUser = useAuthStore((s) => s.user)
+  const canAccessSettings = currentUser ? ['owner', 'admin'].includes(currentUser.role) : false
+  const effectiveRouteView = routeView === 'settings' && !canAccessSettings ? undefined : routeView
+  const activeView = normalizeView(effectiveRouteView, project?.stage)
 
   useEffect(() => {
     let cancelled = false
@@ -88,12 +92,12 @@ function AppShell() {
     if (!project) return
     if (routeProjectId && routeProjectId !== project.id) return
 
-    const canonicalView = normalizeView(routeView, project.stage)
+    const canonicalView = normalizeView(effectiveRouteView, project.stage)
     const canonicalPath = `/projects/${project.id}/${canonicalView}`
     if (location.pathname !== canonicalPath) {
       navigate(canonicalPath, { replace: true })
     }
-  }, [projectsLoaded, projects.length, project, routeProjectId, routeView, location.pathname, navigate])
+  }, [projectsLoaded, projects.length, project, routeProjectId, effectiveRouteView, location.pathname, navigate])
 
   const handleCreateProject = async () => {
     const name = newProjectName.trim()
@@ -243,6 +247,7 @@ function App() {
   if (status !== 'authenticated') {
     return (
       <Routes>
+        <Route path="/bootstrap" element={<BootstrapAccessView />} />
         <Route path="/accept-invite" element={<AcceptInviteView />} />
         <Route path="/accept-invite/:token" element={<AcceptInviteView />} />
         <Route path="*" element={<LoginView />} />
@@ -255,6 +260,7 @@ function App() {
       <Route path="/" element={<AppShell />} />
       <Route path="/projects/:projectId" element={<AppShell />} />
       <Route path="/projects/:projectId/:view" element={<AppShell />} />
+      <Route path="/bootstrap" element={<Navigate to="/" replace />} />
       <Route path="/accept-invite" element={<Navigate to="/" replace />} />
       <Route path="/accept-invite/:token" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />

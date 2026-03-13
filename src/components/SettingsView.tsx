@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react'
-import { api } from '../lib/api'
+import { api, getApiErrorMessage } from '../lib/api'
+import { useAuthStore } from '../stores/authStore'
 import {
   Key,
   Wand2,
@@ -13,8 +14,13 @@ import {
   RefreshCw,
   AlertTriangle,
   LayoutGrid,
+  UserPlus,
 } from 'lucide-react'
 import { ModelSelect } from './ModelSelect'
+import { LicenseStatusCard } from './system/LicenseStatusCard'
+import { UserManagementView } from './system/UserManagementView'
+import type { SystemLicenseState } from '../types'
+import type { AuthUser } from '../lib/api'
 
 const SIZE_OPTIONS = [
   { value: 'auto', label: 'Auto (модель выбирает)' },
@@ -37,11 +43,15 @@ const ASPECT_RATIO_OPTIONS = [
   { value: '3:4', label: '3:4' },
 ]
 
+const EMPTY_MODEL_OPTIONS: string[] = []
+
 const SECTIONS = [
+  { id: 'license', label: 'Лицензия', icon: <Crown size={14} /> },
   { id: 'api', label: 'Ключи и LLM', icon: <Key size={14} /> },
   { id: 'generation', label: 'Генерация медиа', icon: <Film size={14} /> },
   { id: 'quality', label: 'Размер и качество', icon: <Maximize2 size={14} /> },
   { id: 'director', label: 'Креативный директор', icon: <Crown size={14} /> },
+  { id: 'access', label: 'Доступ команды', icon: <UserPlus size={14} /> },
   { id: 'prompts', label: 'Мастер-промпты', icon: <Wand2 size={14} /> },
 ] as const
 
@@ -144,6 +154,7 @@ function SettingsSection({
 }
 
 export function SettingsView() {
+  const currentUser = useAuthStore((state) => state.user)
   const [apiKey, setApiKey] = useState('')
   const [falKey, setFalKey] = useState('')
   const [replicateToken, setReplicateToken] = useState('')
@@ -184,6 +195,27 @@ export function SettingsView() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'admin' | 'editor' | 'viewer'>('editor')
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [inviteUrl, setInviteUrl] = useState('')
+  const [licenseState, setLicenseState] = useState<SystemLicenseState | null>(null)
+  const [licenseLoading, setLicenseLoading] = useState(true)
+  const [licenseError, setLicenseError] = useState<string | null>(null)
+  const [teamUsers, setTeamUsers] = useState<AuthUser[]>([])
+  const [teamLoading, setTeamLoading] = useState(true)
+  const [teamError, setTeamError] = useState<string | null>(null)
+  const inviteRoleOptions = currentUser?.role === 'admin'
+    ? [
+        { value: 'editor' as const, label: 'Редактор' },
+        { value: 'viewer' as const, label: 'Наблюдатель' },
+      ]
+    : [
+        { value: 'admin' as const, label: 'Администратор' },
+        { value: 'editor' as const, label: 'Редактор' },
+        { value: 'viewer' as const, label: 'Наблюдатель' },
+      ]
 
   const clearMaskedValue = (value: string, setter: (value: string) => void) => {
     if (value.startsWith('••••')) setter('')
@@ -203,8 +235,8 @@ export function SettingsView() {
       setImageGenModels(imageGenModels || [])
       setVideoGenModels(videoGenModels || [])
       setAudioGenModels(audioGenModels || [])
-    } catch (e: any) {
-      setModelsError(e?.message || 'Не удалось загрузить список моделей')
+    } catch (error: unknown) {
+      setModelsError(getApiErrorMessage(error, 'Не удалось загрузить список моделей'))
       setTextModels([])
       setImageModels([])
       setImageGenModels([])
@@ -257,6 +289,24 @@ export function SettingsView() {
   }, [loadModels])
 
   useEffect(() => {
+    setLicenseLoading(true)
+    setLicenseError(null)
+    api.system
+      .getLicense()
+      .then((license) => setLicenseState(license))
+      .catch((loadError) => setLicenseError(getApiErrorMessage(loadError, 'Не удалось загрузить статус лицензии')))
+      .finally(() => setLicenseLoading(false))
+
+    setTeamLoading(true)
+    setTeamError(null)
+    api.users
+      .list()
+      .then((response) => setTeamUsers(response.users))
+      .catch((loadError) => setTeamError(getApiErrorMessage(loadError, 'Не удалось загрузить список участников')))
+      .finally(() => setTeamLoading(false))
+  }, [])
+
+  useEffect(() => {
     const selected = videoGenModels.find((model) => model.id === videoGenModel)
     const normalized = normalizeVideoQualityValue(videoQuality, selected)
     if (normalized !== videoQuality) setVideoQuality(normalized)
@@ -269,10 +319,10 @@ export function SettingsView() {
   }, [imageGenModel, imageGenModels, imageQuality])
 
   const selectedImageGenModel = imageGenModels.find((model) => model.id === imageGenModel)
-  const modelImageResolutionOptions = selectedImageGenModel?.imageResolutionOptions || []
+  const modelImageResolutionOptions = selectedImageGenModel?.imageResolutionOptions || EMPTY_MODEL_OPTIONS
   const hasModelImageResolutionOptions =
     selectedImageGenModel?.imageResolutionSupport === 'explicit' && modelImageResolutionOptions.length > 0
-  const modelImageAspectRatioOptions = selectedImageGenModel?.imageAspectRatioOptions || []
+  const modelImageAspectRatioOptions = selectedImageGenModel?.imageAspectRatioOptions || EMPTY_MODEL_OPTIONS
   const hasModelImageAspectRatioOptions =
     selectedImageGenModel?.imageAspectRatioSupport === 'explicit' && modelImageAspectRatioOptions.length > 0
   const imageQualityOptions = hasModelImageResolutionOptions
@@ -315,7 +365,7 @@ export function SettingsView() {
   }, [hasModelImageAspectRatioOptions, imageAspectRatio, modelImageAspectRatioOptions])
 
   const selectedVideoModel = videoGenModels.find((model) => model.id === videoGenModel)
-  const modelVideoQualityOptions = selectedVideoModel?.videoQualityOptions || []
+  const modelVideoQualityOptions = selectedVideoModel?.videoQualityOptions || EMPTY_MODEL_OPTIONS
   const hasModelVideoQualityOptions =
     selectedVideoModel?.videoQualitySupport === 'explicit' && modelVideoQualityOptions.length > 0
   const maxModelVideoQuality = hasModelVideoQualityOptions
@@ -364,10 +414,29 @@ export function SettingsView() {
       await loadModels()
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
-    } catch (e: any) {
-      setError(e.message)
+    } catch (error: unknown) {
+      setError(getApiErrorMessage(error, 'Не удалось сохранить настройки'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleCreateInvite = async () => {
+    const normalizedEmail = inviteEmail.trim().toLowerCase()
+    if (!normalizedEmail) return
+
+    setInviteLoading(true)
+    setInviteError(null)
+    setInviteUrl('')
+
+    try {
+      const response = await api.users.invite(normalizedEmail, undefined, inviteRole)
+      const nextInviteUrl = new URL(response.invite.inviteUrl, window.location.origin).toString()
+      setInviteUrl(nextInviteUrl)
+    } catch (error: unknown) {
+      setInviteError(getApiErrorMessage(error, 'Не удалось создать приглашение'))
+    } finally {
+      setInviteLoading(false)
     }
   }
 
@@ -426,6 +495,15 @@ export function SettingsView() {
           </aside>
 
           <div className="space-y-6">
+            <SettingsSection
+              id="license"
+              icon={<Crown size={14} />}
+              title="Лицензия"
+              subtitle="Статус trial/activation и диагностическая информация по коммерческому инстансу."
+            >
+              <LicenseStatusCard license={licenseState} loading={licenseLoading} error={licenseError} />
+            </SettingsSection>
+
             <SettingsSection
               id="api"
               icon={<Key size={14} />}
@@ -778,6 +856,80 @@ export function SettingsView() {
                   className="w-full brutal-input px-4 py-3 text-sm resize-y leading-relaxed min-h-[110px]"
                 />
               </div>
+            </SettingsSection>
+
+            <SettingsSection
+              id="access"
+              icon={<UserPlus size={14} />}
+              title="Команда"
+              subtitle="Активные пользователи инстанса и создание новых приглашений."
+            >
+              <UserManagementView users={teamUsers} loading={teamLoading} error={teamError} />
+
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_220px_auto] sm:items-end">
+                <div>
+                  <label htmlFor="team-invite-email" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                    Email участника
+                  </label>
+                  <input
+                    id="team-invite-email"
+                    type="email"
+                    value={inviteEmail}
+                    onChange={(e) => {
+                      setInviteEmail(e.target.value)
+                      setInviteError(null)
+                    }}
+                    placeholder="editor@example.com"
+                    className="w-full brutal-input px-4 py-2.5 text-sm"
+                    autoComplete="email"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="team-invite-role" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                    Роль
+                  </label>
+                  <select
+                    id="team-invite-role"
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as 'admin' | 'editor' | 'viewer')}
+                    className="w-full brutal-input px-4 py-2.5 text-sm"
+                  >
+                    {inviteRoleOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleCreateInvite()}
+                  disabled={inviteLoading || !inviteEmail.trim()}
+                  className="flex items-center justify-center gap-2 rounded-[5px] bg-amber px-4 py-2.5 text-xs font-bold uppercase text-black brutal-btn disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {inviteLoading ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                  Создать приглашение
+                </button>
+              </div>
+
+              {inviteError && (
+                <div className="mt-4 rounded-[5px] border-2 border-border bg-rose-dim px-4 py-3 text-sm text-rose">
+                  {inviteError}
+                </div>
+              )}
+
+              {inviteUrl && (
+                <div className="mt-4">
+                  <label htmlFor="team-invite-url" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                    Ссылка-приглашение
+                  </label>
+                  <input
+                    id="team-invite-url"
+                    type="text"
+                    readOnly
+                    value={inviteUrl}
+                    className="w-full brutal-input px-4 py-2.5 text-sm"
+                  />
+                </div>
+              )}
             </SettingsSection>
 
             <SettingsSection

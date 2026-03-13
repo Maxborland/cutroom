@@ -55,6 +55,28 @@ npm run dev:all
 - Frontend: `http://localhost:5173`
 - API: `http://localhost:3001`
 
+## Self-Hosted Bundle
+
+The repository now includes a single-tenant self-hosted profile:
+
+- [docs/self-hosted.md](docs/self-hosted.md)
+- `Dockerfile`
+- `docker-compose.self-hosted.yml`
+- `.env.self-hosted.example`
+
+Quick start:
+
+```bash
+cp .env.self-hosted.example .env.self-hosted
+docker compose -f docker-compose.self-hosted.yml up -d --build
+```
+
+This profile runs:
+
+- one `app` container serving both the frontend and `/api`
+- one `worker` container for background jobs
+- one `postgres` container
+
 ## Database Bootstrap
 
 PostgreSQL support is scaffolded for future backend work without changing the current file-based routes yet.

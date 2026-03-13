@@ -1,3 +1,6 @@
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import projectRoutes from './routes/projects.js';
@@ -13,7 +16,7 @@ import { getErrorMessage, sendApiError } from './lib/api-error.js';
 import type { LicensingService } from './lib/licensing/types.js';
 import { createDefaultLicensingService } from './lib/licensing/service.js';
 import { createDefaultAuthRepository, type AuthRepository } from './lib/auth/repository.js';
-import { createAuthSessionMiddleware, requireAuthenticatedUser } from './lib/auth/middleware.js';
+import { createAuthSessionMiddleware, requireAuthenticatedUser, requireUserRoles } from './lib/auth/middleware.js';
 import { createAuthRoutes } from './routes/auth.js';
 import { createUsersRoutes } from './routes/users.js';
 
@@ -24,6 +27,8 @@ interface CreateAppOptions {
   rateLimitMax?: number;
   licensingService?: LicensingService;
   authRepository?: AuthRepository | null;
+  bootstrapSetupToken?: string;
+  clientDistDir?: string | null;
 }
 
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
@@ -61,8 +66,19 @@ function isPrivateNetworkOrigin(origin: string): boolean {
 export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
   const isDev = process.env.NODE_ENV !== 'production';
+  const clientDistDir = options.clientDistDir ?? (isDev ? null : path.resolve(process.cwd(), 'dist'));
+  const hasClientBundle = typeof clientDistDir === 'string' && clientDistDir.length > 0 && existsSync(clientDistDir);
   let licensingService = options.licensingService;
   const authRepository = options.authRepository ?? (process.env.NODE_ENV === 'test' ? null : createDefaultAuthRepository());
+  const bootstrapTokenFromEnv = (process.env.BOOTSTRAP_SETUP_TOKEN ?? '').trim();
+  const bootstrapSetupToken = (
+    options.bootstrapSetupToken
+    ?? (process.env.NODE_ENV === 'test' ? '' : bootstrapTokenFromEnv || randomBytes(18).toString('hex'))
+  ).trim();
+
+  if (authRepository && process.env.NODE_ENV !== 'test' && !bootstrapTokenFromEnv && !options.bootstrapSetupToken) {
+    console.info('[auth] Generated bootstrap setup token for initial owner onboarding:', bootstrapSetupToken);
+  }
 
   const resolveLicensingService = (): LicensingService => {
     if (!licensingService) {
@@ -180,7 +196,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   if (authRepository) {
     app.use('/api', createAuthSessionMiddleware(authRepository));
     app.use('/api/auth', createAuthRoutes(authRepository));
-    app.use('/api/users', createUsersRoutes(authRepository));
+    app.use('/api/users', createUsersRoutes(authRepository, { bootstrapSetupToken }));
     app.use('/api', (req, res, next) => {
       if (req.path === '/health' || req.path.startsWith('/auth/')) {
         next();
@@ -192,7 +208,11 @@ export function createApp(options: CreateAppOptions = {}): Express {
   }
 
   app.use('/api/projects', projectRoutes);
-  app.use('/api/settings', settingsRoutes);
+  if (authRepository) {
+    app.use('/api/settings', requireUserRoles(['owner', 'admin']), settingsRoutes);
+  } else {
+    app.use('/api/settings', settingsRoutes);
+  }
   app.use('/api/models', modelRoutes);
   app.use('/api/projects/:id/assets', assetRoutes);
   app.use('/api/projects/:id', generateRoutes);
@@ -205,7 +225,15 @@ export function createApp(options: CreateAppOptions = {}): Express {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  if (hasClientBundle && clientDistDir) {
+    app.use(express.static(clientDistDir, { index: false }));
+    app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
+      res.sendFile(path.join(clientDistDir, 'index.html'));
+    });
+  }
+
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    void _next;
     console.error('[api] Unhandled error:', err);
     const details = process.env.NODE_ENV === 'development'
       ? { message: getErrorMessage(err, 'Unknown error') }

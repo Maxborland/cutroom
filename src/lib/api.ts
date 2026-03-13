@@ -26,6 +26,7 @@ export interface AuthUser {
   id: string
   email: string
   name: string
+  role: 'owner' | 'admin' | 'editor' | 'viewer'
   createdAt: string
 }
 
@@ -33,10 +34,15 @@ export interface AuthSessionResponse {
   user: AuthUser
 }
 
+export interface UsersListResponse {
+  users: AuthUser[]
+}
+
 export interface InviteResponse {
   invite: {
     token: string
     email: string
+    role: 'owner' | 'admin' | 'editor' | 'viewer'
     createdAt: string
     inviteUrl: string
   }
@@ -66,6 +72,45 @@ export class ApiRequestError extends Error {
 
 export function isApiRequestError(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError
+}
+
+const API_ERROR_MESSAGES: Record<string, string> = {
+  ACCEPT_INVITE_FAILED: 'Не удалось принять приглашение',
+  AUTH_REQUIRED: 'Требуется вход в систему',
+  AUTH_FORBIDDEN: 'Недостаточно прав для этого действия.',
+  BOOTSTRAP_INVITE_CLOSED: 'Первичная настройка уже завершена.',
+  BOOTSTRAP_TOKEN_INVALID: 'Неверный код первичной настройки.',
+  INVALID_CREDENTIALS: 'Неверный email или пароль.',
+  INVITE_ALREADY_ACCEPTED: 'Приглашение уже использовано.',
+  INVITE_EMAIL_REQUIRED: 'Укажите email.',
+  INVITE_NOT_FOUND: 'Приглашение не найдено или уже недействительно.',
+  LOGIN_FIELDS_REQUIRED: 'Укажите email и пароль.',
+  INVITE_ROLE_INVALID: 'Выбрана недопустимая роль приглашения.',
+  NAME_REQUIRED: 'Укажите имя.',
+  PASSWORD_INVALID: 'Пароль не соответствует требованиям.',
+  USER_ALREADY_EXISTS: 'Пользователь с таким email уже существует.',
+}
+
+export function getApiErrorMessage(error: unknown, fallback = 'Произошла ошибка'): string {
+  if (isApiRequestError(error)) {
+    if (error.code && API_ERROR_MESSAGES[error.code]) {
+      return API_ERROR_MESSAGES[error.code]
+    }
+
+    if (error.message.trim()) {
+      return error.message
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error
+  }
+
+  return fallback
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,10 +181,19 @@ export const api = {
       }),
   },
   users: {
-    invite: (email: string) =>
+    list: () => request<UsersListResponse>('/users'),
+    invite: (
+      email: string,
+      bootstrapToken?: string,
+      role?: 'owner' | 'admin' | 'editor' | 'viewer',
+    ) =>
       request<InviteResponse>('/users/invite', {
         method: 'POST',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({
+          email,
+          ...(bootstrapToken?.trim() ? { bootstrapToken: bootstrapToken.trim() } : {}),
+          ...(role ? { role } : {}),
+        }),
       }),
   },
   assets: {
@@ -283,7 +337,7 @@ export const api = {
       shotId?: string,
       shotIds?: string[],
     ) =>
-      request<any>(`/projects/${projectId}/director/apply-feedback`, {
+      request<unknown>(`/projects/${projectId}/director/apply-feedback`, {
         method: 'POST',
         body: JSON.stringify({ reviewId, action, shotId, shotIds }),
       }),
