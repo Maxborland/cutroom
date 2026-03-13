@@ -13,6 +13,7 @@ import {
 import { generateVideoFromImage } from '../../lib/generation.js';
 import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generation-models.js';
 import { getBestImageFile, getMimeType } from '../../lib/media-utils.js';
+import { safeLogValue } from '../../lib/safe-log.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
@@ -143,7 +144,11 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
         if (downloadErr instanceof InvalidExternalVideoUrlError) {
           throw downloadErr;
         }
-        console.warn(`[generate-video] Local download failed for shot ${shotId}; keeping external URL`, downloadErr);
+        console.warn(
+          '[generate-video] Local download failed for shot %s; keeping external URL',
+          safeLogValue(shotId),
+          downloadErr,
+        );
         await setShotVideoFile(project.id, shotId, videoUrl);
         await enqueueVideoCacheJob({ projectId: project.id, shotId, externalUrl: videoUrl });
         payload = {
@@ -319,7 +324,11 @@ router.post('/generate-all-videos', generationLimiter, async (req: Request, res:
             console.warn(`[generate-all-videos] Blocked forbidden external fallback for ${shot.id}`);
             continue;
           }
-          console.warn(`[generate-all-videos] Local download failed for ${shot.id}; keeping external URL`, downloadErr);
+          console.warn(
+            '[generate-all-videos] Local download failed for %s; keeping external URL',
+            safeLogValue(shot.id),
+            downloadErr,
+          );
           await setShotVideoFile(project.id, shot.id, videoUrl);
           await enqueueVideoCacheJob({ projectId: project.id, shotId: shot.id, externalUrl: videoUrl });
           generated++;

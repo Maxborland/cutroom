@@ -10,6 +10,7 @@ import {
   type Project,
   type ShotMeta,
 } from '../../server/lib/storage.js'
+import { safeLogValue } from '../../server/lib/safe-log.js'
 
 vi.mock('../../server/lib/generation.js', () => ({
   generateVideoFromImage: vi.fn(),
@@ -387,6 +388,54 @@ describe('Shots API', () => {
   })
 
   describe('POST /api/projects/:id/shots/:shotId/generate-video', () => {
+    it('sanitizes shot ids before logging local download fallback failures', async () => {
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const unsafeShotId = 'shot-001\nforged-log'
+
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('https://videos.example.test/fallback.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce('https://images.example.test/seed.png')
+
+      project.shots = [
+        {
+          ...shot,
+          generatedImages: [],
+          status: 'draft',
+          videoFile: null,
+        },
+        {
+          ...shot,
+          id: unsafeShotId,
+          generatedImages: ['seed.png'],
+          status: 'img_review',
+          videoFile: null,
+        },
+      ]
+      await saveProject(project)
+
+      const fetchMock = vi.fn().mockRejectedValue(new Error('download failed'))
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        await request(app)
+          .post(`/api/projects/${project.id}/shots/${encodeURIComponent(unsafeShotId)}/generate-video`)
+          .send({})
+          .expect(200)
+
+        const fallbackCall = warnSpy.mock.calls.find((call) => String(call[0] ?? '').includes('[generate-video] Local download failed'))
+        expect(fallbackCall).toBeTruthy()
+        if (!fallbackCall) return
+
+        expect(String(fallbackCall[0] ?? '')).not.toContain('\n')
+        expect(fallbackCall[1]).toBe(safeLogValue(unsafeShotId))
+      } finally {
+        project.shots = [shot]
+        await saveProject(project)
+        vi.unstubAllGlobals()
+      }
+    })
+
     it('rolls back and does not persist a forbidden external fallback URL', async () => {
       const { generateVideoFromImage } = await import('../../server/lib/generation.js')
       const { getBestImageFile } = await import('../../server/lib/media-utils.js')
