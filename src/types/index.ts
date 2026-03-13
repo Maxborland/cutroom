@@ -44,6 +44,7 @@ export interface Shot {
   generatedImages: string[]
   enhancedImages: string[]
   videoFile: string | null
+  videoDescription?: ShotVideoDescription
 }
 
 export interface VideoGenerationResult {
@@ -86,11 +87,64 @@ export interface Project {
   musicFile?: string
   musicPrompt?: string
   musicProvider?: string
+  narrationAnchors?: NarrationAnchor[]
+  anchorMatches?: AnchorMatch[]
+  anchorCoverageSummary?: AnchorCoverageSummary
   montagePlan?: MontagePlan
   renders?: RenderJob[]
 }
 
 // ── Montage Types ────────────────────────────────────────────────────
+
+export interface NarrationAnchor {
+  id: string
+  sourceText: string
+  label: string
+  order: number
+  startSec?: number
+  endSec?: number
+  intent: 'hook' | 'feature' | 'detail' | 'lifestyle' | 'cta'
+}
+
+export interface ShotVideoDescriptionMoment {
+  id: string
+  label: string
+  startSec?: number
+  endSec?: number
+  tags: string[]
+  summary: string
+}
+
+export interface ShotVideoDescription {
+  version: number
+  summary: string
+  tags: string[]
+  matchHints: string[]
+  moments: ShotVideoDescriptionMoment[]
+}
+
+export interface AnchorMatchCandidate {
+  shotId: string
+  momentId?: string
+  confidence: number
+  reason: string
+}
+
+export interface AnchorMatch {
+  anchorId: string
+  selectedShotId?: string
+  selectedMomentId?: string
+  confidence: number
+  status: 'matched' | 'weak_match' | 'unmatched'
+  candidates: AnchorMatchCandidate[]
+}
+
+export interface AnchorCoverageSummary {
+  totalAnchors: number
+  matchedAnchors: number
+  weakMatches: number
+  unmatchedAnchors: number
+}
 
 export interface MontageStyle {
   preset: 'premium' | 'calm' | 'dynamic' | 'custom'

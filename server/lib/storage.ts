@@ -46,6 +46,9 @@ export interface Project {
   musicFile?: string;
   musicPrompt?: string;
   musicProvider?: string;
+  narrationAnchors?: NarrationAnchor[];
+  anchorMatches?: AnchorMatch[];
+  anchorCoverageSummary?: AnchorCoverageSummary;
   montagePlan?: MontagePlan;
   renders?: RenderJob[];
 }
@@ -64,12 +67,63 @@ export interface ShotMeta {
   enhancedImages: string[];
   selectedImage: string | null;
   videoFile: string | null;
+  videoDescription?: ShotVideoDescription;
 }
 
 export const VALID_SHOT_STATUSES = ['draft', 'img_gen', 'img_review', 'vid_gen', 'vid_review', 'approved'] as const;
 export type ShotStatus = typeof VALID_SHOT_STATUSES[number];
 
 // ── Montage Types ────────────────────────────────────────────────────
+
+export interface NarrationAnchor {
+  id: string;
+  sourceText: string;
+  label: string;
+  order: number;
+  startSec?: number;
+  endSec?: number;
+  intent: 'hook' | 'feature' | 'detail' | 'lifestyle' | 'cta';
+}
+
+export interface ShotVideoDescriptionMoment {
+  id: string;
+  label: string;
+  startSec?: number;
+  endSec?: number;
+  tags: string[];
+  summary: string;
+}
+
+export interface ShotVideoDescription {
+  version: number;
+  summary: string;
+  tags: string[];
+  matchHints: string[];
+  moments: ShotVideoDescriptionMoment[];
+}
+
+export interface AnchorMatchCandidate {
+  shotId: string;
+  momentId?: string;
+  confidence: number;
+  reason: string;
+}
+
+export interface AnchorMatch {
+  anchorId: string;
+  selectedShotId?: string;
+  selectedMomentId?: string;
+  confidence: number;
+  status: 'matched' | 'weak_match' | 'unmatched';
+  candidates: AnchorMatchCandidate[];
+}
+
+export interface AnchorCoverageSummary {
+  totalAnchors: number;
+  matchedAnchors: number;
+  weakMatches: number;
+  unmatchedAnchors: number;
+}
 
 export interface MontageStyle {
   preset: 'premium' | 'calm' | 'dynamic' | 'custom';

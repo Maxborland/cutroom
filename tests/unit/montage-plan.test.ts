@@ -263,6 +263,101 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(plan.timeline[1].durationSec).toBeGreaterThanOrEqual(2)
     })
 
+    it('accepts semantic montage metadata on projects and shots without changing draft plan generation', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 12,
+        },
+        script: 'Панорамные окна с видом на город.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 0,
+            scene: 'Панорамный фасад комплекса',
+            duration: 6,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет вдоль фасада с акцентом на панорамные окна',
+              tags: ['фасад', 'панорамные окна', 'закат'],
+              matchHints: ['панорамные окна', 'архитектура комплекса'],
+              moments: [
+                {
+                  id: 'moment-001',
+                  label: 'Окна и верхние этажи',
+                  startSec: 1,
+                  endSec: 4,
+                  tags: ['панорамные окна'],
+                  summary: 'Камера подчеркивает панорамные окна верхних этажей',
+                },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'панорамные окна с видом на город',
+            label: 'панорамные окна',
+            order: 0,
+            startSec: 0,
+            endSec: 4,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-001',
+            confidence: 0.93,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-001',
+                momentId: 'moment-001',
+                confidence: 0.93,
+                reason: 'Совпадение по videoDescription.matchHints и moments.tags',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 12)
+
+      expect(plan.timeline).toHaveLength(1)
+      expect(plan.timeline[0].shotId).toBe('shot-001')
+      expect(project.shots[0].videoDescription?.moments[0]?.id).toBe('moment-001')
+      expect(project.narrationAnchors?.[0]?.label).toBe('панорамные окна')
+      expect(project.anchorMatches?.[0]?.selectedShotId).toBe('shot-001')
+      expect(project.anchorCoverageSummary?.matchedAnchors).toBe(1)
+    })
+
     it('should select fade transition for aerial/drone scenes', () => {
       const project = {
         id: 'test-project',
