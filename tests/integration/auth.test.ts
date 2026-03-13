@@ -26,7 +26,7 @@ describe('Authentication API', () => {
     const { app } = createAuthApp()
 
     const inviteResponse = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(201)
 
@@ -41,12 +41,12 @@ describe('Authentication API', () => {
     const { app } = createAuthApp({ bootstrapSetupToken: 'setup-secret' })
 
     await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(403)
 
     const inviteResponse = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com', bootstrapToken: 'setup-secret' })
       .expect(201)
 
@@ -58,7 +58,7 @@ describe('Authentication API', () => {
   it('accepts invite and creates first session', async () => {
     const { app } = createAuthApp()
     const inviteResponse = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(201)
 
@@ -109,7 +109,7 @@ describe('Authentication API', () => {
     const { app } = createAuthApp()
 
     const bootstrapInvite = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(201)
 
@@ -149,12 +149,12 @@ describe('Authentication API', () => {
     const { app } = createAuthApp()
 
     const firstBootstrapInvite = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner-one@example.com' })
       .expect(201)
 
     const secondBootstrapInvite = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner-two@example.com' })
       .expect(201)
 
@@ -185,7 +185,7 @@ describe('Authentication API', () => {
     const { app } = createAuthApp()
 
     const bootstrapInvite = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(201)
 
@@ -251,7 +251,7 @@ describe('Authentication API', () => {
     const { app } = createAuthApp()
 
     const bootstrapInvite = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(201)
 
@@ -302,7 +302,7 @@ describe('Authentication API', () => {
     const { app } = createAuthApp()
 
     const bootstrapInvite = await request(app)
-      .post('/api/users/invite')
+      .post('/api/users/bootstrap-owner-invite')
       .send({ email: 'owner@example.com' })
       .expect(201)
 
@@ -378,5 +378,72 @@ describe('Authentication API', () => {
       'owner@example.com',
       'admin@example.com',
     ])
+  })
+
+  it('does not allow team invite creation before bootstrap is completed', async () => {
+    const { app } = createAuthApp()
+
+    await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com', role: 'owner' })
+      .expect(401)
+  })
+
+  it('does not mark auth cookies secure for production http bootstrap flow', async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+
+    try {
+      const { app } = createAuthApp({ bootstrapSetupToken: '' })
+      const inviteResponse = await request(app)
+        .post('/api/users/bootstrap-owner-invite')
+        .send({ email: 'owner@example.com' })
+        .expect(201)
+
+      const acceptResponse = await request(app)
+        .post('/api/auth/accept-invite')
+        .send({
+          token: inviteResponse.body.invite.token,
+          name: 'Owner',
+          password: 'super-secret-pass',
+        })
+        .expect(200)
+
+      expect(acceptResponse.headers['set-cookie']).toEqual(
+        expect.arrayContaining([expect.not.stringContaining('Secure')]),
+      )
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv
+    }
+  })
+
+  it('marks auth cookies secure when production requests arrive through https forwarding', async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+
+    try {
+      const { app } = createAuthApp({ bootstrapSetupToken: '' })
+      const inviteResponse = await request(app)
+        .post('/api/users/bootstrap-owner-invite')
+        .set('X-Forwarded-Proto', 'https')
+        .send({ email: 'owner@example.com' })
+        .expect(201)
+
+      const acceptResponse = await request(app)
+        .post('/api/auth/accept-invite')
+        .set('X-Forwarded-Proto', 'https')
+        .send({
+          token: inviteResponse.body.invite.token,
+          name: 'Owner',
+          password: 'super-secret-pass',
+        })
+        .expect(200)
+
+      expect(acceptResponse.headers['set-cookie']).toEqual(
+        expect.arrayContaining([expect.stringContaining('Secure')]),
+      )
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv
+    }
   })
 })

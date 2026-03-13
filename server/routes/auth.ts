@@ -50,7 +50,7 @@ export function createAuthRoutes(authRepository: AuthRepository): Router {
       }
 
       const session = await authRepository.createSession(user.id, new Date(Date.now() + SESSION_TTL_MS));
-      setSessionCookie(res, session.token);
+      setSessionCookie(req, res, session.token);
       res.json({ user: toAuthUser(user) });
     } catch (error) {
       console.error('Failed to log in:', error);
@@ -65,7 +65,7 @@ export function createAuthRoutes(authRepository: AuthRepository): Router {
         await authRepository.deleteSession(sessionToken);
       }
 
-      clearSessionCookie(res);
+      clearSessionCookie(req, res);
       res.status(204).end();
     } catch (error) {
       console.error('Failed to log out:', error);
@@ -108,7 +108,7 @@ export function createAuthRoutes(authRepository: AuthRepository): Router {
       const user = await authRepository.acceptInvite({ token, name, passwordHash });
       const session = await authRepository.createSession(user.id, new Date(Date.now() + SESSION_TTL_MS));
 
-      setSessionCookie(res, session.token);
+      setSessionCookie(req, res, session.token);
       res.json({ user: toAuthUser(user) });
     } catch (error) {
       if (error instanceof AuthRepositoryError) {

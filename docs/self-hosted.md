@@ -17,6 +17,7 @@ This profile packages CutRoom as a single-tenant installation for a customer-man
    - `DATABASE_URL`
    - `BOOTSTRAP_SETUP_TOKEN`
    - `CORS_ORIGINS` if the browser origin differs from the app origin
+   - `AUTH_COOKIE_SECURE=true` if you terminate TLS in front of the app and the proxy does not forward `X-Forwarded-Proto: https`
 3. Build and start the stack:
 
 ```bash
@@ -32,6 +33,7 @@ docker compose -f docker-compose.self-hosted.yml up -d --build
 - The frontend is served by Express from `dist`, so customers only need one public URL.
 - The `worker` service must stay online for render, export preparation, and background media caching.
 - `REQUIRE_API_ACCESS_KEY=false` is the safe default for the current browser-based deployment profile; authentication is enforced with invite-only sessions.
+- Auth cookies automatically stay non-`Secure` for direct HTTP first boot and switch to `Secure` when requests arrive through HTTPS or forwarded `X-Forwarded-Proto: https`.
 
 ## Backup
 

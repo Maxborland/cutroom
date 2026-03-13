@@ -430,7 +430,7 @@ export function SettingsView() {
     setInviteUrl('')
 
     try {
-      const response = await api.users.invite(normalizedEmail, undefined, inviteRole)
+      const response = await api.users.invite(normalizedEmail, inviteRole)
       const nextInviteUrl = new URL(response.invite.inviteUrl, window.location.origin).toString()
       setInviteUrl(nextInviteUrl)
     } catch (error: unknown) {

@@ -238,7 +238,7 @@ describe('SettingsView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Создать приглашение' }))
 
     await waitFor(() => {
-      expect(api.users.invite).toHaveBeenCalledWith('editor@example.com', undefined, 'editor')
+      expect(api.users.invite).toHaveBeenCalledWith('editor@example.com', 'editor')
     })
 
     expect(screen.getByDisplayValue(/accept-invite\/team-invite-token/)).toBeInTheDocument()

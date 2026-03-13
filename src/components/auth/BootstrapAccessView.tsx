@@ -19,10 +19,13 @@ export function BootstrapAccessView() {
     setError(null)
 
     try {
-      const response = await api.users.invite(normalizedEmail, bootstrapToken)
+      const response = await api.users.bootstrapInvite(normalizedEmail, bootstrapToken)
       navigate(`/accept-invite/${response.invite.token}`, { replace: true })
     } catch (submitError) {
-      if (submitError instanceof ApiRequestError && submitError.status === 401) {
+      if (
+        submitError instanceof ApiRequestError
+        && (submitError.status === 401 || submitError.code === 'BOOTSTRAP_INVITE_CLOSED')
+      ) {
         setError('Первичная настройка уже завершена. Войдите под существующим аккаунтом или используйте ссылку-приглашение.')
         return
       }

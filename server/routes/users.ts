@@ -6,6 +6,23 @@ interface CreateUsersRoutesOptions {
   bootstrapSetupToken?: string;
 }
 
+const TEAM_INVITE_ROLES_BY_ACTOR = {
+  owner: ['admin', 'editor', 'viewer'],
+  admin: ['editor', 'viewer'],
+} as const satisfies Partial<Record<AuthRole, readonly AuthRole[]>>;
+
+function parseNormalizedEmail(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function parseBootstrapToken(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function parseRequestedRole(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
 export function createUsersRoutes(authRepository: AuthRepository, options: CreateUsersRoutesOptions = {}): Router {
   const router = Router();
 
@@ -37,49 +54,80 @@ export function createUsersRoutes(authRepository: AuthRepository, options: Creat
     }
   });
 
-  router.post('/invite', async (req: Request, res: Response) => {
+  router.post('/bootstrap-owner-invite', async (req: Request, res: Response) => {
     try {
-      const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-      const bootstrapToken = typeof req.body?.bootstrapToken === 'string' ? req.body.bootstrapToken.trim() : '';
-      const requestedRole = typeof req.body?.role === 'string' ? req.body.role.trim().toLowerCase() : '';
+      const email = parseNormalizedEmail(req.body?.email);
+      const bootstrapToken = parseBootstrapToken(req.body?.bootstrapToken);
       if (!email) {
         sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
         return;
       }
 
       const userCount = await authRepository.countUsers();
-      const isBootstrapInvite = userCount === 0;
-
-      if (!isBootstrapInvite && !req.auth?.user) {
-        sendApiError(res, 401, 'Authentication required', 'AUTH_REQUIRED');
+      if (userCount !== 0) {
+        sendApiError(res, 409, 'Bootstrap invite flow is closed', 'BOOTSTRAP_INVITE_CLOSED');
         return;
       }
 
-      if (!isBootstrapInvite && req.auth?.user && !['owner', 'admin'].includes(req.auth.user.role)) {
-        sendApiError(res, 403, 'Insufficient permissions', 'AUTH_FORBIDDEN');
-        return;
-      }
-
-      if (isBootstrapInvite && options.bootstrapSetupToken && bootstrapToken !== options.bootstrapSetupToken) {
+      if (options.bootstrapSetupToken && bootstrapToken !== options.bootstrapSetupToken) {
         sendApiError(res, 403, 'Bootstrap setup token is invalid', 'BOOTSTRAP_TOKEN_INVALID');
         return;
       }
 
-      if (!isBootstrapInvite && requestedRole && !isAuthRole(requestedRole)) {
-        sendApiError(res, 400, 'Invite role is invalid', 'INVITE_ROLE_INVALID');
+      const existingUser = await authRepository.findUserByEmail(email);
+      if (existingUser) {
+        sendApiError(res, 409, 'User already exists', 'USER_ALREADY_EXISTS');
         return;
       }
 
-      const role: AuthRole = isBootstrapInvite
-        ? 'owner'
-        : (requestedRole && isAuthRole(requestedRole) ? requestedRole : 'editor');
+      const invite = await authRepository.createInvite({
+        email,
+        invitedByUserId: null,
+        role: 'owner',
+      });
 
-      if (!isBootstrapInvite && role === 'owner') {
+      res.status(201).json({
+        invite: {
+          token: invite.token,
+          email: invite.email,
+          role: invite.role,
+          createdAt: invite.createdAt,
+          inviteUrl: `/accept-invite/${invite.token}`,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to create bootstrap invite:', error);
+      sendApiError(res, 500, 'Failed to create bootstrap invite', 'INVITE_CREATE_FAILED');
+    }
+  });
+
+  router.post('/invite', async (req: Request, res: Response) => {
+    try {
+      const email = parseNormalizedEmail(req.body?.email);
+      const requestedRole = parseRequestedRole(req.body?.role);
+      if (!email) {
+        sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
+        return;
+      }
+
+      if (!req.auth?.user) {
+        sendApiError(res, 401, 'Authentication required', 'AUTH_REQUIRED');
+        return;
+      }
+
+      const allowedRoles = TEAM_INVITE_ROLES_BY_ACTOR[req.auth.user.role];
+      if (!allowedRoles) {
         sendApiError(res, 403, 'Insufficient permissions', 'AUTH_FORBIDDEN');
         return;
       }
 
-      if (!isBootstrapInvite && req.auth?.user?.role === 'admin' && role === 'admin') {
+      if (requestedRole && !isAuthRole(requestedRole)) {
+        sendApiError(res, 400, 'Invite role is invalid', 'INVITE_ROLE_INVALID');
+        return;
+      }
+
+      const role = (requestedRole || 'editor') as AuthRole;
+      if (!allowedRoles.includes(role)) {
         sendApiError(res, 403, 'Insufficient permissions', 'AUTH_FORBIDDEN');
         return;
       }
@@ -92,7 +140,7 @@ export function createUsersRoutes(authRepository: AuthRepository, options: Creat
 
       const invite = await authRepository.createInvite({
         email,
-        invitedByUserId: isBootstrapInvite ? null : (req.auth?.user.id ?? null),
+        invitedByUserId: req.auth.user.id,
         role,
       });
 

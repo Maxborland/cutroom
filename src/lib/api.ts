@@ -182,16 +182,25 @@ export const api = {
   },
   users: {
     list: () => request<UsersListResponse>('/users'),
-    invite: (
+    bootstrapInvite: (
       email: string,
       bootstrapToken?: string,
+    ) =>
+      request<InviteResponse>('/users/bootstrap-owner-invite', {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          ...(bootstrapToken?.trim() ? { bootstrapToken: bootstrapToken.trim() } : {}),
+        }),
+      }),
+    invite: (
+      email: string,
       role?: 'owner' | 'admin' | 'editor' | 'viewer',
     ) =>
       request<InviteResponse>('/users/invite', {
         method: 'POST',
         body: JSON.stringify({
           email,
-          ...(bootstrapToken?.trim() ? { bootstrapToken: bootstrapToken.trim() } : {}),
           ...(role ? { role } : {}),
         }),
       }),

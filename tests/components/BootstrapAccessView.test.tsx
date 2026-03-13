@@ -4,13 +4,19 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { BootstrapAccessView } from '../../src/components/auth/BootstrapAccessView'
 import { api } from '../../src/lib/api'
 
-vi.mock('../../src/lib/api', () => ({
-  api: {
-    users: {
-      invite: vi.fn(),
+vi.mock('../../src/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/api')>()
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      users: {
+        ...actual.api.users,
+        bootstrapInvite: vi.fn(),
+      },
     },
-  },
-}))
+  }
+})
 
 describe('BootstrapAccessView', () => {
   beforeEach(() => {
@@ -18,7 +24,7 @@ describe('BootstrapAccessView', () => {
   })
 
   it('creates the first invite and redirects to the accept-invite route', async () => {
-    vi.mocked(api.users.invite).mockResolvedValue({
+    vi.mocked(api.users.bootstrapInvite).mockResolvedValue({
       invite: {
         token: 'bootstrap-token',
         email: 'owner@example.com',
@@ -46,7 +52,7 @@ describe('BootstrapAccessView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Создать доступ' }))
 
     await waitFor(() => {
-      expect(api.users.invite).toHaveBeenCalledWith('owner@example.com', 'setup-secret')
+      expect(api.users.bootstrapInvite).toHaveBeenCalledWith('owner@example.com', 'setup-secret')
     })
 
     expect(await screen.findByText('Accept Invite Route')).toBeInTheDocument()

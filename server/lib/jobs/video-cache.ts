@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import { isIP } from 'node:net';
 import { checkServerIdentity } from 'node:tls';
-import { getProject, saveProject } from '../storage.js';
+import { withProject } from '../storage.js';
 import { getProjectStorageAdapter } from '../storage-adapters/index.js';
 import { getDefaultJobsRepository } from './default-repository.js';
 
@@ -431,19 +431,23 @@ async function attachCachedVideo(
   externalUrl: string,
 ): Promise<{ filename: string; url: string } | null> {
   const local = await cacheVideoLocally(projectId, shotId, externalUrl);
-  const refreshed = await getProject(projectId);
-  if (!refreshed) return null;
+  try {
+    return await withProject(projectId, (project) => {
+      const refreshedShot = project.shots.find((shot) => shot.id === shotId);
+      if (!refreshedShot || refreshedShot.videoFile !== externalUrl) {
+        return null;
+      }
 
-  const refreshedShot = refreshed.shots.find((shot) => shot.id === shotId);
-  if (!refreshedShot || refreshedShot.videoFile !== externalUrl) {
-    return null;
+      refreshedShot.videoFile = local.filename;
+      refreshedShot.status = 'vid_review';
+      return local;
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Project not found') {
+      return null;
+    }
+    throw error;
   }
-
-  refreshedShot.videoFile = local.filename;
-  refreshedShot.status = 'vid_review';
-  await saveProject(refreshed);
-
-  return local;
 }
 
 export async function enqueueVideoCacheJob(
