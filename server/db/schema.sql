@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS app_metadata (
 );
 
 CREATE TABLE IF NOT EXISTS installation_state (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY CHECK (id = 'installation'),
   installation_id TEXT NOT NULL,
   tenant_name TEXT,
   license_status TEXT NOT NULL,

@@ -1,6 +1,10 @@
 import type { Pool } from 'pg';
 import { createDb } from '../../db/index.js';
-import type { InstallationState, LicensingRepository } from './types.js';
+import {
+  INSTALLATION_STATE_SINGLETON_ID,
+  type InstallationState,
+  type LicensingRepository,
+} from './types.js';
 
 type LicensingDb = Pick<Pool, 'query'>;
 
@@ -41,14 +45,19 @@ export class PostgresLicensingRepository implements LicensingRepository {
         last_license_check_at,
         grace_ends_at
       FROM installation_state
-      ORDER BY id ASC
+      WHERE id = $1
       LIMIT 1
-    `);
+    `, [INSTALLATION_STATE_SINGLETON_ID]);
 
     return mapInstallationStateRow(result.rows[0]);
   }
 
   async saveInstallationState(state: InstallationState): Promise<InstallationState> {
+    const normalizedState: InstallationState = {
+      ...state,
+      id: INSTALLATION_STATE_SINGLETON_ID,
+    };
+
     const result = await this.db.query<InstallationStateRow>(
       `
         INSERT INTO installation_state (
@@ -84,15 +93,15 @@ export class PostgresLicensingRepository implements LicensingRepository {
           grace_ends_at
       `,
       [
-        state.id,
-        state.installationId,
-        state.tenantName,
-        state.licenseStatus,
-        state.trialStartedAt,
-        state.trialEndsAt,
-        state.activatedAt,
-        state.lastLicenseCheckAt,
-        state.graceEndsAt,
+        normalizedState.id,
+        normalizedState.installationId,
+        normalizedState.tenantName,
+        normalizedState.licenseStatus,
+        normalizedState.trialStartedAt,
+        normalizedState.trialEndsAt,
+        normalizedState.activatedAt,
+        normalizedState.lastLicenseCheckAt,
+        normalizedState.graceEndsAt,
       ],
     );
 

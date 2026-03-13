@@ -11,6 +11,7 @@ import montageRoutes from './routes/montage.js';
 import { createSystemRoutes } from './routes/system.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
 import type { LicensingService } from './lib/licensing/types.js';
+import { createDefaultLicensingService } from './lib/licensing/service.js';
 
 interface CreateAppOptions {
   apiAccessKey?: string;
@@ -55,6 +56,15 @@ function isPrivateNetworkOrigin(origin: string): boolean {
 export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
   const isDev = process.env.NODE_ENV !== 'production';
+  let licensingService = options.licensingService;
+
+  const resolveLicensingService = (): LicensingService => {
+    if (!licensingService) {
+      licensingService = createDefaultLicensingService();
+    }
+
+    return licensingService;
+  };
 
   const corsAllowlist = new Set<string>([
     'http://localhost:5173',
@@ -168,7 +178,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   app.use('/api/projects/:id/shots', shotRoutes);
   app.use('/api/projects/:id', exportRoutes);
   app.use('/api/projects/:id', montageRoutes);
-  app.use('/api/system', createSystemRoutes(options.licensingService));
+  app.use('/api/system', createSystemRoutes(resolveLicensingService));
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

@@ -1,3 +1,5 @@
+export const INSTALLATION_STATE_SINGLETON_ID = 'installation';
+
 export type InstallationLicenseStatus = 'unactivated' | 'trial' | 'active';
 
 export type LicenseStatus = 'unactivated' | 'trial' | 'active' | 'grace' | 'trial_expired';

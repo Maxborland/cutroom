@@ -1,14 +1,15 @@
 import { Router, type Request, type Response } from 'express';
 import { sendApiError } from '../lib/api-error.js';
-import { createLicensingService } from '../lib/licensing/service.js';
 import type { LicensingService } from '../lib/licensing/types.js';
 
-export function createSystemRoutes(licensingService?: LicensingService): Router {
+type ResolveLicensingService = () => LicensingService;
+
+export function createSystemRoutes(resolveLicensingService: ResolveLicensingService): Router {
   const router = Router();
 
   router.get('/license', async (_req: Request, res: Response) => {
     try {
-      const status = await (licensingService ?? createLicensingService()).getLicenseStatus();
+      const status = await resolveLicensingService().getLicenseStatus();
       res.json(status);
     } catch (error) {
       console.error('Failed to read license status:', error);

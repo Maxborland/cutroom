@@ -95,9 +95,42 @@ function isFutureDate(dateValue: string | null, now: Date): boolean {
   return !Number.isNaN(value.getTime()) && value.getTime() > now.getTime();
 }
 
+function createUnactivatedStatus(): LicenseStatusResponse {
+  return {
+    status: 'unactivated',
+    trialDaysRemaining: DEFAULT_TRIAL_DAYS,
+    restrictedMode: false,
+    lastCheckAt: null,
+  };
+}
+
+function isDatabaseConfigError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('DATABASE_URL is not configured');
+}
+
 export function createLicensingService(
   repository?: LicensingRepository,
   options: CreateLicensingServiceOptions = {},
 ): LicensingService {
   return new DefaultLicensingService(repository ?? createLicensingRepository(), options);
+}
+
+export function createFallbackLicensingService(): LicensingService {
+  return {
+    async getLicenseStatus(): Promise<LicenseStatusResponse> {
+      return createUnactivatedStatus();
+    },
+  };
+}
+
+export function createDefaultLicensingService(options: CreateLicensingServiceOptions = {}): LicensingService {
+  try {
+    return createLicensingService(undefined, options);
+  } catch (error) {
+    if (isDatabaseConfigError(error)) {
+      return createFallbackLicensingService();
+    }
+
+    throw error;
+  }
 }
