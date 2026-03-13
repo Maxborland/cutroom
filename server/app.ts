@@ -8,13 +8,16 @@ import generateRoutes from './routes/generate/index.js';
 import shotRoutes from './routes/shots.js';
 import exportRoutes from './routes/export.js';
 import montageRoutes from './routes/montage.js';
+import { createSystemRoutes } from './routes/system.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
+import type { LicensingService } from './lib/licensing/types.js';
 
 interface CreateAppOptions {
   apiAccessKey?: string;
   allowMissingApiKey?: boolean;
   rateLimitWindowMs?: number;
   rateLimitMax?: number;
+  licensingService?: LicensingService;
 }
 
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
@@ -165,6 +168,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   app.use('/api/projects/:id/shots', shotRoutes);
   app.use('/api/projects/:id', exportRoutes);
   app.use('/api/projects/:id', montageRoutes);
+  app.use('/api/system', createSystemRoutes(options.licensingService));
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

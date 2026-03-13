@@ -6,6 +6,7 @@ import type {
   AppSettings,
   DirectorReview,
   DirectorState,
+  SystemLicenseState,
   VideoGenerationResult,
   MontagePlan,
   RenderJob,
@@ -194,6 +195,9 @@ export const api = {
   settings: {
     get: () => request<AppSettings>('/settings'),
     update: (data: Partial<AppSettings>) => request<AppSettings>('/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  },
+  system: {
+    getLicense: () => request<SystemLicenseState>('/system/license'),
   },
   models: {
     list: () => request<{

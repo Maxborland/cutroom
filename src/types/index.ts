@@ -8,6 +8,15 @@ export interface ApiErrorResponse {
   details?: unknown
 }
 
+export type SystemLicenseStatus = 'unactivated' | 'trial' | 'active' | 'grace' | 'trial_expired'
+
+export interface SystemLicenseState {
+  status: SystemLicenseStatus
+  trialDaysRemaining: number
+  restrictedMode: boolean
+  lastCheckAt: string | null
+}
+
 export interface BriefAsset {
   id: string
   filename: string
