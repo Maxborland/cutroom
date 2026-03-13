@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
 import type { RenderJob, Project } from '../types'
@@ -6,8 +7,6 @@ import {
   Mic,
   Music,
   Film,
-  Play,
-  Download,
   RefreshCw,
   Check,
   X,
@@ -21,6 +20,9 @@ import {
   ChevronUp,
   Send,
   AlertCircle,
+  Trash2,
+  Play,
+  Download,
 } from 'lucide-react'
 
 type MontageStep = 'voiceover' | 'music' | 'plan' | 'render'
@@ -29,6 +31,7 @@ export function MontageView() {
   const project = useProjectStore((s) => s.activeProject())
   const refreshProject = useProjectStore((s) => s.loadProject)
   const [activeStep, setActiveStep] = useState<MontageStep>('voiceover')
+  const navigate = useNavigate()
 
   if (!project) return null
 
@@ -71,7 +74,7 @@ export function MontageView() {
       id: 'render',
       label: 'Рендер',
       icon: <Clapperboard size={16} />,
-      done: project.renders?.some((r) => r.status === 'done') ?? false,
+      done: Boolean(project.renders?.some((render) => render.status === 'done')),
     },
   ]
 
@@ -106,7 +109,11 @@ export function MontageView() {
           <MusicStep project={project} onRefresh={() => refreshProject(project.id)} />
         )}
         {activeStep === 'plan' && (
-          <PlanStep project={project} onRefresh={() => refreshProject(project.id)} />
+          <PlanStep
+            project={project}
+            onRefresh={() => refreshProject(project.id)}
+            onOpenEditor={() => navigate(`/editor/${project.id}`)}
+          />
         )}
         {activeStep === 'render' && (
           <RenderStep project={project} onRefresh={() => refreshProject(project.id)} />
@@ -133,11 +140,14 @@ interface ProviderInfo {
 
 function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false)
+  const [loadingAction, setLoadingAction] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [script, setScript] = useState(project.voiceoverScript || '')
   const [editing, setEditing] = useState(false)
   const [voices, setVoices] = useState<VoiceInfo[]>([])
   const [activeProvider, setActiveProvider] = useState('')
   const [selectedVoice, setSelectedVoice] = useState(project.voiceoverVoiceId || '')
+  const voFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setScript(project.voiceoverScript || '')
@@ -195,15 +205,65 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
     }
   }
 
+  const normalizeScript = async () => {
+    if (!script.trim()) return
+
+    setLoading(true)
+    try {
+      const result = await api.montage.normalizeVoText(project.id, script)
+      setScript(result.normalizedText)
+      setEditing(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const generateAudio = async () => {
     setLoading(true)
+    setLoadingAction('Генерация озвучки...')
+    setError(null)
     try {
       await api.montage.generateVoiceover(project.id, {
         voiceId: selectedVoice,
       })
       onRefresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось сгенерировать озвучку'
+      setError(msg)
     } finally {
       setLoading(false)
+      setLoadingAction(null)
+    }
+  }
+
+  const deleteVoiceover = async () => {
+    if (!confirm('Удалить озвучку?')) return
+    setLoading(true)
+    setError(null)
+    try {
+      await api.montage.deleteVoiceover(project.id)
+      onRefresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось удалить озвучку'
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const uploadVoiceover = async (file: File) => {
+    setLoading(true)
+    setLoadingAction('Загрузка озвучки...')
+    setError(null)
+    try {
+      await api.montage.uploadVoiceover(project.id, file)
+      onRefresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось загрузить озвучку'
+      setError(msg)
+    } finally {
+      setLoading(false)
+      setLoadingAction(null)
     }
   }
 
@@ -228,7 +288,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
         {loading && (
           <div className="flex items-center gap-2 text-text-muted">
             <Loader2 size={16} className="animate-spin" />
-            <span className="font-mono text-xs">Обработка...</span>
+            <span className="font-mono text-xs">{loadingAction || 'Обработка...'}</span>
           </div>
         )}
 
@@ -249,6 +309,9 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
             <div className="flex gap-2">
               {editing ? (
                 <>
+                  <button onClick={normalizeScript} disabled={loading || !script.trim()} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-amber rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
+                    <Wand2 size={14} /> Нормализовать
+                  </button>
                   <button onClick={saveScript} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
                     <Check size={14} /> Сохранить
                   </button>
@@ -260,6 +323,9 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                 <>
                   <button onClick={() => setEditing(true)} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
                     <Edit3 size={14} /> Редактировать
+                  </button>
+                  <button onClick={normalizeScript} disabled={loading || !script.trim()} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-amber rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
+                    <Wand2 size={14} /> Нормализовать
                   </button>
                   {!project.voiceoverScriptApproved && (
                     <button onClick={approveScript} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
@@ -303,18 +369,48 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                   )}
                 </div>
 
+                <input
+                  ref={voFileRef}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(e) => e.target.files?.[0] && uploadVoiceover(e.target.files[0])}
+                />
+
+                {error && (
+                  <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-3 flex items-start gap-2">
+                    <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+                    <span className="font-mono text-xs text-red-400">{error}</span>
+                  </div>
+                )}
+
                 {project.voiceoverFile ? (
-                  <div className="flex items-center gap-3">
-                    <audio controls src={api.montage.voiceoverUrl(project.id)} className="flex-1" />
-                    <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
-                      <RefreshCw size={14} />
-                    </button>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <audio controls src={api.montage.voiceoverUrl(project.id)} className="flex-1" />
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
+                        <RefreshCw size={14} /> Перегенерировать
+                      </button>
+                      <button onClick={() => voFileRef.current?.click()} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
+                        <Upload size={14} /> Загрузить свою
+                      </button>
+                      <button onClick={deleteVoiceover} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-red-400 rounded-[5px] border-2 border-red-500/50 font-mono text-xs uppercase tracking-wider hover:border-red-500 transition-colors disabled:opacity-50">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 ) : (
-                  <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
-                    {loading ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
-                    Сгенерировать аудио
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={generateAudio} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
+                      {loading ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
+                      Сгенерировать аудио
+                    </button>
+                    <button onClick={() => voFileRef.current?.click()} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
+                      <Upload size={14} /> Загрузить свою
+                    </button>
+                  </div>
                 )}
               </div>
             )}
@@ -329,6 +425,8 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
 
 function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false)
+  const [loadingAction, setLoadingAction] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [prompt, setPrompt] = useState(project.musicPrompt || '')
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -359,9 +457,30 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
 
   const uploadMusic = async (file: File) => {
     setLoading(true)
+    setLoadingAction('Загрузка музыки...')
+    setError(null)
     try {
       await api.montage.uploadMusic(project.id, file)
       onRefresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось загрузить музыку'
+      setError(msg)
+    } finally {
+      setLoading(false)
+      setLoadingAction(null)
+    }
+  }
+
+  const deleteMusic = async () => {
+    if (!confirm('Удалить музыку?')) return
+    setLoading(true)
+    setError(null)
+    try {
+      await api.montage.deleteMusic(project.id)
+      onRefresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось удалить музыку'
+      setError(msg)
     } finally {
       setLoading(false)
     }
@@ -413,16 +532,26 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
             onChange={(e) => e.target.files?.[0] && uploadMusic(e.target.files[0])}
           />
 
+          {error && (
+            <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-3 flex items-start gap-2 mb-3">
+              <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+              <span className="font-mono text-xs text-red-400">{error}</span>
+            </div>
+          )}
+
           {project.musicFile ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Check size={14} className="text-emerald" />
                 <span className="font-mono text-xs text-emerald uppercase">Музыка загружена</span>
               </div>
-              <div className="flex items-center gap-3">
-                <audio controls src={api.montage.musicUrl(project.id)} className="flex-1" />
+              <audio controls src={api.montage.musicUrl(project.id)} className="w-full" />
+              <div className="flex gap-2">
                 <button onClick={() => fileRef.current?.click()} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50">
                   <Upload size={14} /> Заменить
+                </button>
+                <button onClick={deleteMusic} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-red-400 rounded-[5px] border-2 border-red-500/50 font-mono text-xs uppercase tracking-wider hover:border-red-500 transition-colors disabled:opacity-50">
+                  <Trash2 size={14} />
                 </button>
               </div>
             </div>
@@ -439,7 +568,7 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
           {loading && (
             <div className="flex items-center gap-2 text-text-muted mt-2">
               <Loader2 size={16} className="animate-spin" />
-              <span className="font-mono text-xs">Загрузка...</span>
+              <span className="font-mono text-xs">{loadingAction || 'Обработка...'}</span>
             </div>
           )}
         </div>
@@ -450,7 +579,15 @@ function MusicStep({ project, onRefresh }: { project: Project; onRefresh: () => 
 
 // ── Plan Step ───────────────────────────────────────────────────────
 
-function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
+function PlanStep({
+  project,
+  onRefresh,
+  onOpenEditor,
+}: {
+  project: Project
+  onRefresh: () => void
+  onOpenEditor: () => void
+}) {
   const [loading, setLoading] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
@@ -487,6 +624,16 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
           План монтажа
         </h3>
 
+        <div className="mb-4">
+          <button
+            onClick={onOpenEditor}
+            className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+          >
+            <Clapperboard size={14} />
+            Открыть в редакторе
+          </button>
+        </div>
+
         {!plan && (
           <button onClick={generatePlan} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50">
             {loading ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
@@ -509,39 +656,6 @@ function PlanStep({ project, onRefresh }: { project: Project; onRefresh: () => v
                 )}с`}
               />
               <Stat label="Титры" value={plan.motionGraphics.lowerThirds.length} />
-            </div>
-
-            {/* Timeline visual */}
-            <div className="bg-surface-1 border-2 border-border rounded-[5px] p-4">
-              <div className="flex gap-1 h-8">
-                {/* Intro */}
-                <div
-                  className="bg-amber/30 border border-amber rounded-sm flex items-center justify-center"
-                  style={{ flex: plan.motionGraphics.intro?.durationSec ?? 3 }}
-                >
-                  <span className="font-mono text-[8px] text-amber">INTRO</span>
-                </div>
-                {/* Clips */}
-                {plan.timeline.map((entry, i) => (
-                  <div
-                    key={entry.shotId}
-                    className="bg-sky/20 border border-sky rounded-sm flex items-center justify-center overflow-hidden"
-                    style={{ flex: entry.durationSec }}
-                    title={`${entry.shotId}: ${entry.durationSec.toFixed(1)}s`}
-                  >
-                    <span className="font-mono text-[8px] text-sky truncate px-1">
-                      {i + 1}
-                    </span>
-                  </div>
-                ))}
-                {/* Outro */}
-                <div
-                  className="bg-amber/30 border border-amber rounded-sm flex items-center justify-center"
-                  style={{ flex: plan.motionGraphics.outro?.durationSec ?? 4 }}
-                >
-                  <span className="font-mono text-[8px] text-amber">OUTRO</span>
-                </div>
-              </div>
             </div>
 
             {/* Refinement */}
@@ -731,7 +845,6 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
     </div>
   )
 }
-
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function Stat({ label, value }: { label: string; value: string | number }) {

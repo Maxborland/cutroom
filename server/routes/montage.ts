@@ -3,10 +3,12 @@ import fs from 'node:fs/promises';
 import fsCb from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
+import { readLimiter, mutationLimiter, generationLimiter } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
+import { normalizeVoiceoverText } from '../lib/tts-utils.js';
 
 const router = Router({ mergeParams: true });
 
@@ -142,8 +144,43 @@ router.get('/montage/voices', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /api/projects/:id/montage/normalize-vo-text
+// Preview endpoint for text normalization before TTS generation
+router.post('/montage/normalize-vo-text', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const { text, pass, provider } = req.body ?? {};
+    const sourceText = typeof text === 'string'
+      ? text
+      : (project.voiceoverScript || '');
+
+    if (!sourceText.trim()) {
+      sendApiError(res, 400, 'Text is required for normalization');
+      return;
+    }
+
+    const parsedPass = typeof pass === 'number'
+      ? pass
+      : Number.parseInt(String(pass ?? ''), 10);
+
+    const validProviders = ['elevenlabs-fal', 'elevenlabs', 'kokoro'] as const;
+    const resolvedProvider = validProviders.includes(provider) ? provider : undefined;
+
+    const normalizedText = normalizeVoiceoverText(sourceText, {
+      pass: Number.isFinite(parsedPass) && parsedPass > 0 ? parsedPass : 1,
+      provider: resolvedProvider,
+    });
+    res.json({ normalizedText });
+  } catch (err) {
+    console.error('Failed to normalize voiceover text:', err);
+    sendApiError(res, 500, 'Failed to normalize voiceover text');
+  }
+});
+
 // POST /api/projects/:id/montage/generate-voiceover
-router.post('/montage/generate-voiceover', async (req: Request, res: Response) => {
+router.post('/montage/generate-voiceover', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -176,6 +213,16 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
       return;
     }
 
+    const normalizedScript = normalizeVoiceoverText(scriptAtGeneration, {
+      provider: requestedProvider,
+      pass: 1,
+    });
+
+    if (!normalizedScript.trim()) {
+      sendApiError(res, 400, 'Voiceover text is empty after normalization');
+      return;
+    }
+
     // Validate voiceId belongs to the selected provider
     const { getVoices } = await import('../lib/tts-providers.js');
     const providerVoices = getVoices(requestedProvider);
@@ -193,8 +240,8 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
       return;
     }
 
-    // Generate speech
-    const result = await generateSpeech(scriptAtGeneration, requestedProvider, requestedVoice);
+    // Generate speech using normalized text for better TTS prosody
+    const result = await generateSpeech(normalizedScript, requestedProvider, requestedVoice);
 
     // Validate audio content type before writing to disk
     const allowedAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/wave', 'audio/x-wav'];
@@ -209,7 +256,16 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
     const ext = result.contentType.includes('wav') ? 'wav' : 'mp3';
     const tmpName = `voiceover_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.tmp.${ext}`;
     const tmpPath = path.join(montageDir, tmpName);
-    await fs.writeFile(tmpPath, result.audioBuffer);
+    // Validate write path stays within montage dir
+    if (!path.resolve(tmpPath).startsWith(path.resolve(montageDir) + path.sep)) {
+      throw new Error('Path escapes montage directory');
+    }
+    // Validate audio buffer before writing (size cap 50MB, must be Buffer)
+    if (!Buffer.isBuffer(result.audioBuffer) || result.audioBuffer.length > 50 * 1024 * 1024) {
+      throw new Error('Invalid or oversized audio data');
+    }
+    const safeAudio = Buffer.from(result.audioBuffer);
+    await fs.writeFile(tmpPath, safeAudio);
 
     // Re-check approval AND script content inside withProject to prevent TOCTOU race
     const finalFilename = `voiceover.${ext}`;
@@ -248,8 +304,125 @@ router.post('/montage/generate-voiceover', async (req: Request, res: Response) =
   }
 });
 
+// ─── Audio upload helpers ───────────────────────────────────────────
+
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.aac': 'audio/aac',
+};
+
+const ALLOWED_AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
+
+function getMimeForExt(ext: string): string {
+  return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
+}
+
+const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
+
+function createAudioUpload() {
+  return multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+    fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const extValid = ALLOWED_AUDIO_EXTENSIONS.has(ext);
+      const mimeValid = ALLOWED_AUDIO_MIMES.has(file.mimetype);
+      if (extValid && mimeValid) {
+        cb(null, true);
+      } else {
+        cb(new Error('Недопустимый формат файла. Разрешены: mp3, wav, m4a, ogg, aac'));
+      }
+    },
+  });
+}
+
+const voiceoverUpload = createAudioUpload();
+const musicUpload = createAudioUpload();
+
+// DELETE /api/projects/:id/montage/voiceover
+router.delete('/montage/voiceover', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    // Atomic: check + clear inside withProject to prevent race with concurrent upload
+    const deletedFile = await withProject(project.id, (proj) => {
+      if (!proj.voiceoverFile) return null;
+      const file = proj.voiceoverFile;
+      delete proj.voiceoverFile;
+      delete proj.voiceoverProvider;
+      delete proj.voiceoverVoiceId;
+      return file;
+    });
+
+    if (!deletedFile) {
+      sendApiError(res, 404, 'No voiceover to delete');
+      return;
+    }
+
+    // Remove file after clearing reference (safe even if file missing)
+    const filePath = resolveProjectPath(project.id, deletedFile);
+    await fs.unlink(filePath).catch(() => {});
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Failed to delete voiceover:', err);
+    sendApiError(res, 500, 'Failed to delete voiceover');
+  }
+});
+
+// POST /api/projects/:id/montage/upload-voiceover
+// Upload custom voiceover audio — validates project before buffering
+router.post('/montage/upload-voiceover', mutationLimiter, async (req: Request, res: Response) => {
+  const project = await loadProject(req, res);
+  if (!project) return;
+
+  voiceoverUpload.single('voiceover')(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        sendApiError(res, 400, multerErr.message);
+        return;
+      }
+
+      if (!req.file) {
+        sendApiError(res, 400, 'Файл озвучки не предоставлен');
+        return;
+      }
+
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const ALLOWED_AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm']);
+      if (!ALLOWED_AUDIO_EXTS.has(ext)) {
+        sendApiError(res, 400, `Unsupported audio format: ${ext}`);
+        return;
+      }
+
+      const montageDir = resolveProjectPath(project.id, 'montage');
+      await ensureDir(montageDir);
+
+      const filename = `voiceover${ext}`;
+      const filePath = path.join(montageDir, filename);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      const voiceoverFile = `montage/${filename}`;
+      await withProject(project.id, (proj) => {
+        proj.voiceoverFile = voiceoverFile;
+        proj.voiceoverProvider = 'manual';
+        delete proj.voiceoverVoiceId;
+      });
+
+      res.json({ voiceoverFile, provider: 'manual' });
+    } catch (err) {
+      console.error('Failed to upload voiceover:', err);
+      sendApiError(res, 500, 'Failed to upload voiceover');
+    }
+  });
+});
+
 // GET /api/projects/:id/montage/voiceover
-router.get('/montage/voiceover', async (req: Request, res: Response) => {
+router.get('/montage/voiceover', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -269,8 +442,7 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
     }
 
     const ext = path.extname(filePath).toLowerCase();
-    const mimeType = ext === '.wav' ? 'audio/wav' : 'audio/mpeg';
-    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Type', getMimeForExt(ext));
     const stream = fsCb.createReadStream(filePath);
     stream.on('error', (err) => {
       console.error('Stream error:', err);
@@ -287,44 +459,9 @@ router.get('/montage/voiceover', async (req: Request, res: Response) => {
   }
 });
 
-// ─── Music helpers ──────────────────────────────────────────────────
-
-const AUDIO_MIME_TYPES: Record<string, string> = {
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.m4a': 'audio/mp4',
-  '.ogg': 'audio/ogg',
-  '.aac': 'audio/aac',
-};
-
-const ALLOWED_AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
-
-function getMimeForExt(ext: string): string {
-  return AUDIO_MIME_TYPES[ext] || 'application/octet-stream';
-}
-
-// Allowed MIME types for audio upload validation
-const ALLOWED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_TYPES));
-
-// Multer for music upload — validates by both extension and MIME type
-const musicUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const extValid = ALLOWED_AUDIO_EXTENSIONS.has(ext);
-    const mimeValid = ALLOWED_AUDIO_MIMES.has(file.mimetype);
-    if (extValid && mimeValid) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Allowed audio formats: mp3, wav, m4a, ogg, aac'));
-    }
-  },
-});
-
 // POST /api/projects/:id/montage/generate-music-prompt
 // Generates a music prompt via LLM that the user can copy into Suno UI
-router.post('/montage/generate-music-prompt', async (req: Request, res: Response) => {
+router.post('/montage/generate-music-prompt', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -380,7 +517,7 @@ Rules:
 
 // POST /api/projects/:id/montage/upload-music
 // Check project existence BEFORE multer parses body (avoid buffering 50MB for 404)
-router.post('/montage/upload-music', async (req: Request, res: Response) => {
+router.post('/montage/upload-music', mutationLimiter, async (req: Request, res: Response) => {
   const project = await loadProject(req, res);
   if (!project) return;
 
@@ -418,8 +555,40 @@ router.post('/montage/upload-music', async (req: Request, res: Response) => {
   });
 });
 
+// DELETE /api/projects/:id/montage/music
+router.delete('/montage/music', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    // Atomic: check + clear inside withProject to prevent race with concurrent upload
+    const deletedFile = await withProject(project.id, (proj) => {
+      if (!proj.musicFile) return null;
+      const file = proj.musicFile;
+      delete proj.musicFile;
+      delete proj.musicProvider;
+      // Keep musicPrompt for re-generation convenience
+      return file;
+    });
+
+    if (!deletedFile) {
+      sendApiError(res, 404, 'No music to delete');
+      return;
+    }
+
+    // Remove file after clearing reference
+    const filePath = resolveProjectPath(project.id, deletedFile);
+    await fs.unlink(filePath).catch(() => {});
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Failed to delete music:', err);
+    sendApiError(res, 500, 'Failed to delete music');
+  }
+});
+
 // GET /api/projects/:id/montage/music
-router.get('/montage/music', async (req: Request, res: Response) => {
+router.get('/montage/music', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -481,7 +650,7 @@ router.put('/montage/music-prompt', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/montage/generate-plan
-router.post('/montage/generate-plan', async (req: Request, res: Response) => {
+router.post('/montage/generate-plan', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -555,8 +724,282 @@ router.put('/montage/plan', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Timeline editing endpoints ─────────────────────────────────────
+
+const VALID_TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide_right', 'zoom_blur', 'wipe'] as const;
+const VALID_MOTION_EFFECTS = ['ken_burns', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right'] as const;
+
+// PUT /api/projects/:id/montage/plan/timeline
+// Reorder timeline + rebuild transitions
+router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const rawTimeline = req.body.timeline;
+    if (!Array.isArray(rawTimeline)) {
+      sendApiError(res, 400, 'timeline must be an array');
+      return;
+    }
+    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; durationSec: number }>;
+
+    // Validate: all entries must have shotId and durationSec
+    for (const entry of timeline) {
+      if (!entry.shotId || typeof entry.durationSec !== 'number' || entry.durationSec <= 0) {
+        sendApiError(res, 400, `Invalid timeline entry: shotId and positive durationSec required`);
+        return;
+      }
+    }
+
+    // Validate: incoming shot IDs must match existing plan
+    const existingIds = new Set(project.montagePlan.timeline.map(e => e.shotId));
+    const newIds = new Set(timeline.map((entry) => entry.shotId));
+    for (const id of newIds) {
+      if (!existingIds.has(id)) {
+        sendApiError(res, 400, `Unknown shot ID: ${String(id).slice(0, 50)}`);
+        return;
+      }
+    }
+
+    if (timeline.length !== project.montagePlan.timeline.length || newIds.size !== existingIds.size) {
+      sendApiError(res, 400, 'Timeline must contain all existing shots exactly once');
+      return;
+    }
+
+    // Rebuild startSec based on new order
+    const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
+    let cursor = introSec;
+    const reordered = timeline.map((entry) => {
+      const existing = project.montagePlan!.timeline.find(e => e.shotId === entry.shotId);
+      const result = {
+        ...existing,
+        ...entry,
+        startSec: cursor,
+      };
+      cursor += result.durationSec;
+      return result;
+    });
+
+    // Rebuild transitions for new order
+    const transitions = [];
+    if (reordered.length > 0 && project.montagePlan.motionGraphics.intro) {
+      transitions.push({
+        fromShotId: 'intro',
+        toShotId: reordered[0].shotId,
+        type: 'fade' as const,
+        durationSec: 0.5,
+      });
+    }
+    for (let i = 0; i < reordered.length - 1; i++) {
+      // Preserve existing transition type if it exists between these shots
+      const existing = project.montagePlan.transitions.find(
+        t => t.fromShotId === reordered[i].shotId && t.toShotId === reordered[i + 1].shotId
+      );
+      transitions.push({
+        fromShotId: reordered[i].shotId,
+        toShotId: reordered[i + 1].shotId,
+        type: existing?.type ?? 'crossfade',
+        durationSec: existing?.durationSec ?? 0.5,
+      });
+    }
+    if (reordered.length > 0 && project.montagePlan.motionGraphics.outro) {
+      transitions.push({
+        fromShotId: reordered[reordered.length - 1].shotId,
+        toShotId: 'outro',
+        type: 'fade' as const,
+        durationSec: 0.5,
+      });
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+      p.montagePlan.timeline = reordered;
+      p.montagePlan.transitions = transitions;
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update timeline:', err);
+    sendApiError(res, 500, 'Failed to update timeline');
+  }
+});
+
+// PUT /api/projects/:id/montage/plan/timeline/:shotId
+// Update individual clip: durationSec, trimEndSec, motionEffect
+router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const { shotId } = req.params;
+    const entry = project.montagePlan.timeline.find(e => e.shotId === shotId);
+    if (!entry) {
+      sendApiError(res, 404, `Shot ${String(shotId).slice(0, 50)} not in timeline`);
+      return;
+    }
+
+    const { durationSec, trimEndSec, motionEffect } = req.body;
+
+    if (durationSec !== undefined) {
+      if (typeof durationSec !== 'number' || durationSec <= 0 || durationSec > 120) {
+        sendApiError(res, 400, 'durationSec must be a number between 0 and 120');
+        return;
+      }
+    }
+
+    if (trimEndSec !== undefined && (typeof trimEndSec !== 'number' || trimEndSec < 0)) {
+      sendApiError(res, 400, 'trimEndSec must be a non-negative number');
+      return;
+    }
+
+    if (motionEffect !== undefined && motionEffect !== null) {
+      if (!VALID_MOTION_EFFECTS.includes(motionEffect)) {
+        sendApiError(res, 400, `Invalid motionEffect. Allowed: ${VALID_MOTION_EFFECTS.join(', ')}`);
+        return;
+      }
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+      const target = p.montagePlan.timeline.find(e => e.shotId === shotId);
+      if (!target) return null;
+
+      if (durationSec !== undefined) target.durationSec = durationSec;
+      if (trimEndSec !== undefined) target.trimEndSec = trimEndSec;
+      if (motionEffect !== undefined) target.motionEffect = motionEffect || undefined;
+
+      // Recalculate startSec for all entries
+      const introSec = p.montagePlan.motionGraphics.intro?.durationSec ?? 0;
+      let cursor = introSec;
+      for (const e of p.montagePlan.timeline) {
+        e.startSec = cursor;
+        cursor += e.durationSec;
+      }
+
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update timeline entry:', err);
+    sendApiError(res, 500, 'Failed to update timeline entry');
+  }
+});
+
+// PUT /api/projects/:id/montage/plan/transitions/:index
+// Update transition type and duration
+router.put('/montage/plan/transitions/:index', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const index = parseInt(req.params.index, 10);
+    if (isNaN(index) || index < 0 || index >= project.montagePlan.transitions.length) {
+      sendApiError(res, 404, 'Transition index out of range');
+      return;
+    }
+
+    const { type, durationSec } = req.body;
+
+    if (type !== undefined) {
+      if (!VALID_TRANSITION_TYPES.includes(type)) {
+        sendApiError(res, 400, `Invalid transition type. Allowed: ${VALID_TRANSITION_TYPES.join(', ')}`);
+        return;
+      }
+    }
+
+    if (durationSec !== undefined) {
+      if (typeof durationSec !== 'number' || durationSec < 0 || durationSec > 5) {
+        sendApiError(res, 400, 'durationSec must be between 0 and 5');
+        return;
+      }
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+      const transition = p.montagePlan.transitions[index];
+      if (!transition) return null;
+
+      if (type !== undefined) transition.type = type;
+      if (durationSec !== undefined) transition.durationSec = durationSec;
+
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update transition:', err);
+    sendApiError(res, 500, 'Failed to update transition');
+  }
+});
+
+// PUT /api/projects/:id/montage/plan/audio
+// Update audio levels
+router.put('/montage/plan/audio', async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.montagePlan) {
+      sendApiError(res, 400, 'Сначала создайте план монтажа');
+      return;
+    }
+
+    const { audio } = req.body;
+    if (!audio || typeof audio !== 'object') {
+      sendApiError(res, 400, 'audio object is required');
+      return;
+    }
+
+    const updatedPlan = await withProject(project.id, (p) => {
+      if (!p.montagePlan) return null;
+
+      // Merge audio levels (partial update)
+      if (audio.voiceover) {
+        if (typeof audio.voiceover.gainDb === 'number') {
+          p.montagePlan.audio.voiceover.gainDb = audio.voiceover.gainDb;
+        }
+      }
+      if (audio.music) {
+        if (typeof audio.music.gainDb === 'number') {
+          p.montagePlan.audio.music.gainDb = audio.music.gainDb;
+        }
+        if (typeof audio.music.duckingDb === 'number') {
+          p.montagePlan.audio.music.duckingDb = audio.music.duckingDb;
+        }
+        if (typeof audio.music.duckFadeMs === 'number') {
+          p.montagePlan.audio.music.duckFadeMs = audio.music.duckFadeMs;
+        }
+      }
+
+      return p.montagePlan;
+    });
+
+    res.json({ montagePlan: updatedPlan });
+  } catch (err) {
+    console.error('Failed to update audio levels:', err);
+    sendApiError(res, 500, 'Failed to update audio levels');
+  }
+});
+
 // POST /api/projects/:id/montage/refine-plan
-router.post('/montage/refine-plan', async (req: Request, res: Response) => {
+router.post('/montage/refine-plan', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -622,37 +1065,35 @@ router.post('/montage/refine-plan', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/montage/render
-router.post('/montage/render', async (req: Request, res: Response) => {
+router.post('/montage/render', generationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
 
     if (!project.montagePlan) {
-      sendApiError(res, 400, 'No montage plan. Generate or upload a plan first.');
+      sendApiError(res, 400, 'No montage plan exists. Generate a plan first.');
       return;
     }
 
-    const quality = req.body.quality === 'final' ? 'final' : 'preview';
-
+    const requestedQuality = req.body?.quality;
+    const quality = requestedQuality === 'final' ? 'final' : 'preview';
     const { startRender } = await import('../lib/render-worker.js');
     const jobId = await startRender(project.id, project.montagePlan, quality);
-
     res.json({ jobId, status: 'queued', quality });
   } catch (err) {
-    console.error('Failed to start render:', err);
-    sendApiError(res, 500, 'Failed to start render');
+    console.error('Failed to start montage render:', err);
+    sendApiError(res, 500, 'Failed to start montage render');
   }
 });
 
 // GET /api/projects/:id/montage/render/:jobId
-router.get('/montage/render/:jobId', async (req: Request, res: Response) => {
+router.get('/montage/render/:jobId', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
 
     const { getRenderJob } = await import('../lib/render-worker.js');
     const job = await getRenderJob(project.id, req.params.jobId);
-
     if (!job) {
       sendApiError(res, 404, 'Render job not found');
       return;
@@ -660,48 +1101,44 @@ router.get('/montage/render/:jobId', async (req: Request, res: Response) => {
 
     res.json(job);
   } catch (err) {
-    console.error('Failed to get render status:', err);
-    sendApiError(res, 500, 'Failed to get render status');
+    console.error('Failed to read render status:', err);
+    sendApiError(res, 500, 'Failed to read render status');
   }
 });
 
 // DELETE /api/projects/:id/montage/render/:jobId
-router.delete('/montage/render/:jobId', async (req: Request, res: Response) => {
+router.delete('/montage/render/:jobId', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
 
     const { deleteRenderJob } = await import('../lib/render-worker.js');
-
-    try {
-      const deleted = await deleteRenderJob(project.id, req.params.jobId);
-      if (!deleted) {
-        sendApiError(res, 404, 'Render job not found');
-        return;
-      }
-      res.json({ deleted: true });
-    } catch (deleteErr) {
-      if (deleteErr instanceof Error && deleteErr.message.includes('currently rendering')) {
-        sendApiError(res, 409, deleteErr.message);
-        return;
-      }
-      throw deleteErr;
+    const deleted = await deleteRenderJob(project.id, req.params.jobId);
+    if (!deleted) {
+      sendApiError(res, 404, 'Render job not found');
+      return;
     }
+
+    res.json({ deleted: true });
   } catch (err) {
+    if (err instanceof Error && err.message.includes('currently rendering')) {
+      sendApiError(res, 409, err.message);
+      return;
+    }
+
     console.error('Failed to delete render job:', err);
     sendApiError(res, 500, 'Failed to delete render job');
   }
 });
 
 // GET /api/projects/:id/montage/render/:jobId/download
-router.get('/montage/render/:jobId/download', async (req: Request, res: Response) => {
+router.get('/montage/render/:jobId/download', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
 
     const { getRenderJob } = await import('../lib/render-worker.js');
     const job = await getRenderJob(project.id, req.params.jobId);
-
     if (!job) {
       sendApiError(res, 404, 'Render job not found');
       return;
@@ -712,18 +1149,16 @@ router.get('/montage/render/:jobId/download', async (req: Request, res: Response
       return;
     }
 
-    const filePath = resolveProjectPath(project.id, job.outputFile);
-    try {
-      await fs.access(filePath);
-    } catch {
-      sendApiError(res, 404, 'Rendered file not found on disk');
+    const outputPath = resolveProjectPath(project.id, job.outputFile);
+    const stat = await fs.stat(outputPath).catch(() => null);
+    if (!stat?.isFile()) {
+      sendApiError(res, 404, 'Rendered file not found');
       return;
     }
 
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="${job.id}.mp4"`);
-    const stream = fsCb.createReadStream(filePath);
-    stream.pipe(res);
+    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(outputPath)}"`);
+    fsCb.createReadStream(outputPath).pipe(res);
   } catch (err) {
     console.error('Failed to download render:', err);
     sendApiError(res, 500, 'Failed to download render');

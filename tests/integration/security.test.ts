@@ -2,6 +2,27 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../server/app.js';
 
+const withEnv = async (env: Record<string, string | undefined>, fn: () => Promise<void>) => {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(env)) {
+    prev[k] = process.env[k];
+    if (v === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = v;
+    }
+  }
+
+  try {
+    await fn();
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+};
+
 describe('Security middleware', () => {
   it('returns 503 when API key is required but not configured', async () => {
     const app = createApp({
@@ -49,5 +70,12 @@ describe('Security middleware', () => {
 
     expect(res.body.error).toBe('Unauthorized');
     expect(res.body.code).toBe('UNAUTHORIZED');
+  });
+
+  it('defaults to requiring API key in production', async () => {
+    await withEnv({ NODE_ENV: 'production' }, async () => {
+      const app = createApp({ apiAccessKey: '', authRepository: null });
+      await request(app).get('/api/projects').expect(503);
+    });
   });
 });

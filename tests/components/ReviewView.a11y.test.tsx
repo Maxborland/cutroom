@@ -85,6 +85,7 @@ describe('ReviewView accessibility', () => {
     const state = {
       activeProject: () => project,
       updateShotStatus: vi.fn(),
+      generateVideo: vi.fn(),
       enhanceImage: vi.fn(),
       enhancingShotIds: new Set<string>(),
     }

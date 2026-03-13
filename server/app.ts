@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import projectRoutes from './routes/projects.js';
 import settingsRoutes from './routes/settings.js';
@@ -12,6 +13,7 @@ import shotRoutes from './routes/shots.js';
 import exportRoutes from './routes/export.js';
 import montageRoutes from './routes/montage.js';
 import { createSystemRoutes } from './routes/system.js';
+import openreelRoutes from './routes/openreel.js';
 import { getErrorMessage, sendApiError } from './lib/api-error.js';
 import type { LicensingService } from './lib/licensing/types.js';
 import { createDefaultLicensingService } from './lib/licensing/service.js';
@@ -92,7 +94,9 @@ export function createApp(options: CreateAppOptions = {}): Express {
   const clientDistDir = options.clientDistDir ?? (isDev ? null : path.resolve(process.cwd(), 'dist'));
   const hasClientBundle = typeof clientDistDir === 'string' && clientDistDir.length > 0 && existsSync(clientDistDir);
   let licensingService = options.licensingService;
-  const authRepository = options.authRepository ?? (process.env.NODE_ENV === 'test' ? null : createDefaultAuthRepository());
+  const authRepository = options.authRepository !== undefined
+    ? options.authRepository
+    : (process.env.NODE_ENV === 'test' ? null : createDefaultAuthRepository());
   const bootstrapTokenFromEnv = (process.env.BOOTSTRAP_SETUP_TOKEN ?? '').trim();
   const bootstrapSetupToken = (
     options.bootstrapSetupToken
@@ -126,7 +130,8 @@ export function createApp(options: CreateAppOptions = {}): Express {
   }
 
   const apiAccessKey = (options.apiAccessKey ?? process.env.API_ACCESS_KEY ?? '').trim();
-  const allowMissingApiKey = options.allowMissingApiKey ?? true;
+  // Secure-by-default: in production, require API key unless explicitly allowed.
+  const allowMissingApiKey = options.allowMissingApiKey ?? isDev;
   const rateLimitWindowMs = options.rateLimitWindowMs ?? parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60000);
   const rateLimitMax = options.rateLimitMax ?? parsePositiveInt(process.env.RATE_LIMIT_MAX, 120);
   const rateLimitStore = new Map<string, RateLimitEntry>();
@@ -153,14 +158,31 @@ export function createApp(options: CreateAppOptions = {}): Express {
     });
   }));
 
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    // Allow OpenReel editor to be embedded in our own iframe
+    if (req.path.startsWith('/openreel')) {
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    } else {
+      res.setHeader('X-Frame-Options', 'DENY');
+    }
     res.setHeader('Referrer-Policy', 'no-referrer');
     next();
   });
 
-  app.use(express.json({ limit: '50mb' }));
+  const jsonDefault = express.json({ limit: '1mb' });
+  const jsonSettings = express.json({ limit: '10mb' });
+
+  // Route-specific payload limits.
+  // Settings can contain long master prompts, so we allow a larger payload.
+  app.use('/api/settings', jsonSettings);
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/settings')) {
+      next();
+      return;
+    }
+    jsonDefault(req, res, next);
+  });
 
   app.use('/api', (req, res, next) => {
     if (req.path === '/health') {
@@ -239,6 +261,17 @@ export function createApp(options: CreateAppOptions = {}): Express {
       requireAuthenticatedUser(req, res, next);
     });
   }
+  // Serve OpenReel editor: wrapper + bridge at /openreel/, built app at /openreel/app/
+  const serverDir = path.dirname(fileURLToPath(import.meta.url));
+  const openreelWrapper = path.resolve(serverDir, 'static', 'openreel');
+  const openreelDist = path.resolve(serverDir, '..', 'vendor', 'openreel-video', 'apps', 'web', 'dist');
+  const coopHeaders = (_res: Response) => {
+    // Required for SharedArrayBuffer (ffmpeg/WebCodecs)
+    _res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    _res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  };
+  app.use('/openreel/app', express.static(openreelDist, { setHeaders: coopHeaders }));
+  app.use('/openreel', express.static(openreelWrapper, { setHeaders: coopHeaders }));
 
   app.use('/api/projects', projectRoutes);
   if (authRepository) {
@@ -253,6 +286,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   app.use('/api/projects/:id', exportRoutes);
   app.use('/api/projects/:id', montageRoutes);
   app.use('/api/system', createSystemRoutes(resolveLicensingService));
+  app.use('/api/projects/:id', openreelRoutes);
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

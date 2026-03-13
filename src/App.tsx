@@ -13,6 +13,7 @@ import { DirectorView } from './components/DirectorView'
 import { Toaster } from './components/Toaster'
 import { Lightbox } from './components/Lightbox'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { OpenReelEditorPage } from './routes/OpenReelEditorPage'
 import { useProjectStore } from './stores/projectStore'
 import { useAuthStore } from './stores/authStore'
 import { LoginView } from './components/auth/LoginView'
@@ -263,6 +264,7 @@ function App() {
       <Route path="/bootstrap" element={<Navigate to="/" replace />} />
       <Route path="/accept-invite" element={<Navigate to="/" replace />} />
       <Route path="/accept-invite/:token" element={<Navigate to="/" replace />} />
+      <Route path="/editor/:projectId" element={<OpenReelEditorPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

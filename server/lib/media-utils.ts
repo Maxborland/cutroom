@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ShotMeta } from './storage.js';
+import { downloadRemoteToBuffer, downloadRemoteToFile } from './safe-remote-fetch.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const DOWNLOAD_TIMEOUT_MS = 20000;
@@ -37,40 +38,78 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
+const DEFAULT_MAX_BYTES = 30 * 1024 * 1024; // 30MB
+
 export async function fetchRemoteMediaBuffer(
   url: string,
   maxAttempts = 3,
   timeoutMs = DOWNLOAD_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES,
 ): Promise<Buffer> {
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(timeoutMs),
+      const buffer = await downloadRemoteToBuffer(url, {
+        timeoutMs,
+        maxBytes,
+        maxRedirects: 3,
       });
-
-      if (!response.ok) {
-        if (isRetryableStatus(response.status) && attempt < maxAttempts) {
-          const delay = attempt * 1500;
-          console.warn(`[media] Download HTTP ${response.status} (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`);
-          await sleep(delay);
-          continue;
-        }
-        throw new Error(`Failed to download media: ${response.status}`);
-      }
-
-      const buffer = Buffer.from(await response.arrayBuffer());
       return buffer;
     } catch (err) {
       lastErr = err;
-      const retryable = isRetryableFetchError(err);
+
+      const status = (err as any)?.status;
+      const retryableStatus = typeof status === 'number' && isRetryableStatus(status);
+      const retryable = retryableStatus || isRetryableFetchError(err);
+
       if (retryable && attempt < maxAttempts) {
         const delay = attempt * 1500;
-        console.warn(`[media] Download failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`, (err as any)?.cause?.code || (err as any)?.message || 'unknown');
+        // Avoid logging error messages/codes from remote sources to prevent log injection.
+        console.warn(`[media] Download failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`);
         await sleep(delay);
         continue;
       }
+
+      throw err;
+    }
+  }
+
+  if (lastErr instanceof Error) throw lastErr;
+  throw new Error('Failed to download media');
+}
+
+export async function fetchRemoteMediaToFile(
+  url: string,
+  filePath: string,
+  maxAttempts = 3,
+  timeoutMs = DOWNLOAD_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES,
+): Promise<{ bytes: number }> {
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await downloadRemoteToFile(url, filePath, {
+        timeoutMs,
+        maxBytes,
+        maxRedirects: 3,
+      });
+    } catch (err) {
+      lastErr = err;
+
+      const status = (err as any)?.status;
+      const retryableStatus = typeof status === 'number' && isRetryableStatus(status);
+      const retryable = retryableStatus || isRetryableFetchError(err);
+
+      if (retryable && attempt < maxAttempts) {
+        const delay = attempt * 1500;
+        // Avoid logging error messages/codes from remote sources to prevent log injection.
+        console.warn(`[media] Download-to-file failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s...`);
+        await sleep(delay);
+        continue;
+      }
+
       throw err;
     }
   }
@@ -96,6 +135,16 @@ export function getMimeType(filename: string): string {
  * Save an image result (URL, data URL, or raw base64) to a file on disk.
  */
 export async function saveImageResult(resultUrl: string, filePath: string): Promise<void> {
+  // Guard: filePath must be absolute (callers use resolveProjectPath which validates traversal)
+  const resolvedPath = path.resolve(filePath);
+  if (resolvedPath !== filePath && !path.isAbsolute(filePath)) {
+    throw new Error('File path must be absolute');
+  }
+  // Guard: reject obviously suspicious patterns in the original input
+  if (filePath.includes('\0') || /\.\.[/\\]/.test(filePath)) {
+    throw new Error('Invalid file path');
+  }
+
   if (resultUrl.startsWith('data:') || resultUrl.match(/^[A-Za-z0-9+/=\s]+$/)) {
     let base64Data = resultUrl;
     if (base64Data.startsWith('data:')) {
@@ -103,8 +152,7 @@ export async function saveImageResult(resultUrl: string, filePath: string): Prom
     }
     await fs.writeFile(filePath, Buffer.from(base64Data, 'base64'));
   } else if (resultUrl.startsWith('http')) {
-    const buffer = await fetchRemoteMediaBuffer(resultUrl);
-    await fs.writeFile(filePath, buffer);
+    await fetchRemoteMediaToFile(resultUrl, filePath);
   } else {
     await fs.writeFile(filePath, Buffer.from(resultUrl, 'base64'));
   }

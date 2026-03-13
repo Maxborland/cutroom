@@ -1,6 +1,20 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+}))
+
+function makeBodyStream(data: string): ReadableStream<Uint8Array> {
+  const bytes = new Uint8Array(Buffer.from(data))
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(bytes)
+      controller.close()
+    },
+  })
+}
 import {
   createProject,
   deleteProject,
@@ -52,7 +66,9 @@ describe('external image cache startup recovery', () => {
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      arrayBuffer: async () => Buffer.from('http-image'),
+      status: 200,
+      headers: { get: () => null },
+      body: makeBodyStream('http-image'),
     })
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
 

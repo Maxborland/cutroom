@@ -2,6 +2,11 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+}))
+
 import { saveImageResult } from '../../server/lib/media-utils.js'
 
 describe('media-utils saveImageResult', () => {
@@ -12,6 +17,24 @@ describe('media-utils saveImageResult', () => {
     await Promise.all(tmpDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })))
     tmpDirs.length = 0
   })
+
+  function streamFrom(chunks: Array<Uint8Array | Error>): ReadableStream<Uint8Array> {
+    // Minimal WHATWG ReadableStream for Node fetch() mocks.
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = chunks.shift()
+        if (!next) {
+          controller.close()
+          return
+        }
+        if (next instanceof Error) {
+          controller.error(next)
+          return
+        }
+        controller.enqueue(next)
+      },
+    })
+  }
 
   it('retries downloading http result when fetch fails with terminated/ECONNRESET', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'save-image-retry-'))
@@ -25,7 +48,9 @@ describe('media-utils saveImageResult', () => {
       .mockRejectedValueOnce(resetError)
       .mockResolvedValueOnce({
         ok: true,
-        arrayBuffer: async () => Buffer.from('ok-image-bytes'),
+        status: 200,
+        headers: { get: () => null },
+        body: streamFrom([new Uint8Array(Buffer.from('ok-image-bytes'))]),
       })
 
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
@@ -48,13 +73,15 @@ describe('media-utils saveImageResult', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
-        arrayBuffer: async () => {
-          throw resetError
-        },
+        status: 200,
+        headers: { get: () => null },
+        body: streamFrom([resetError]),
       })
       .mockResolvedValueOnce({
         ok: true,
-        arrayBuffer: async () => Buffer.from('ok-after-body-retry'),
+        status: 200,
+        headers: { get: () => null },
+        body: streamFrom([new Uint8Array(Buffer.from('ok-after-body-retry'))]),
       })
 
     vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)

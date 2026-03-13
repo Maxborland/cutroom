@@ -12,6 +12,21 @@ import {
 } from '../../server/lib/storage.js'
 import { createApp } from './setup.js'
 
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+}))
+
+function makeBodyStream(data: string | Buffer): ReadableStream<Uint8Array> {
+  const bytes = new Uint8Array(typeof data === 'string' ? Buffer.from(data) : data)
+  return new ReadableStream<Uint8Array>({
+    pull(controller) { controller.enqueue(bytes); controller.close() },
+  })
+}
+
+function mockOkResponse(data: string | Buffer) {
+  return { ok: true, status: 200, headers: { get: () => null }, body: makeBodyStream(data) }
+}
+
 const app = createApp()
 const SETTINGS_PATH = path.join(process.cwd(), 'data', 'settings.json')
 const originalFetch = global.fetch
@@ -149,11 +164,7 @@ describe('External image refs in generation routes', () => {
       }
 
       if (url === externalUrl) {
-        return {
-          ok: true,
-          status: 200,
-          arrayBuffer: async () => Buffer.from('external-image-bytes'),
-        } as Response
+        return mockOkResponse('external-image-bytes') as unknown as Response
       }
 
       throw new Error(`Unexpected URL in fetch mock: ${url}`)
@@ -261,11 +272,7 @@ describe('External image refs in generation routes', () => {
       }
 
       if (url === externalUrl) {
-        return {
-          ok: true,
-          status: 200,
-          arrayBuffer: async () => Buffer.from('external-review-bytes'),
-        } as Response
+        return mockOkResponse('external-review-bytes') as unknown as Response
       }
 
       throw new Error(`Unexpected URL in fetch mock: ${url}`)

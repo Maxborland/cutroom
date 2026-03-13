@@ -176,9 +176,13 @@ export interface RenderJob {
   status: 'queued' | 'rendering' | 'done' | 'failed'
   progress?: number
   outputFile?: string
-  durationSec?: number
   errorMessage?: string
-  logFile?: string
+}
+
+
+export interface OpenReelBundleMeta {
+  version: string
+  exportedAt: number
 }
 
 // ── Creative Director ────────────────────────────────────────────────
@@ -252,5 +256,4 @@ export interface AppSettings {
   sunoApiKey?: string
   defaultMusicStyle?: string
   defaultMontagePreset?: string
-  remotionConcurrency?: number
 }

@@ -11,6 +11,7 @@ import type {
   MontagePlan,
   RenderJob,
 } from '../types/index'
+import type { OpenReelBundle } from './openreel-bridge'
 
 const BASE = '/api'
 
@@ -355,6 +356,15 @@ export const api = {
     zipUrl: (projectId: string) => `${BASE}/projects/${projectId}/export`,
     promptsUrl: (projectId: string) => `${BASE}/projects/${projectId}/export/prompts`,
   },
+  openreel: {
+    getProject: (projectId: string) =>
+      request<OpenReelBundle>(`/projects/${projectId}/openreel-project`),
+    saveProject: (projectId: string, data: { version: string; project: unknown }) =>
+      request<{ saved: boolean; modifiedAt: number }>(`/projects/${projectId}/openreel-project`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+  },
   montage: {
     generateVoScript: (projectId: string) =>
       request<{ voiceoverScript: string }>(`/projects/${projectId}/montage/generate-vo-script`, { method: 'POST' }),
@@ -370,6 +380,21 @@ export const api = {
         providers: { id: string; name: string; configured: boolean }[];
         voices: { id: string; name: string; gender: string; language: string; provider: string }[];
       }>(`/projects/${projectId}/montage/voices`),
+    normalizeVoText: (projectId: string, text?: string) =>
+      request<{ normalizedText: string }>(`/projects/${projectId}/montage/normalize-vo-text`, {
+        method: 'POST',
+        body: JSON.stringify(text !== undefined ? { text } : {}),
+      }),
+    deleteVoiceover: (projectId: string) =>
+      request<{ deleted: boolean }>(`/projects/${projectId}/montage/voiceover`, { method: 'DELETE' }),
+    uploadVoiceover: async (projectId: string, file: File) => {
+      const form = new FormData()
+      form.append('voiceover', file)
+      const path = `/projects/${projectId}/montage/upload-voiceover`
+      const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form })
+      if (!res.ok) await throwRequestError(res, path)
+      return res.json() as Promise<{ voiceoverFile: string; provider: string }>
+    },
     generateVoiceover: (projectId: string, options?: { provider?: string; voiceId?: string }) =>
       request<{ voiceoverFile: string; provider: string; voiceId: string }>(`/projects/${projectId}/montage/generate-voiceover`, {
         method: 'POST',
@@ -382,6 +407,8 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ musicPrompt }),
       }),
+    deleteMusic: (projectId: string) =>
+      request<{ deleted: boolean }>(`/projects/${projectId}/montage/music`, { method: 'DELETE' }),
     uploadMusic: async (projectId: string, file: File) => {
       const form = new FormData()
       form.append('music', file)
@@ -394,6 +421,26 @@ export const api = {
     voiceoverUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/voiceover`,
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
+    reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline`, {
+        method: 'PUT',
+        body: JSON.stringify({ timeline }),
+      }),
+    updateTimelineEntry: (projectId: string, shotId: string, data: { durationSec?: number; trimEndSec?: number; motionEffect?: string | null }) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline/${shotId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    updateTransition: (projectId: string, index: number, data: { type?: string; durationSec?: number }) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/transitions/${index}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    updateAudioLevels: (projectId: string, audio: Record<string, unknown>) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/audio`, {
+        method: 'PUT',
+        body: JSON.stringify({ audio }),
+      }),
     updatePlan: (projectId: string, plan: MontagePlan) =>
       request<Project>(`/projects/${projectId}/montage/plan`, {
         method: 'PUT',

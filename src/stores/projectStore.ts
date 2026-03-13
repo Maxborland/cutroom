@@ -101,7 +101,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!project) return null
     return project.shots.find((s) => s.id === get().activeShotId) ?? null
   },
-
   clearError: () => set({ error: null }),
 
   // --- Async actions ---
@@ -278,8 +277,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   generateVideo: async (shotId: string) => {
     const projectId = get().activeProjectId
     if (!projectId) return
+    // Optimistic update: move shot into vid_gen immediately so Kanban reflects the running job.
     set((state) => ({
+      error: null,
       generatingVideoShotIds: new Set([...state.generatingVideoShotIds, shotId]),
+      projects: state.projects.map((p) =>
+        p.id === projectId
+          ? { ...p, shots: p.shots.map((s) => (s.id === shotId ? { ...s, status: 'vid_gen' as ShotStatus } : s)) }
+          : p
+      ),
     }))
     try {
       await api.generate.video(projectId, shotId)
@@ -300,6 +306,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         return { generatingVideoShotIds: next }
       })
       toast('error', 'Ошибка генерации видео', getActionErrorMessage(e))
+
+      // Reload to restore server truth (e.g. rollback vid_gen -> img_review on failure).
+      try {
+        const project = await api.projects.get(projectId)
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }))
+      } catch {
+        // ignore reload error
+      }
     }
   },
 

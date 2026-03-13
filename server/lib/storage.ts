@@ -155,10 +155,9 @@ export interface RenderJob {
   status: 'queued' | 'rendering' | 'done' | 'failed';
   progress?: number;
   outputFile?: string;
-  durationSec?: number;
   errorMessage?: string;
-  logFile?: string;
 }
+
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -287,6 +286,11 @@ function serializeProjectWrite<T>(projectId: string, task: () => Promise<T>): Pr
 }
 
 async function writeFileAtomic(filePath: string, contents: string): Promise<void> {
+  // Validate path stays within DATA_DIR
+  const resolvedFile = path.resolve(filePath);
+  if (!resolvedFile.startsWith(path.resolve(DATA_DIR) + path.sep)) {
+    throw new Error('Write path escapes data directory');
+  }
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
   const tmpPath = path.join(

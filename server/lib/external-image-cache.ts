@@ -79,8 +79,8 @@ export async function cacheExternalImageReference(
 
     try {
       await saveImageResult(externalRef, filePath);
-    } catch (err) {
-      console.warn('[external-cache] Failed to cache external image:', (err as any)?.message || err);
+    } catch {
+      console.warn('[external-cache] Failed to cache external image');
       return null;
     }
 
@@ -111,7 +111,7 @@ export async function cacheExternalImageReference(
       return null;
     }
 
-    console.log(`[external-cache] Cached ${projectId}/${shotId} external image -> ${filename}`);
+    console.log('[external-cache] Cached external image');
     return filename;
   })().finally(() => {
     externalImageCacheJobs.delete(cacheKey);

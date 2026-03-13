@@ -378,8 +378,34 @@ async function fetchAllowedRemoteVideoBuffer(
         if (!response.ok) {
           throw new Error(`Failed to download media: ${response.status}`);
         }
-        const arrayBuffer = await response.arrayBuffer();
-        return Buffer.from(arrayBuffer);
+        if (typeof response.arrayBuffer === 'function') {
+          const arrayBuffer = await response.arrayBuffer();
+          return Buffer.from(arrayBuffer);
+        }
+
+        if (!response.body) {
+          throw new Error('Remote response has no body');
+        }
+
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let totalLength = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          chunks.push(value);
+          totalLength += value.byteLength;
+        }
+
+        const buffer = Buffer.allocUnsafe(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          buffer.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return buffer;
       }
 
       return await fetchRemoteVideoBufferWithPolicy(videoUrl, VIDEO_DOWNLOAD_MAX_REDIRECTS, timeoutMs);

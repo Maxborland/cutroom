@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'crypto';
 import {
@@ -57,6 +58,13 @@ const upload = multer({
     destination: async (req, _file, cb) => {
       try {
         const projectId = validateProjectId((req as Request).params.id);
+        const project = await getProject(projectId);
+        if (!project) {
+          const errNotFound = new Error('Project not found');
+          cb(errNotFound, '');
+          return;
+        }
+
         const prefix = { projectId, scope: 'brief-images' } as const;
         await mediaStorage.ensureContainer(prefix);
         const dir = mediaStorage.getReadablePathForServer(prefix);
@@ -78,7 +86,7 @@ const upload = multer({
 });
 
 // POST /api/projects/:id/assets - upload files
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', mutationLimiter, async (req: Request, res: Response) => {
   const project = await getProject(req.params.id);
   if (!project) {
     sendApiError(res, 404, 'Project not found');
@@ -132,7 +140,7 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // GET /api/projects/:id/assets/file/:filename - serve a file
-router.get('/file/:filename', async (req: Request, res: Response) => {
+router.get('/file/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -168,7 +176,7 @@ router.get('/file/:filename', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/projects/:id/assets/:assetId - remove asset
-router.delete('/:assetId', async (req: Request, res: Response) => {
+router.delete('/:assetId', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -362,6 +370,21 @@ router.post('/describe-all', async (req: Request, res: Response) => {
     console.error('Failed to describe assets:', err);
     sendApiError(res, 500, getErrorMessage(err, 'Failed to describe assets'));
   }
+});
+
+router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  const errorWithCode = err as { code?: string };
+  if (errorWithCode?.code === 'PROJECT_NOT_FOUND') {
+    sendApiError(res, 404, 'Project not found');
+    return;
+  }
+  if (errorWithCode?.code === 'LIMIT_FILE_SIZE') {
+    sendApiError(res, 413, 'Uploaded file is too large');
+    return;
+  }
+
+  // Not an upload-specific error - delegate to the global error handler.
+  next(err);
 });
 
 export default router;

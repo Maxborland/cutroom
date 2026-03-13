@@ -7,13 +7,14 @@ import { getProject } from '../lib/storage.js';
 import { getProjectStorageAdapter } from '../lib/storage-adapters/index.js';
 import { appendProjectArchiveEntries, getExportDownloadFilename } from '../lib/export-archive.js';
 import { enqueueExportJob, getExportJob } from '../lib/jobs/export.js';
+import { readLimiter } from '../lib/rate-limit.js';
 import { sendApiError } from '../lib/api-error.js';
 
 const router = Router({ mergeParams: true });
 const mediaStorage = getProjectStorageAdapter();
 
 // GET /api/projects/:id/export — stream ZIP of the entire project
-router.get('/export', async (req: Request, res: Response) => {
+router.get('/export', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {

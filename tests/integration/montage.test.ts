@@ -1,6 +1,6 @@
 /**
  * Integration tests for montage endpoints.
- * Tests the full HTTP flow with mocked external dependencies (LLM, TTS, render).
+ * Tests the full HTTP flow with mocked external dependencies (LLM, TTS).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import request from 'supertest'
@@ -14,7 +14,6 @@ import {
   withProject,
   resolveProjectPath,
   ensureDir,
-  type Project,
 } from '../../server/lib/storage.js'
 
 // Mock external dependencies
@@ -22,13 +21,6 @@ vi.mock('../../server/lib/openrouter.js', () => ({
   chatCompletion: vi.fn().mockResolvedValue('Mocked LLM response'),
   generateImage: vi.fn(),
 }))
-
-vi.mock('../../server/lib/render-worker.js', () => ({
-  startRender: vi.fn().mockResolvedValue('render-test-job-preview'),
-  getRenderJob: vi.fn(),
-  deleteRenderJob: vi.fn(),
-}))
-
 vi.mock('../../server/lib/normalize.js', () => ({
   normalizeClips: vi.fn().mockResolvedValue(new Map()),
   probeDuration: vi.fn().mockResolvedValue(30),
@@ -63,6 +55,11 @@ vi.mock('../../server/lib/montage-plan.js', () => ({
     audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
     style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
   }),
+}))
+vi.mock('../../server/lib/render-worker.js', () => ({
+  startRender: vi.fn(),
+  getRenderJob: vi.fn(),
+  deleteRenderJob: vi.fn(),
 }))
 
 const mockFetch = vi.fn()
@@ -204,12 +201,54 @@ describe('Montage Integration', () => {
     })
   })
 
-  describe('POST /montage/generate-voiceover', () => {
-    it('generates voiceover via TTS provider and saves audio', async () => {
+  describe('POST /montage/normalize-vo-text', () => {
+    it('returns pass=1 normalized voiceover text preview', async () => {
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({ text: 'Светлая гостиная (пауза)', pass: 1 })
+        .expect(200)
+
+      expect(res.body).toEqual({
+        normalizedText: 'Светлая гостиная <break time="600ms"/>',
+      })
+    })
+
+    it('returns richer expressiveness for pass=2 than pass=1', async () => {
+      const pass1 = await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({ text: 'Вы готовы? Поехали!', pass: 1 })
+        .expect(200)
+
+      const pass2 = await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({ text: 'Вы готовы? Поехали!', pass: 2 })
+        .expect(200)
+
+      expect(pass1.body.normalizedText).toBe('Вы готовы? Поехали!')
+      expect(pass2.body.normalizedText).toBe('Вы готовы?<break time="300ms"/> Поехали!<break time="200ms"/>')
+      expect(pass2.body.normalizedText).not.toBe(pass1.body.normalizedText)
+    })
+
+    it('returns 400 when no text provided and project script is empty', async () => {
       await withProject(projectId, (proj) => {
-        proj.voiceoverScript = 'Script for TTS'
+        proj.voiceoverScript = ''
+      })
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/normalize-vo-text`)
+        .send({})
+        .expect(400)
+    })
+  })
+
+  describe('POST /montage/generate-voiceover', () => {
+    it('generates voiceover via TTS provider, normalizes script text and saves audio', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = 'ул. Ленина, д. 7 — 42 кв.м.... (пауза)'
         proj.voiceoverScriptApproved = true
       })
+
+      const { generateSpeech } = await import('../../server/lib/tts-providers.js')
 
       const res = await request(app)
         .post(`/api/projects/${projectId}/montage/generate-voiceover`)
@@ -219,6 +258,11 @@ describe('Montage Integration', () => {
       expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
       expect(res.body.provider).toBe('elevenlabs-fal')
       expect(res.body.voiceId).toBe('Aria')
+      expect(generateSpeech).toHaveBeenCalledWith(
+        'улица Ленина, дом семь, сорок два квадратных метров,. <break time="600ms"/>',
+        'elevenlabs-fal',
+        'Aria',
+      )
     })
 
     it('returns 400 when script not approved', async () => {
@@ -251,6 +295,69 @@ describe('Montage Integration', () => {
         .expect(400)
 
       expect(res.body.error).toContain('API key')
+    })
+  })
+
+  describe('DELETE /montage/voiceover', () => {
+    it('deletes voiceover file and clears project field', async () => {
+      const montageDir = resolveProjectPath(projectId, 'montage')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'voiceover.mp3'), 'audio-bytes')
+      await withProject(projectId, (proj) => {
+        proj.voiceoverFile = 'montage/voiceover.mp3'
+        proj.voiceoverProvider = 'elevenlabs-fal'
+        proj.voiceoverVoiceId = 'Aria'
+      })
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/montage/voiceover`)
+        .expect(200)
+
+      expect(res.body.deleted).toBe(true)
+
+      // Verify project fields cleared
+      const updated = await getProject(projectId)
+      expect(updated!.voiceoverFile).toBeUndefined()
+      expect(updated!.voiceoverProvider).toBeUndefined()
+      expect(updated!.voiceoverVoiceId).toBeUndefined()
+    })
+
+    it('returns 404 when no voiceover exists', async () => {
+      await request(app)
+        .delete(`/api/projects/${projectId}/montage/voiceover`)
+        .expect(404)
+    })
+  })
+
+  describe('POST /montage/upload-voiceover', () => {
+    it('uploads custom voiceover audio file', async () => {
+      const audioBuf = Buffer.from('fake-voiceover-audio')
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/upload-voiceover`)
+        .attach('voiceover', audioBuf, { filename: 'my-voice.mp3', contentType: 'audio/mpeg' })
+        .expect(200)
+
+      expect(res.body.voiceoverFile).toBe('montage/voiceover.mp3')
+      expect(res.body.provider).toBe('manual')
+    })
+
+    it('rejects non-audio file', async () => {
+      const textBuf = Buffer.from('not audio')
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/upload-voiceover`)
+        .attach('voiceover', textBuf, { filename: 'file.txt', contentType: 'text/plain' })
+        .expect(400)
+    })
+
+    it('returns 404 for non-existent project', async () => {
+      const audioBuf = Buffer.from('fake-audio')
+
+      await request(app)
+        .post('/api/projects/nonexistent/montage/upload-voiceover')
+        .attach('voiceover', audioBuf, { filename: 'voice.mp3', contentType: 'audio/mpeg' })
+        .expect(404)
     })
   })
 
@@ -330,6 +437,37 @@ describe('Montage Integration', () => {
         .post(`/api/projects/${projectId}/montage/upload-music`)
         .attach('music', textBuf, { filename: 'file.txt', contentType: 'text/plain' })
         .expect(400)
+    })
+  })
+
+  describe('DELETE /montage/music', () => {
+    it('deletes music file and clears project fields', async () => {
+      const montageDir = resolveProjectPath(projectId, 'montage')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'music.mp3'), 'music-bytes')
+      await withProject(projectId, (proj) => {
+        proj.musicFile = 'montage/music.mp3'
+        proj.musicProvider = 'manual'
+        proj.musicPrompt = 'some prompt'
+      })
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/montage/music`)
+        .expect(200)
+
+      expect(res.body.deleted).toBe(true)
+
+      // Verify project fields cleared
+      const updated = await getProject(projectId)
+      expect(updated!.musicFile).toBeUndefined()
+      expect(updated!.musicProvider).toBeUndefined()
+      // musicPrompt should be preserved (useful for re-generation)
+    })
+
+    it('returns 404 when no music exists', async () => {
+      await request(app)
+        .delete(`/api/projects/${projectId}/montage/music`)
+        .expect(404)
     })
   })
 
@@ -460,10 +598,228 @@ describe('Montage Integration', () => {
     })
   })
 
-  // ─── Render ───────────────────────────────────────────────────────
+  // ─── Timeline Editing ──────────────────────────────────────────────
 
-  describe('POST /montage/render', () => {
-    it('starts a render job', async () => {
+  describe('PUT /montage/plan/timeline', () => {
+    it('reorders timeline and rebuilds transitions', async () => {
+      // Set up a plan with 2 clips
+      await withProject(projectId, (proj) => {
+        proj.shots = [
+          { ...proj.shots[0], id: 'shot-1', status: 'approved' },
+          { ...proj.shots[0], id: 'shot-2', order: 2, status: 'approved' },
+        ]
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 3, durationSec: 5 },
+            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 8, durationSec: 7 },
+          ],
+          transitions: [
+            { fromShotId: 'shot-1', toShotId: 'shot-2', type: 'fade', durationSec: 0.5 },
+          ],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      // Swap order: shot-2 first, then shot-1
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline`)
+        .send({
+          timeline: [
+            { shotId: 'shot-2', durationSec: 7 },
+            { shotId: 'shot-1', durationSec: 5 },
+          ],
+        })
+        .expect(200)
+
+      expect(res.body.montagePlan.timeline[0].shotId).toBe('shot-2')
+      expect(res.body.montagePlan.timeline[1].shotId).toBe('shot-1')
+      // startSec should be recalculated
+      expect(res.body.montagePlan.timeline[0].startSec).toBe(0)
+      expect(res.body.montagePlan.timeline[1].startSec).toBe(7)
+    })
+
+    it('returns 400 when timeline has unknown shotId', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline`)
+        .send({ timeline: [{ shotId: 'nonexistent', durationSec: 5 }] })
+        .expect(400)
+    })
+
+    it('returns 400 when timeline omits an existing shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
+            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
+          ],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline`)
+        .send({ timeline: [{ shotId: 'shot-1', durationSec: 5 }] })
+        .expect(400)
+    })
+
+    it('returns 400 when no plan exists', async () => {
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline`)
+        .send({ timeline: [] })
+        .expect(400)
+    })
+  })
+
+  describe('PUT /montage/plan/timeline/:shotId', () => {
+    it('updates clip duration and recalculates startSec', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
+            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
+          ],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/shot-1`)
+        .send({ durationSec: 10 })
+        .expect(200)
+
+      expect(res.body.montagePlan.timeline[0].durationSec).toBe(10)
+      expect(res.body.montagePlan.timeline[1].startSec).toBe(10) // recalculated
+    })
+
+    it('returns 404 for unknown shotId', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/unknown`)
+        .send({ durationSec: 10 })
+        .expect(404)
+    })
+
+    it('rejects invalid durationSec', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/shot-1`)
+        .send({ durationSec: -5 })
+        .expect(400)
+    })
+  })
+
+  describe('PUT /montage/plan/transitions/:index', () => {
+    it('updates transition type', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          transitions: [{ fromShotId: 'intro', toShotId: 'shot-1', type: 'fade', durationSec: 0.5 }],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/transitions/0`)
+        .send({ type: 'crossfade', durationSec: 1 })
+        .expect(200)
+
+      expect(res.body.montagePlan.transitions[0].type).toBe('crossfade')
+      expect(res.body.montagePlan.transitions[0].durationSec).toBe(1)
+    })
+
+    it('returns 404 for out-of-range index', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/transitions/99`)
+        .send({ type: 'fade' })
+        .expect(404)
+    })
+
+    it('rejects invalid transition type', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [],
+          transitions: [{ fromShotId: 'a', toShotId: 'b', type: 'fade', durationSec: 0.5 }],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/transitions/0`)
+        .send({ type: 'teleport' })
+        .expect(400)
+    })
+  })
+
+  describe('PUT /montage/plan/audio', () => {
+    it('updates audio levels', async () => {
       await withProject(projectId, (proj) => {
         proj.montagePlan = {
           version: 1,
@@ -477,19 +833,20 @@ describe('Montage Integration', () => {
       })
 
       const res = await request(app)
-        .post(`/api/projects/${projectId}/montage/render`)
-        .send({ quality: 'preview' })
+        .put(`/api/projects/${projectId}/montage/plan/audio`)
+        .send({ audio: { voiceover: { gainDb: 3 }, music: { gainDb: -6, duckingDb: -24 } } })
         .expect(200)
 
-      expect(res.body.jobId).toBe('render-test-job-preview')
-      expect(res.body.status).toBe('queued')
-      expect(res.body.quality).toBe('preview')
+      expect(res.body.montagePlan.audio.voiceover.gainDb).toBe(3)
+      expect(res.body.montagePlan.audio.music.gainDb).toBe(-6)
+      expect(res.body.montagePlan.audio.music.duckingDb).toBe(-24)
+      expect(res.body.montagePlan.audio.music.duckFadeMs).toBe(300) // unchanged
     })
 
     it('returns 400 when no plan exists', async () => {
       await request(app)
-        .post(`/api/projects/${projectId}/montage/render`)
-        .send({ quality: 'preview' })
+        .put(`/api/projects/${projectId}/montage/plan/audio`)
+        .send({ audio: { voiceover: { gainDb: 3 } } })
         .expect(400)
     })
   })

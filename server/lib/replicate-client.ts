@@ -41,7 +41,7 @@ export async function replicateGenerateImage(opts: {
     input[opts.imageInputParam] = toReplicateImageInput(opts.referenceImageUrl);
   }
 
-  console.log(`[replicate] image endpoint=${opts.endpoint}`);
+  console.log('[replicate] image request');
 
   const output = await replicate.run(opts.endpoint as `${string}/${string}`, { input, signal });
 
@@ -80,7 +80,7 @@ export async function replicateGenerateVideo(opts: {
     ...(opts.extraInput || {}),
   };
 
-  console.log(`[replicate] video endpoint=${opts.endpoint} params=${Object.keys(input).join(',')}`);
+  console.log('[replicate] video request');
 
   let output: unknown;
   try {
@@ -91,7 +91,7 @@ export async function replicateGenerateVideo(opts: {
       throw err;
     }
 
-    console.warn(`[replicate] video endpoint=${opts.endpoint} rejected optional params (${extraKeys.join(',')}); retrying without them`);
+    console.warn('[replicate] video rejected optional params; retrying without them');
     output = await replicate.run(opts.endpoint as `${string}/${string}`, { input: baseInput, signal });
   }
 

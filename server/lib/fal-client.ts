@@ -46,6 +46,8 @@ function errorMessageIncludes(err: any, pattern: string): boolean {
   return message.includes(needle);
 }
 
+/** Strip newlines/control chars from a string before logging (prevent log injection). */
+
 function isRetryableFalError(err: any): boolean {
   const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status ?? 0);
   if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) {
@@ -120,6 +122,16 @@ function extractPermittedDurationValues(err: any): Array<string | number> {
   return [];
 }
 
+function isFalNoMediaGeneratedError(err: any): boolean {
+  const status = Number(err?.status ?? err?.statusCode ?? err?.response?.status ?? 0);
+  if (status !== 422) return false;
+
+  const detail = err?.body?.detail;
+  if (!Array.isArray(detail)) return false;
+
+  return detail.some((item) => String(item?.type || '').toLowerCase() === 'no_media_generated');
+}
+
 function toDurationSeconds(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -139,7 +151,7 @@ function toDurationSeconds(value: unknown): number | undefined {
   return Number.isFinite(plain) ? plain : undefined;
 }
 
-function chooseNearestPermittedDuration(
+function chooseRoundedUpPermittedDuration(
   permitted: Array<string | number>,
   requested: unknown,
 ): string | number | undefined {
@@ -148,20 +160,31 @@ function chooseNearestPermittedDuration(
   const requestedSec = toDurationSeconds(requested);
   if (requestedSec === undefined) return permitted[0];
 
-  let best: string | number | undefined;
-  let bestDelta = Number.POSITIVE_INFINITY;
+  const candidates = permitted
+    .map((value) => ({ value, sec: toDurationSeconds(value) }))
+    .filter((item): item is { value: string | number; sec: number } => typeof item.sec === 'number' && Number.isFinite(item.sec))
+    .sort((a, b) => a.sec - b.sec);
 
-  for (const candidate of permitted) {
-    const sec = toDurationSeconds(candidate);
-    if (sec === undefined) continue;
-    const delta = Math.abs(sec - requestedSec);
-    if (delta < bestDelta) {
-      bestDelta = delta;
-      best = candidate;
-    }
+  if (candidates.length === 0) return permitted[0];
+
+  const ceiling = candidates.find((c) => c.sec >= requestedSec);
+  if (ceiling) return ceiling.value;
+
+  // If requested is above the max permitted value, clamp to max.
+  return candidates[candidates.length - 1].value;
+}
+
+function normalizeVideoDurationForEndpoint(
+  endpoint: string,
+  requested: unknown,
+): string | number | undefined {
+  const lower = String(endpoint || '').toLowerCase();
+  // veo3 image-to-video expects literal durations like '4s', '6s', '8s'.
+  if (lower.includes('veo3') && lower.includes('image-to-video')) {
+    return chooseRoundedUpPermittedDuration(['4s', '6s', '8s'], requested);
   }
 
-  return best ?? permitted[0];
+  return undefined;
 }
 
 async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
@@ -276,7 +299,7 @@ export async function falGenerateImage(opts: {
     input.resolution = opts.resolution;
   }
 
-  console.log(`[fal] image endpoint=${opts.endpoint} params=${Object.keys(input).join(',')}`);
+  console.log('[fal] image request');
 
   const result = await falSubscribeWithRetry(opts.endpoint, input, signal);
 
@@ -306,20 +329,25 @@ export async function falGenerateVideo(opts: {
     prompt: opts.prompt,
     image_url: imageUrl,
   };
-  if (opts.duration) baseInput.duration = opts.duration;
+  if (opts.duration) {
+    const normalized = normalizeVideoDurationForEndpoint(opts.endpoint, opts.duration);
+    baseInput.duration = normalized ?? opts.duration;
+  }
   const input: Record<string, unknown> = {
     ...baseInput,
     ...(opts.extraInput || {}),
   };
 
-  console.log(`[fal] video endpoint=${opts.endpoint} params=${Object.keys(input).join(',')}`);
+  console.log('[fal] video request');
 
   let result: any;
   let currentInput: Record<string, unknown> = input;
   let droppedExtraInput = false;
   let adjustedDuration = false;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Up to 5 outer attempts to allow multiple recovery strategies
+  // (drop extraInput, adjust duration, enable auto_fix, delayed retry).
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       result = await falSubscribeWithRetry(opts.endpoint, currentInput, signal);
       break;
@@ -328,13 +356,13 @@ export async function falGenerateVideo(opts: {
       if (!droppedExtraInput && isFalInputValidationError(err, extraKeys)) {
         droppedExtraInput = true;
         currentInput = { ...baseInput };
-        console.warn(`[fal] video endpoint=${opts.endpoint} rejected optional params (${extraKeys.join(',')}); retrying without them`);
+        console.warn('[fal] video rejected optional params; retrying without them');
         continue;
       }
 
       const permittedDurations = extractPermittedDurationValues(err);
       if (!adjustedDuration && permittedDurations.length > 0) {
-        const replacement = chooseNearestPermittedDuration(
+        const replacement = chooseRoundedUpPermittedDuration(
           permittedDurations,
           currentInput.duration ?? opts.duration,
         );
@@ -345,7 +373,27 @@ export async function falGenerateVideo(opts: {
             ...currentInput,
             duration: replacement,
           };
-          console.warn(`[fal] video endpoint=${opts.endpoint} adjusted duration to supported value: ${replacement}`);
+          console.warn('[fal] video adjusted duration to supported value');
+          continue;
+        }
+      }
+
+      // Some fal video endpoints return 422 no_media_generated even for valid input.
+      // Treat this as retryable: enable auto_fix once, then retry with delay.
+      if (isFalNoMediaGeneratedError(err)) {
+        if (currentInput.auto_fix !== true) {
+          currentInput = {
+            ...currentInput,
+            auto_fix: true,
+          };
+          console.warn('[fal] video no_media_generated; retrying with auto_fix=true');
+          continue;
+        }
+
+        if (attempt < 5) {
+          const delay = attempt * 2000;
+          console.warn('[fal] video no_media_generated; retrying after delay');
+          await sleepWithAbort(delay, signal);
           continue;
         }
       }

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { readLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
   saveProject,
@@ -133,8 +134,8 @@ async function toLocalReferenceImage(projectId: string, shotId: string, sourceIm
     const buffer = await fetchRemoteMediaBuffer(sourceImage);
     const mimeType = getMimeType(sourceImage);
     return { base64: buffer.toString('base64'), mimeType };
-  } catch (err) {
-    console.warn('[external-cache] Failed to fetch external image for local fallback:', (err as any)?.message || err);
+  } catch {
+    console.warn('[external-cache] Failed to fetch external image for local fallback');
     return null;
   }
 }
@@ -246,7 +247,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
 
         if (!noRefModelId) {
           console.warn(
-            `[generate-image] Model ${modelId} requires reference image, but shot has no references. Falling back to OpenRouter.`,
+            '[generate-image] Model requires reference image, but shot has no references. Falling back to OpenRouter.',
           );
           resultUrl = await generateViaOpenRouter(fallbackModelId);
         } else {
@@ -314,7 +315,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
         }
       }
     } else {
-      console.log(`[generate-image] Model ${modelId} not in registry, using OpenRouter`);
+      console.log('[generate-image] Model not in registry, using OpenRouter');
       resultUrl = await generateViaOpenRouter(fallbackModelId);
     }
 
@@ -471,7 +472,7 @@ router.post('/shots/:shotId/generate-image', async (req: Request, res: Response)
 });
 
 // GET /api/projects/:id/shots/:shotId/generated/:filename
-router.get('/shots/:shotId/generated/:filename', async (req: Request, res: Response) => {
+router.get('/shots/:shotId/generated/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -550,7 +551,7 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
       quality: effective.enhanceQuality,
     };
 
-    console.log(`[enhance-image] model=${enhanceModel}, source=${sourceImage}, size=${enhanceOptions.size}, quality=${enhanceOptions.quality}`);
+    console.log('[enhance-image] Request received');
 
     let result: string;
     try {
@@ -733,7 +734,7 @@ router.post('/shots/:shotId/ai-review', async (req: Request, res: Response) => {
       return;
     }
 
-    console.log(`[ai-review] model=${effective.reviewModel}, shot=${shotId}`);
+    console.log('[ai-review] Request received');
 
     const reviewMessages = [
       {

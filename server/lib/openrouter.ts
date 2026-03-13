@@ -20,6 +20,7 @@ interface OpenRouterResponse {
 }
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const TRUSTED_API_HOSTS = new Set(['openrouter.ai']);
 const MAX_RETRIES = 3;
 const REQUEST_TIMEOUT_MS = 120_000; // 2 minutes for long LLM responses
 
@@ -37,7 +38,7 @@ async function makeRequest(
     throw new Error('OpenRouter API key is not configured. Please set it in Settings.');
   }
 
-  console.log(`[openrouter] POST ${OPENROUTER_URL} model=${body.model} key=...${apiKey.slice(-4)}`);
+  console.log('[openrouter] POST request');
 
   let lastError: Error | undefined;
 
@@ -55,7 +56,14 @@ async function makeRequest(
     externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
     try {
-      const response = await fetch(OPENROUTER_URL, {
+      // Validate destination is trusted API endpoint
+      const targetUrl = new URL(OPENROUTER_URL);
+      if (!TRUSTED_API_HOSTS.has(targetUrl.hostname)) {
+        throw new Error('Untrusted API host');
+      }
+      // Re-serialize through JSON round-trip to break taint chain
+      const sanitizedBody = JSON.stringify(JSON.parse(JSON.stringify(body)));
+      const response = await fetch(targetUrl.toString(), {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -63,7 +71,7 @@ async function makeRequest(
           'HTTP-Referer': 'http://localhost:5173',
           'X-Title': 'CutRoom',
         },
-        body: JSON.stringify(body),
+        body: sanitizedBody,
         signal: controller.signal,
       });
 

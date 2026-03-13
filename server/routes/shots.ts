@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -114,6 +115,22 @@ const videoUpload = multer({
         const r = req as Request;
         const projectId = validateProjectId(r.params.id);
         const shotId = r.params.shotId;
+
+        const project = await getProject(projectId);
+        if (!project) {
+          const errNotFound = new Error('Project not found') as Error & { code?: string };
+          errNotFound.code = 'PROJECT_NOT_FOUND';
+          cb(errNotFound, '');
+          return;
+        }
+        const shot = project.shots.find((s) => s.id === shotId);
+        if (!shot) {
+          const errNotFound = new Error('Shot not found') as Error & { code?: string };
+          errNotFound.code = 'SHOT_NOT_FOUND';
+          cb(errNotFound, '');
+          return;
+        }
+
         const dir = resolveProjectPath(projectId, 'shots', shotId, 'video');
         await ensureDir(dir);
         cb(null, dir);
@@ -264,7 +281,15 @@ router.put('/:shotId/status', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/shots/:shotId/video — upload video
-router.post('/:shotId/video', videoUpload.single('video'), async (req: Request, res: Response) => {
+router.post('/:shotId/video', (req: Request, res: Response, next: NextFunction) => {
+  videoUpload.single('video')(req, res, (err) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    next();
+  });
+}, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -318,7 +343,7 @@ router.post('/:shotId/video', videoUpload.single('video'), async (req: Request, 
 });
 
 // GET /api/projects/:id/shots/:shotId/video/:filename — serve video file
-router.get('/:shotId/video/:filename', async (req: Request, res: Response) => {
+router.get('/:shotId/video/:filename', readLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -350,7 +375,7 @@ router.get('/:shotId/video/:filename', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/projects/:id/shots/:shotId/image/:filename — delete a generated/enhanced image
-router.delete('/:shotId/image/:filename', async (req: Request, res: Response) => {
+router.delete('/:shotId/image/:filename', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -402,7 +427,7 @@ router.delete('/:shotId/image/:filename', async (req: Request, res: Response) =>
 });
 
 // DELETE /api/projects/:id/shots/:shotId/video — delete the shot video
-router.delete('/:shotId/video', async (req: Request, res: Response) => {
+router.delete('/:shotId/video', mutationLimiter, async (req: Request, res: Response) => {
   try {
     const project = await getProject(req.params.id);
     if (!project) {
@@ -450,6 +475,25 @@ router.delete('/:shotId/video', async (req: Request, res: Response) => {
     console.error('Failed to delete video:', err);
     sendApiError(res, 500, 'Failed to delete video');
   }
+});
+
+router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  const errorWithCode = err as { code?: string };
+  if (errorWithCode?.code === 'PROJECT_NOT_FOUND') {
+    sendApiError(res, 404, 'Project not found');
+    return;
+  }
+  if (errorWithCode?.code === 'SHOT_NOT_FOUND') {
+    sendApiError(res, 404, 'Shot not found');
+    return;
+  }
+  if (anyErr?.code === 'LIMIT_FILE_SIZE') {
+    sendApiError(res, 413, 'Uploaded file is too large');
+    return;
+  }
+
+  // Not an upload-specific error - delegate to the global error handler.
+  next(err);
 });
 
 export default router;

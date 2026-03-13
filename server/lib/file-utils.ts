@@ -34,3 +34,21 @@ export function sanitizeUploadedFilename(originalname: string, fallbackPrefix = 
     : `${fallbackPrefix}_${Date.now().toString(36)}`;
   return safe.slice(0, 255);
 }
+
+/**
+ * Write data to file, asserting the path stays within baseDir.
+ * CodeQL-friendly: validates path immediately before write.
+ */
+export async function safeWriteFile(
+  baseDir: string,
+  filePath: string,
+  data: Buffer | string,
+): Promise<void> {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedFile = path.resolve(filePath);
+  if (!resolvedFile.startsWith(resolvedBase + path.sep) && resolvedFile !== resolvedBase) {
+    throw new Error('Path escapes base directory');
+  }
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(resolvedFile, data);
+}

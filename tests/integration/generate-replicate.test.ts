@@ -13,6 +13,21 @@ import {
 } from '../../server/lib/storage.js'
 import { createApp } from './setup.js'
 
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+}))
+
+function makeBodyStream(data: string | Buffer): ReadableStream<Uint8Array> {
+  const bytes = new Uint8Array(typeof data === 'string' ? Buffer.from(data) : data)
+  return new ReadableStream<Uint8Array>({
+    pull(controller) { controller.enqueue(bytes); controller.close() },
+  })
+}
+
+function mockOkResponse(data: string | Buffer) {
+  return { ok: true, status: 200, headers: { get: () => null }, body: makeBodyStream(data) }
+}
+
 const { runMock, ReplicateMock } = vi.hoisted(() => {
   const run = vi.fn()
 
@@ -141,10 +156,7 @@ describe('Replicate generation routes', () => {
 
   it('generates video via Replicate Kling model using start_image and duration', async () => {
     runMock.mockResolvedValue('https://replicate.example/kling.mp4')
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => Buffer.from('video-binary'),
-    } as Response)
+    global.fetch = vi.fn().mockResolvedValue(mockOkResponse('video-binary') as unknown as Response)
 
     await request(app)
       .put('/api/settings')
@@ -239,10 +251,7 @@ describe('Replicate generation routes', () => {
 
   it('caches external video URL locally via cache-video endpoint', async () => {
     const externalVideoUrl = 'https://replicate.example/cache-me.mp4'
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => Buffer.from('video-cache-bytes'),
-    } as Response)
+    global.fetch = vi.fn().mockResolvedValue(mockOkResponse('video-cache-bytes') as unknown as Response)
 
     const { project, shot } = await createProjectWithShot({
       status: 'vid_review',
@@ -275,10 +284,7 @@ describe('Replicate generation routes', () => {
 
     global.fetch = vi.fn()
       .mockRejectedValueOnce(resetError)
-      .mockResolvedValueOnce({
-        ok: true,
-        arrayBuffer: async () => Buffer.from('video-binary-after-retry'),
-      } as Response)
+      .mockResolvedValueOnce(mockOkResponse('video-binary-after-retry') as unknown as Response)
 
     await request(app)
       .put('/api/settings')
@@ -314,10 +320,7 @@ describe('Replicate generation routes', () => {
 
   it('generates video via Replicate MiniMax model without duration input', async () => {
     runMock.mockResolvedValue('https://replicate.example/minimax.mp4')
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => Buffer.from('video-binary'),
-    } as Response)
+    global.fetch = vi.fn().mockResolvedValue(mockOkResponse('video-binary') as unknown as Response)
 
     await request(app)
       .put('/api/settings')
