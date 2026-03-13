@@ -18,11 +18,11 @@ type InstallationStateRow = {
   installation_id: string;
   tenant_name: string | null;
   license_status: InstallationState['licenseStatus'];
-  trial_started_at: string | null;
-  trial_ends_at: string | null;
-  activated_at: string | null;
-  last_license_check_at: string | null;
-  grace_ends_at: string | null;
+  trial_started_at: Date | string | null;
+  trial_ends_at: Date | string | null;
+  activated_at: Date | string | null;
+  last_license_check_at: Date | string | null;
+  grace_ends_at: Date | string | null;
 };
 
 export class PostgresLicensingRepository implements LicensingRepository {
@@ -119,12 +119,25 @@ function mapInstallationStateRow(row: InstallationStateRow | undefined): Install
     installationId: row.installation_id,
     tenantName: row.tenant_name,
     licenseStatus: row.license_status,
-    trialStartedAt: row.trial_started_at,
-    trialEndsAt: row.trial_ends_at,
-    activatedAt: row.activated_at,
-    lastLicenseCheckAt: row.last_license_check_at,
-    graceEndsAt: row.grace_ends_at,
+    trialStartedAt: normalizeTimestampValue(row.trial_started_at),
+    trialEndsAt: normalizeTimestampValue(row.trial_ends_at),
+    activatedAt: normalizeTimestampValue(row.activated_at),
+    lastLicenseCheckAt: normalizeTimestampValue(row.last_license_check_at),
+    graceEndsAt: normalizeTimestampValue(row.grace_ends_at),
   };
+}
+
+function normalizeTimestampValue(value: Date | string | null): string | null {
+  if (value == null) {
+    return null;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
 }
 
 export function createLicensingRepository(options: CreateLicensingRepositoryOptions = {}): LicensingRepository {

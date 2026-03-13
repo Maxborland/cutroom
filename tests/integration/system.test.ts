@@ -52,6 +52,9 @@ function createFakeLicensingDb() {
     },
     queries,
     paramsByQuery,
+    setStoredRow: (row: any) => {
+      state = row
+    },
   }
 }
 
@@ -122,6 +125,68 @@ describe('System license API', () => {
     if (!insertQuery) return
 
     expect(paramsByQuery.get(insertQuery)?.[0]).toBe('installation')
+  })
+
+  it('normalizes timestamptz values from the repository boundary into ISO strings', async () => {
+    const fake = createFakeLicensingDb()
+    const repository = createLicensingRepository({ db: fake.db } as any)
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'active',
+      trial_started_at: new Date('2026-02-01T00:00:00.000Z'),
+      trial_ends_at: new Date('2026-03-01T00:00:00.000Z'),
+      activated_at: new Date('2026-02-15T10:00:00.000Z'),
+      last_license_check_at: new Date('2026-03-10T12:30:00.000Z'),
+      grace_ends_at: null,
+    })
+
+    const state = await repository.getInstallationState()
+
+    expect(state).toEqual({
+      id: 'installation',
+      installationId: 'install-test',
+      tenantName: 'ООО Тест',
+      licenseStatus: 'active',
+      trialStartedAt: '2026-02-01T00:00:00.000Z',
+      trialEndsAt: '2026-03-01T00:00:00.000Z',
+      activatedAt: '2026-02-15T10:00:00.000Z',
+      lastLicenseCheckAt: '2026-03-10T12:30:00.000Z',
+      graceEndsAt: null,
+    })
+  })
+
+  it('fails closed when a trial record is missing trial_ends_at', async () => {
+    const fake = createFakeLicensingDb()
+    const brokenRepository = createLicensingRepository({ db: fake.db } as any)
+    const brokenService = createLicensingService(brokenRepository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const brokenApp = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService: brokenService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'trial',
+      trial_started_at: '2026-02-01T00:00:00.000Z',
+      trial_ends_at: null,
+      activated_at: null,
+      last_license_check_at: '2026-03-01T00:00:00.000Z',
+      grace_ends_at: null,
+    })
+
+    const res = await request(brokenApp).get('/api/system/license').expect(200)
+
+    expect(res.body.status).toBe('trial_expired')
+    expect(res.body.trialDaysRemaining).toBe(0)
+    expect(res.body.restrictedMode).toBe(true)
   })
 
   it('creates the default licensing service only once across repeated requests', async () => {

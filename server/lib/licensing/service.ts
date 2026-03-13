@@ -26,17 +26,12 @@ export class DefaultLicensingService implements LicensingService {
   async getLicenseStatus(): Promise<LicenseStatusResponse> {
     const state = await this.repository.getInstallationState();
     if (!state) {
-      return {
-        status: 'unactivated',
-        trialDaysRemaining: DEFAULT_TRIAL_DAYS,
-        restrictedMode: false,
-        lastCheckAt: null,
-      };
+      return createUnactivatedStatus();
     }
 
     const now = this.now();
     const lastCheckAt = state.lastLicenseCheckAt;
-    const trialDaysRemaining = getDaysRemaining(state.trialEndsAt, now, DEFAULT_TRIAL_DAYS);
+    const trialDaysRemaining = getDaysRemaining(state.trialEndsAt, now) ?? 0;
     const status = resolveStatus(state, now, trialDaysRemaining);
 
     return {
@@ -57,6 +52,10 @@ function resolveStatus(state: InstallationState, now: Date, trialDaysRemaining: 
     return 'grace';
   }
 
+  if (state.licenseStatus === 'trial' && !hasValidTimestamp(state.trialEndsAt)) {
+    return 'trial_expired';
+  }
+
   if (state.trialEndsAt && trialDaysRemaining === 0) {
     return 'trial_expired';
   }
@@ -68,14 +67,14 @@ function resolveStatus(state: InstallationState, now: Date, trialDaysRemaining: 
   return 'unactivated';
 }
 
-function getDaysRemaining(dateValue: string | null, now: Date, fallback: number): number {
+function getDaysRemaining(dateValue: string | null, now: Date): number | null {
   if (!dateValue) {
-    return fallback;
+    return null;
   }
 
   const deadline = new Date(dateValue);
   if (Number.isNaN(deadline.getTime())) {
-    return fallback;
+    return null;
   }
 
   const diffMs = deadline.getTime() - now.getTime();
@@ -93,6 +92,14 @@ function isFutureDate(dateValue: string | null, now: Date): boolean {
 
   const value = new Date(dateValue);
   return !Number.isNaN(value.getTime()) && value.getTime() > now.getTime();
+}
+
+function hasValidTimestamp(dateValue: string | null): boolean {
+  if (!dateValue) {
+    return false;
+  }
+
+  return !Number.isNaN(new Date(dateValue).getTime());
 }
 
 function createUnactivatedStatus(): LicenseStatusResponse {
