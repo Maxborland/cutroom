@@ -189,6 +189,67 @@ describe('System license API', () => {
     expect(res.body.restrictedMode).toBe(true)
   })
 
+  it('fails closed when a trial record has a non-parseable trial_ends_at', async () => {
+    const fake = createFakeLicensingDb()
+    const brokenRepository = createLicensingRepository({ db: fake.db } as any)
+    const brokenService = createLicensingService(brokenRepository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const brokenApp = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService: brokenService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'trial',
+      trial_started_at: '2026-02-01T00:00:00.000Z',
+      trial_ends_at: 'not-a-timestamp',
+      activated_at: null,
+      last_license_check_at: '2026-03-01T00:00:00.000Z',
+      grace_ends_at: null,
+    })
+
+    const res = await request(brokenApp).get('/api/system/license').expect(200)
+
+    expect(res.body.status).toBe('trial_expired')
+    expect(res.body.trialDaysRemaining).toBe(0)
+    expect(res.body.restrictedMode).toBe(true)
+  })
+
+  it('returns an explicit error when the stored license_status is invalid', async () => {
+    const fake = createFakeLicensingDb()
+    const repository = createLicensingRepository({ db: fake.db } as any)
+    const licensingService = createLicensingService(repository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const app = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'corrupted',
+      trial_started_at: null,
+      trial_ends_at: null,
+      activated_at: null,
+      last_license_check_at: '2026-03-01T00:00:00.000Z',
+      grace_ends_at: null,
+    })
+
+    const res = await request(app).get('/api/system/license').expect(500)
+
+    expect(res.body.code).toBe('LICENSE_STATUS_READ_FAILED')
+    expect(res.body.error).toBe('Failed to read license status')
+  })
+
   it('creates the default licensing service only once across repeated requests', async () => {
     const createDbMock = vi.fn(() => ({
       query: vi.fn(async () => ({ rows: [] })),

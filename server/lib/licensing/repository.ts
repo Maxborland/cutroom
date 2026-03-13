@@ -3,7 +3,9 @@ import { createDb } from '../../db/index.js';
 import {
   INSTALLATION_STATE_SINGLETON_ID,
   type InstallationState,
+  type InstallationLicenseStatus,
   type LicensingRepository,
+  isInstallationLicenseStatus,
 } from './types.js';
 
 type LicensingDb = Pick<Pool, 'query'>;
@@ -17,7 +19,7 @@ type InstallationStateRow = {
   id: string;
   installation_id: string;
   tenant_name: string | null;
-  license_status: InstallationState['licenseStatus'];
+  license_status: string;
   trial_started_at: Date | string | null;
   trial_ends_at: Date | string | null;
   activated_at: Date | string | null;
@@ -118,7 +120,7 @@ function mapInstallationStateRow(row: InstallationStateRow | undefined): Install
     id: row.id,
     installationId: row.installation_id,
     tenantName: row.tenant_name,
-    licenseStatus: row.license_status,
+    licenseStatus: normalizeLicenseStatus(row.license_status),
     trialStartedAt: normalizeTimestampValue(row.trial_started_at),
     trialEndsAt: normalizeTimestampValue(row.trial_ends_at),
     activatedAt: normalizeTimestampValue(row.activated_at),
@@ -138,6 +140,14 @@ function normalizeTimestampValue(value: Date | string | null): string | null {
   }
 
   return date.toISOString();
+}
+
+function normalizeLicenseStatus(value: string): InstallationLicenseStatus {
+  if (!isInstallationLicenseStatus(value)) {
+    throw new Error(`Invalid installation_state license_status: ${value}`);
+  }
+
+  return value;
 }
 
 export function createLicensingRepository(options: CreateLicensingRepositoryOptions = {}): LicensingRepository {

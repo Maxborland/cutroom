@@ -1,5 +1,7 @@
 export const INSTALLATION_STATE_SINGLETON_ID = 'installation';
 
+export const INSTALLATION_LICENSE_STATUSES = ['unactivated', 'trial', 'active'] as const;
+
 export type InstallationLicenseStatus = 'unactivated' | 'trial' | 'active';
 
 export type LicenseStatus = 'unactivated' | 'trial' | 'active' | 'grace' | 'trial_expired';
@@ -30,4 +32,8 @@ export interface LicensingRepository {
 
 export interface LicensingService {
   getLicenseStatus(): Promise<LicenseStatusResponse>;
+}
+
+export function isInstallationLicenseStatus(value: string): value is InstallationLicenseStatus {
+  return INSTALLATION_LICENSE_STATUSES.includes(value as InstallationLicenseStatus);
 }

@@ -1,10 +1,11 @@
 import { createLicensingRepository } from './repository.js';
-import type {
+import {
   InstallationState,
   LicenseStatus,
   LicenseStatusResponse,
   LicensingRepository,
   LicensingService,
+  isInstallationLicenseStatus,
 } from './types.js';
 
 const DEFAULT_TRIAL_DAYS = 14;
@@ -44,6 +45,10 @@ export class DefaultLicensingService implements LicensingService {
 }
 
 function resolveStatus(state: InstallationState, now: Date, trialDaysRemaining: number): LicenseStatus {
+  if (!isInstallationLicenseStatus(state.licenseStatus)) {
+    throw new Error(`Invalid installation_state license_status: ${state.licenseStatus}`);
+  }
+
   if (state.activatedAt || state.licenseStatus === 'active') {
     return 'active';
   }
@@ -64,7 +69,11 @@ function resolveStatus(state: InstallationState, now: Date, trialDaysRemaining: 
     return 'trial';
   }
 
-  return 'unactivated';
+  if (state.licenseStatus === 'unactivated') {
+    return 'unactivated';
+  }
+
+  throw new Error(`Unhandled installation_state license_status: ${state.licenseStatus}`);
 }
 
 function getDaysRemaining(dateValue: string | null, now: Date): number | null {

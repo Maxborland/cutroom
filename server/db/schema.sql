@@ -21,5 +21,6 @@ CREATE TABLE IF NOT EXISTS installation_state (
   activated_at TIMESTAMPTZ,
   last_license_check_at TIMESTAMPTZ,
   grace_ends_at TIMESTAMPTZ,
+  CHECK (license_status IN ('unactivated', 'trial', 'active')),
   CHECK (license_status <> 'trial' OR trial_ends_at IS NOT NULL)
 );
