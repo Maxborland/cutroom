@@ -30,6 +30,10 @@ export class DefaultLicensingService implements LicensingService {
       return createUnactivatedStatus();
     }
 
+    if (state.licenseStatus === 'unactivated') {
+      return createUnactivatedStatus(state.lastLicenseCheckAt);
+    }
+
     const now = this.now();
     const lastCheckAt = state.lastLicenseCheckAt;
     const trialDaysRemaining = getDaysRemaining(state.trialEndsAt, now) ?? 0;
@@ -49,28 +53,21 @@ function resolveStatus(state: InstallationState, now: Date, trialDaysRemaining: 
     throw new Error(`Invalid installation_state license_status: ${state.licenseStatus}`);
   }
 
-  if (state.activatedAt || state.licenseStatus === 'active') {
-    return 'active';
-  }
+  switch (state.licenseStatus) {
+    case 'active':
+      return isFutureDate(state.graceEndsAt, now) ? 'grace' : 'active';
+    case 'trial':
+      if (!hasValidTimestamp(state.trialEndsAt)) {
+        return 'trial_expired';
+      }
 
-  if (isFutureDate(state.graceEndsAt, now)) {
-    return 'grace';
-  }
+      if (trialDaysRemaining === 0) {
+        return 'trial_expired';
+      }
 
-  if (state.licenseStatus === 'trial' && !hasValidTimestamp(state.trialEndsAt)) {
-    return 'trial_expired';
-  }
-
-  if (state.trialEndsAt && trialDaysRemaining === 0) {
-    return 'trial_expired';
-  }
-
-  if (state.licenseStatus === 'trial') {
-    return 'trial';
-  }
-
-  if (state.licenseStatus === 'unactivated') {
-    return 'unactivated';
+      return 'trial';
+    case 'unactivated':
+      return 'unactivated';
   }
 
   throw new Error(`Unhandled installation_state license_status: ${state.licenseStatus}`);
@@ -111,12 +108,12 @@ function hasValidTimestamp(dateValue: string | null): boolean {
   return !Number.isNaN(new Date(dateValue).getTime());
 }
 
-function createUnactivatedStatus(): LicenseStatusResponse {
+function createUnactivatedStatus(lastCheckAt: string | null = null): LicenseStatusResponse {
   return {
     status: 'unactivated',
     trialDaysRemaining: DEFAULT_TRIAL_DAYS,
     restrictedMode: false,
-    lastCheckAt: null,
+    lastCheckAt,
   };
 }
 

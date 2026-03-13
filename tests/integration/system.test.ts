@@ -250,6 +250,74 @@ describe('System license API', () => {
     expect(res.body.error).toBe('Failed to read license status')
   })
 
+  it('does not promote an unactivated row from auxiliary activated or grace timestamps', async () => {
+    const fake = createFakeLicensingDb()
+    const repository = createLicensingRepository({ db: fake.db } as any)
+    const licensingService = createLicensingService(repository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const app = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'unactivated',
+      trial_started_at: null,
+      trial_ends_at: null,
+      activated_at: '2026-03-10T00:00:00.000Z',
+      last_license_check_at: '2026-03-12T00:00:00.000Z',
+      grace_ends_at: '2026-03-20T00:00:00.000Z',
+    })
+
+    const res = await request(app).get('/api/system/license').expect(200)
+
+    expect(res.body.status).toBe('unactivated')
+    expect(res.body.trialDaysRemaining).toBe(14)
+    expect(res.body.restrictedMode).toBe(false)
+    expect(res.body.lastCheckAt).toBe('2026-03-12T00:00:00.000Z')
+  })
+
+  it('returns the same default trialDaysRemaining for persisted unactivated state as for a fresh system', async () => {
+    const { app } = createTestApp()
+    const fake = createFakeLicensingDb()
+    const repository = createLicensingRepository({ db: fake.db } as any)
+    const licensingService = createLicensingService(repository, {
+      now: () => new Date('2026-03-15T00:00:00.000Z'),
+    })
+    const persistedApp = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      licensingService,
+    })
+
+    fake.setStoredRow({
+      id: 'installation',
+      installation_id: 'install-test',
+      tenant_name: 'ООО Тест',
+      license_status: 'unactivated',
+      trial_started_at: null,
+      trial_ends_at: null,
+      activated_at: null,
+      last_license_check_at: null,
+      grace_ends_at: null,
+    })
+
+    const freshRes = await request(app).get('/api/system/license').expect(200)
+    const persistedRes = await request(persistedApp).get('/api/system/license').expect(200)
+
+    expect(freshRes.body.status).toBe('unactivated')
+    expect(persistedRes.body.status).toBe('unactivated')
+    expect(persistedRes.body.trialDaysRemaining).toBe(freshRes.body.trialDaysRemaining)
+    expect(persistedRes.body.trialDaysRemaining).toBe(14)
+    expect(persistedRes.body.restrictedMode).toBe(false)
+    expect(persistedRes.body.lastCheckAt).toBeNull()
+  })
+
   it('creates the default licensing service only once across repeated requests', async () => {
     const createDbMock = vi.fn(() => ({
       query: vi.fn(async () => ({ rows: [] })),
