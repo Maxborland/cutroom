@@ -10,6 +10,7 @@ import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
+import { matchNarrationAnchors } from '../lib/montage-anchor-matching.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DESCRIPTION_VERSION = 1;
@@ -1045,6 +1046,37 @@ Rules:
   } catch (err) {
     console.error('Failed to extract narration anchors:', err);
     sendApiError(res, 500, 'Failed to extract narration anchors');
+  }
+});
+
+// POST /api/projects/:id/montage/match-anchors
+router.post('/montage/match-anchors', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.narrationAnchors || project.narrationAnchors.length === 0) {
+      sendApiError(res, 400, 'Сначала извлеките смысловые якоря из текста озвучки.');
+      return;
+    }
+
+    const approvedShots = project.shots.filter((shot) => shot.status === 'approved');
+    if (approvedShots.length === 0) {
+      sendApiError(res, 400, 'Нет утвержденных шотов для сопоставления с якорями.');
+      return;
+    }
+
+    const result = matchNarrationAnchors(project);
+
+    await withProject(project.id, (proj) => {
+      proj.anchorMatches = result.anchorMatches;
+      proj.anchorCoverageSummary = result.anchorCoverageSummary;
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Failed to match narration anchors:', err);
+    sendApiError(res, 500, 'Failed to match narration anchors');
   }
 });
 

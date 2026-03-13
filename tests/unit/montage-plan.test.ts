@@ -879,4 +879,220 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(ffmpegCalls.length).toBeGreaterThanOrEqual(1)
     })
   })
+
+  describe('matchNarrationAnchors()', () => {
+    let matchNarrationAnchors: (project: Project) => {
+      anchorMatches: NonNullable<Project['anchorMatches']>
+      anchorCoverageSummary: NonNullable<Project['anchorCoverageSummary']>
+    }
+
+    beforeEach(async () => {
+      const mod = await import('../../server/lib/' + 'montage-anchor-matching.js') as {
+        matchNarrationAnchors: typeof matchNarrationAnchors
+      }
+      matchNarrationAnchors = mod.matchNarrationAnchors
+    })
+
+    it('prefers videoDescription.matchHints over tags, summary, and fallback fields for a strong match', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-hints',
+            order: 0,
+            scene: 'Тихая спальня с мягким светом',
+            imagePrompt: 'soft bedroom interior',
+            videoPrompt: 'slow bedroom push-in',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера показывает спальню и текстуры отделки.',
+              tags: ['спальня', 'интерьер'],
+              matchHints: ['кухня с мраморным островом'],
+              moments: [],
+            },
+          }),
+          makeShot({
+            id: 'shot-fallback',
+            order: 1,
+            scene: 'Кухня с мраморным островом и высоким потолком',
+            imagePrompt: 'marble island kitchen',
+            videoPrompt: 'camera glides through marble island kitchen',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет по фасаду и лобби.',
+              tags: ['фасад'],
+              matchHints: ['терраса'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Кухня с мраморным островом',
+            label: 'Кухня с островом',
+            order: 1,
+            intent: 'feature',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches).toHaveLength(1)
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-hints',
+        status: 'matched',
+      })
+      expect(result.anchorMatches[0].candidates[0]).toMatchObject({
+        shotId: 'shot-hints',
+      })
+      expect(result.anchorMatches[0].candidates[0].reason).toMatch(/matchHints/i)
+      expect(result.anchorMatches[0].candidates[1]).toMatchObject({
+        shotId: 'shot-fallback',
+      })
+      expect(result.anchorMatches[0].candidates[0].confidence).toBeGreaterThan(result.anchorMatches[0].candidates[1].confidence)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('matches anchors against videoDescription.tags when matchHints do not hit', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-tags',
+            order: 0,
+            scene: 'Спокойная зона отдыха',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера мягко скользит по lounge зоне.',
+              tags: ['терраса на крыше'],
+              matchHints: ['лобби'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса на крыше',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-tags',
+        status: 'matched',
+      })
+      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/tags/i)
+    })
+
+    it('uses videoDescription.summary as a weak match when stronger signals are absent', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-summary',
+            order: 0,
+            scene: 'Нейтральный интерьер',
+            imagePrompt: 'neutral interior',
+            videoPrompt: 'neutral interior camera move',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера задерживается на приватном кабинете у окна и рабочем столе.',
+              tags: ['интерьер'],
+              matchHints: [],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Приватный кабинет у окна',
+            label: 'Кабинет',
+            order: 1,
+            intent: 'detail',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-summary',
+        status: 'weak_match',
+      })
+      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/summary/i)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 0,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('marks anchors as unmatched when no description or fallback signal is relevant', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Фасад комплекса на рассвете',
+            imagePrompt: 'sunrise exterior',
+            videoPrompt: 'slow drone over facade',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет вдоль фасада и лобби.',
+              tags: ['фасад', 'лобби'],
+              matchHints: ['архитектура комплекса'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Детская игровая комната',
+            label: 'Игровая',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toEqual({
+        anchorId: 'anchor-1',
+        confidence: 0,
+        status: 'unmatched',
+        candidates: [],
+      })
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 0,
+        weakMatches: 0,
+        unmatchedAnchors: 1,
+      })
+    })
+  })
 })

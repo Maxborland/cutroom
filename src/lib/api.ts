@@ -10,6 +10,8 @@ import type {
   VideoGenerationResult,
   MontagePlan,
   RenderJob,
+  AnchorCoverageSummary,
+  AnchorMatch,
   NarrationAnchor,
   ShotVideoDescription,
 } from '../types/index'
@@ -72,6 +74,11 @@ export interface DescribeVideosResponse {
 
 export interface ExtractAnchorsResponse {
   anchors: NarrationAnchor[]
+}
+
+export interface MatchAnchorsResponse {
+  anchorMatches: AnchorMatch[]
+  anchorCoverageSummary: AnchorCoverageSummary
 }
 
 export class ApiRequestError extends Error {
@@ -442,6 +449,8 @@ export const api = {
       request<DescribeVideosResponse>(`/projects/${projectId}/montage/describe-videos`, { method: 'POST' }),
     extractAnchors: (projectId: string) =>
       request<ExtractAnchorsResponse>(`/projects/${projectId}/montage/extract-anchors`, { method: 'POST' }),
+    matchAnchors: (projectId: string) =>
+      request<MatchAnchorsResponse>(`/projects/${projectId}/montage/match-anchors`, { method: 'POST' }),
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
     reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>

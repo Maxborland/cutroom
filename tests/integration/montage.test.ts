@@ -833,6 +833,194 @@ describe('Montage Integration', () => {
     })
   })
 
+  describe('POST /montage/match-anchors', () => {
+    it('matches anchors with strong, weak, and unmatched outcomes and persists coverage summary', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна в гостиной',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+          {
+            id: 'anchor-2',
+            sourceText: 'Приватный кабинет у окна',
+            label: 'Кабинет',
+            order: 2,
+            intent: 'detail',
+          },
+          {
+            id: 'anchor-3',
+            sourceText: 'Детская игровая комната',
+            label: 'Игровая',
+            order: 3,
+            intent: 'lifestyle',
+          },
+        ]
+
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Фасад и панорамные окна',
+            imagePrompt: 'living room with panoramic windows',
+            videoPrompt: 'camera reveals panoramic windows in the living room',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера проходит через светлую гостиную.',
+              tags: ['гостиная', 'свет'],
+              matchHints: ['панорамные окна в гостиной'],
+              moments: [],
+            },
+          },
+          {
+            id: 'shot-2',
+            order: 2,
+            scene: 'Рабочая зона',
+            audioDescription: 'Тихий кабинет',
+            imagePrompt: 'private home office by the window',
+            videoPrompt: 'slow move across a private office',
+            duration: 5,
+            assetRefs: [],
+            status: 'approved',
+            generatedImages: [],
+            enhancedImages: [],
+            selectedImage: null,
+            videoFile: null,
+            videoDescription: {
+              version: 1,
+              summary: 'Камера задерживается на кабинете у окна и рабочем столе.',
+              tags: ['интерьер'],
+              matchHints: [],
+              moments: [],
+            },
+          },
+          {
+            id: 'shot-3',
+            order: 3,
+            scene: 'Лобби и фасад',
+            audioDescription: 'Входная группа',
+            imagePrompt: 'premium lobby and facade',
+            videoPrompt: 'drone reveals facade then lobby',
+            duration: 5,
+            assetRefs: [],
+            status: 'approved',
+            generatedImages: [],
+            enhancedImages: [],
+            selectedImage: null,
+            videoFile: null,
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет по фасаду и входной группе.',
+              tags: ['фасад', 'лобби'],
+              matchHints: ['архитектура комплекса'],
+              moments: [],
+            },
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/match-anchors`)
+        .expect(200)
+
+      expect(res.body.anchorMatches).toHaveLength(3)
+      expect(res.body.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-1',
+        status: 'matched',
+      })
+      expect(res.body.anchorMatches[0].candidates[0]?.reason).toMatch(/matchHints/i)
+      expect(res.body.anchorMatches[1]).toMatchObject({
+        anchorId: 'anchor-2',
+        selectedShotId: 'shot-2',
+        status: 'weak_match',
+      })
+      expect(res.body.anchorMatches[1].candidates[0]?.reason).toMatch(/summary/i)
+      expect(res.body.anchorMatches[2]).toEqual({
+        anchorId: 'anchor-3',
+        confidence: 0,
+        status: 'unmatched',
+        candidates: [],
+      })
+      expect(res.body.anchorCoverageSummary).toEqual({
+        totalAnchors: 3,
+        matchedAnchors: 1,
+        weakMatches: 1,
+        unmatchedAnchors: 1,
+      })
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(res.body.anchorMatches)
+      expect(project?.anchorCoverageSummary).toEqual(res.body.anchorCoverageSummary)
+    })
+  })
+
+  describe('api.montage.matchAnchors', () => {
+    it('posts to the match-anchors endpoint and returns persisted matches', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-1',
+            confidence: 0.92,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-1',
+                confidence: 0.92,
+                reason: 'Совпадение по videoDescription.matchHints.',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const result = await api.montage.matchAnchors(projectId)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/match-anchors`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      expect(result).toEqual({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-1',
+            confidence: 0.92,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-1',
+                confidence: 0.92,
+                reason: 'Совпадение по videoDescription.matchHints.',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      })
+    })
+  })
+
   // ─── Montage Plan ─────────────────────────────────────────────────
 
   describe('POST /montage/generate-plan', () => {
