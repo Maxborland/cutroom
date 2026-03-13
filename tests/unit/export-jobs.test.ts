@@ -183,7 +183,7 @@ describe('export durable jobs', () => {
     expect(job?.status).toBe('done')
     expect(job?.result).toEqual(
       expect.objectContaining({
-        outputFile: expect.stringMatching(/^montage\/exports\/export-\d+\.zip$/),
+        outputFile: expect.stringMatching(/^montage\/exports\/export-\d+-[0-9a-f-]+\.zip$/),
       }),
     )
 
@@ -195,5 +195,32 @@ describe('export durable jobs', () => {
 
     await storage.deleteProject(project.id)
     await fs.rm(storage.resolveProjectPath(project.id), { recursive: true, force: true })
+  })
+
+  it('generates collision-resistant export job ids when requests land in the same millisecond', async () => {
+    const fake = createFakeCompositeDb()
+    vi.doMock('../../server/db/index.js', () => ({
+      createDb: vi.fn(() => fake.db),
+    }))
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_741_824_000_000)
+    const storage = await import('../../server/lib/storage.js')
+    const exportJobs = await import('../../server/lib/jobs/export.js')
+    const project = await storage.createProject('Export collision project')
+
+    try {
+      const [firstJobId, secondJobId] = await Promise.all([
+        exportJobs.enqueueExportJob(project.id),
+        exportJobs.enqueueExportJob(project.id),
+      ])
+
+      expect(firstJobId).toMatch(/^export-/)
+      expect(secondJobId).toMatch(/^export-/)
+      expect(firstJobId).not.toBe(secondJobId)
+    } finally {
+      nowSpy.mockRestore()
+      await storage.deleteProject(project.id)
+      await fs.rm(storage.resolveProjectPath(project.id), { recursive: true, force: true })
+    }
   })
 })

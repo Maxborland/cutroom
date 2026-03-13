@@ -25,6 +25,8 @@ interface CreateAppOptions {
   allowMissingApiKey?: boolean;
   rateLimitWindowMs?: number;
   rateLimitMax?: number;
+  userInviteRateLimitWindowMs?: number;
+  userInviteRateLimitMax?: number;
   licensingService?: LicensingService;
   authRepository?: AuthRepository | null;
   bootstrapSetupToken?: string;
@@ -61,6 +63,25 @@ function isPrivateNetworkOrigin(origin: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRequestOrigin(req: Request): string | null {
+  const host = req.get('host');
+  if (!host) {
+    return null;
+  }
+
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const protocol = forwardedProto || req.protocol || 'http';
+  return normalizeOrigin(`${protocol}://${host}`);
 }
 
 export function createApp(options: CreateAppOptions = {}): Express {
@@ -109,23 +130,26 @@ export function createApp(options: CreateAppOptions = {}): Express {
   const rateLimitStore = new Map<string, RateLimitEntry>();
   let nextRateLimitCleanupAt = Date.now() + rateLimitWindowMs;
 
-  app.use(
-    cors({
-      credentials: true,
-      origin: (origin, callback) => {
-        if (!origin || corsAllowlist.has(origin)) {
-          callback(null, true);
-          return;
-        }
+  app.use(cors((req, callback) => {
+    const origin = req.header('origin');
+    const normalizedOrigin = origin ? normalizeOrigin(origin) : null;
+    const requestOrigin = resolveRequestOrigin(req);
+    const sameOrigin = Boolean(normalizedOrigin && requestOrigin && normalizedOrigin === requestOrigin);
+    const isAllowed = !origin
+      || (normalizedOrigin ? corsAllowlist.has(normalizedOrigin) : false)
+      || sameOrigin
+      || (isDev && normalizedOrigin ? isPrivateNetworkOrigin(normalizedOrigin) : false);
 
-        if (isDev && isPrivateNetworkOrigin(origin)) {
-          callback(null, true);
-          return;
-        }
-        callback(new Error('Not allowed by CORS'));
-      },
-    }),
-  );
+    if (!isAllowed) {
+      callback(new Error('Not allowed by CORS'), { credentials: true, origin: false });
+      return;
+    }
+
+    callback(null, {
+      credentials: true,
+      origin: origin ? true : false,
+    });
+  }));
 
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -196,7 +220,11 @@ export function createApp(options: CreateAppOptions = {}): Express {
   if (authRepository) {
     app.use('/api', createAuthSessionMiddleware(authRepository));
     app.use('/api/auth', createAuthRoutes(authRepository));
-    app.use('/api/users', createUsersRoutes(authRepository, { bootstrapSetupToken }));
+    app.use('/api/users', createUsersRoutes(authRepository, {
+      bootstrapSetupToken,
+      inviteRateLimitMax: options.userInviteRateLimitMax,
+      inviteRateLimitWindowMs: options.userInviteRateLimitWindowMs,
+    }));
     app.use('/api', (req, res, next) => {
       if (req.path === '/health' || req.path.startsWith('/auth/')) {
         next();

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getProject } from '../storage.js';
 import { writeProjectArchive } from '../export-archive.js';
 import { getDefaultJobsRepository } from './default-repository.js';
@@ -24,7 +25,7 @@ export async function enqueueExportJob(projectId: string): Promise<string | null
     return null;
   }
 
-  const jobId = `export-${Date.now()}`;
+  const jobId = `export-${Date.now()}-${randomUUID()}`;
   await jobsRepository.enqueueJob<ExportJobPayload>({
     id: jobId,
     projectId,

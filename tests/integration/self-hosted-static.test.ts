@@ -49,4 +49,24 @@ describe('Self-hosted static delivery', () => {
 
     expect(clientRouteResponse.text).toContain('CutRoom Self Hosted')
   })
+
+  it('allows same-origin api requests when the self-hosted bundle is served from the same app origin', async () => {
+    const clientDistDir = await createStaticBundleFixture()
+    const app = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      bootstrapSetupToken: '',
+      clientDistDir,
+    })
+
+    const response = await request(app)
+      .options('/api/users/bootstrap-owner-invite')
+      .set('Host', 'cutroom.example')
+      .set('Origin', 'http://cutroom.example')
+      .set('Access-Control-Request-Method', 'POST')
+      .expect(204)
+
+    expect(response.headers['access-control-allow-origin']).toBe('http://cutroom.example')
+    expect(response.headers['access-control-allow-credentials']).toBe('true')
+  })
 })

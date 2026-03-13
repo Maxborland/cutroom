@@ -1,15 +1,31 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { sendApiError } from '../lib/api-error.js';
-import { isAuthRole, type AuthRepository, type AuthRole } from '../lib/auth/repository.js';
+import { requireAuthenticatedUser } from '../lib/auth/middleware.js';
+import type { AuthRepository, type AuthRole } from '../lib/auth/repository.js';
 
 interface CreateUsersRoutesOptions {
   bootstrapSetupToken?: string;
+  inviteRateLimitWindowMs?: number;
+  inviteRateLimitMax?: number;
 }
 
 const TEAM_INVITE_ROLES_BY_ACTOR = {
   owner: ['admin', 'editor', 'viewer'],
   admin: ['editor', 'viewer'],
 } as const satisfies Partial<Record<AuthRole, readonly AuthRole[]>>;
+
+type TeamInviteActorRole = keyof typeof TEAM_INVITE_ROLES_BY_ACTOR;
+type TeamInviteRole = (typeof TEAM_INVITE_ROLES_BY_ACTOR)[TeamInviteActorRole][number];
+type UsersRouteLocals = {
+  bootstrapInvite?: {
+    email: string;
+    bootstrapToken: string;
+  };
+  teamInvite?: {
+    email: string;
+    role: TeamInviteRole;
+  };
+};
 
 function parseNormalizedEmail(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -23,8 +39,124 @@ function parseRequestedRole(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
+function isTeamInviteActorRole(role: AuthRole): role is TeamInviteActorRole {
+  return Object.prototype.hasOwnProperty.call(TEAM_INVITE_ROLES_BY_ACTOR, role);
+}
+
+function createRouteRateLimiter(windowMs: number, max: number) {
+  const store = new Map<string, { count: number; resetAt: number }>();
+
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const now = Date.now();
+    const key = `${req.path}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+    const entry = store.get(key);
+
+    if (!entry || entry.resetAt <= now) {
+      store.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+
+    if (entry.count >= max) {
+      sendApiError(res, 429, 'Too many requests', 'RATE_LIMIT_EXCEEDED');
+      return;
+    }
+
+    entry.count += 1;
+    next();
+  };
+}
+
+function requireBootstrapInviteInput(req: Request, res: Response, next: NextFunction): void {
+  const email = parseNormalizedEmail(req.body?.email);
+  if (!email) {
+    sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
+    return;
+  }
+
+  (res.locals as UsersRouteLocals).bootstrapInvite = {
+    email,
+    bootstrapToken: parseBootstrapToken(req.body?.bootstrapToken),
+  };
+  next();
+}
+
+function resolveTeamInviteRole(actorRole: AuthRole, value: unknown):
+  | { ok: true; role: TeamInviteRole }
+  | { ok: false; status: 400 | 403; code: string; message: string } {
+  const requestedRole = parseRequestedRole(value);
+
+  if (actorRole === 'owner') {
+    switch (requestedRole) {
+      case '':
+      case 'editor':
+        return { ok: true, role: 'editor' };
+      case 'viewer':
+        return { ok: true, role: 'viewer' };
+      case 'admin':
+        return { ok: true, role: 'admin' };
+      case 'owner':
+        return { ok: false, status: 403, code: 'AUTH_FORBIDDEN', message: 'Insufficient permissions' };
+      default:
+        return { ok: false, status: 400, code: 'INVITE_ROLE_INVALID', message: 'Invite role is invalid' };
+    }
+  }
+
+  if (actorRole === 'admin') {
+    switch (requestedRole) {
+      case '':
+      case 'editor':
+        return { ok: true, role: 'editor' };
+      case 'viewer':
+        return { ok: true, role: 'viewer' };
+      case 'admin':
+      case 'owner':
+        return { ok: false, status: 403, code: 'AUTH_FORBIDDEN', message: 'Insufficient permissions' };
+      default:
+        return { ok: false, status: 400, code: 'INVITE_ROLE_INVALID', message: 'Invite role is invalid' };
+    }
+  }
+
+  return { ok: false, status: 403, code: 'AUTH_FORBIDDEN', message: 'Insufficient permissions' };
+}
+
+function requireTeamInviteInput(req: Request, res: Response, next: NextFunction): void {
+  const email = parseNormalizedEmail(req.body?.email);
+  if (!email) {
+    sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
+    return;
+  }
+
+  const authUser = req.auth?.user;
+  if (!authUser) {
+    sendApiError(res, 401, 'Authentication required', 'AUTH_REQUIRED');
+    return;
+  }
+
+  if (!isTeamInviteActorRole(authUser.role)) {
+    sendApiError(res, 403, 'Insufficient permissions', 'AUTH_FORBIDDEN');
+    return;
+  }
+
+  const resolution = resolveTeamInviteRole(authUser.role, req.body?.role);
+  if (!resolution.ok) {
+    sendApiError(res, resolution.status, resolution.message, resolution.code);
+    return;
+  }
+
+  (res.locals as UsersRouteLocals).teamInvite = {
+    email,
+    role: resolution.role,
+  };
+  next();
+}
+
 export function createUsersRoutes(authRepository: AuthRepository, options: CreateUsersRoutesOptions = {}): Router {
   const router = Router();
+  const inviteRateLimit = createRouteRateLimiter(
+    options.inviteRateLimitWindowMs ?? 60_000,
+    options.inviteRateLimitMax ?? 20,
+  );
 
   router.get('/', async (req: Request, res: Response) => {
     try {
@@ -54,14 +186,9 @@ export function createUsersRoutes(authRepository: AuthRepository, options: Creat
     }
   });
 
-  router.post('/bootstrap-owner-invite', async (req: Request, res: Response) => {
+  router.post('/bootstrap-owner-invite', inviteRateLimit, requireBootstrapInviteInput, async (req: Request, res: Response) => {
     try {
-      const email = parseNormalizedEmail(req.body?.email);
-      const bootstrapToken = parseBootstrapToken(req.body?.bootstrapToken);
-      if (!email) {
-        sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
-        return;
-      }
+      const { email, bootstrapToken } = (res.locals as UsersRouteLocals).bootstrapInvite ?? { email: '', bootstrapToken: '' };
 
       const userCount = await authRepository.countUsers();
       if (userCount !== 0) {
@@ -101,47 +228,25 @@ export function createUsersRoutes(authRepository: AuthRepository, options: Creat
     }
   });
 
-  router.post('/invite', async (req: Request, res: Response) => {
+  router.post('/invite', inviteRateLimit, requireAuthenticatedUser, requireTeamInviteInput, async (req: Request, res: Response) => {
     try {
-      const email = parseNormalizedEmail(req.body?.email);
-      const requestedRole = parseRequestedRole(req.body?.role);
-      if (!email) {
-        sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
-        return;
-      }
-
-      if (!req.auth?.user) {
+      const authUser = req.auth?.user;
+      const teamInvite = (res.locals as UsersRouteLocals).teamInvite;
+      if (!authUser || !teamInvite) {
         sendApiError(res, 401, 'Authentication required', 'AUTH_REQUIRED');
         return;
       }
 
-      const allowedRoles = TEAM_INVITE_ROLES_BY_ACTOR[req.auth.user.role];
-      if (!allowedRoles) {
-        sendApiError(res, 403, 'Insufficient permissions', 'AUTH_FORBIDDEN');
-        return;
-      }
-
-      if (requestedRole && !isAuthRole(requestedRole)) {
-        sendApiError(res, 400, 'Invite role is invalid', 'INVITE_ROLE_INVALID');
-        return;
-      }
-
-      const role = (requestedRole || 'editor') as AuthRole;
-      if (!allowedRoles.includes(role)) {
-        sendApiError(res, 403, 'Insufficient permissions', 'AUTH_FORBIDDEN');
-        return;
-      }
-
-      const existingUser = await authRepository.findUserByEmail(email);
+      const existingUser = await authRepository.findUserByEmail(teamInvite.email);
       if (existingUser) {
         sendApiError(res, 409, 'User already exists', 'USER_ALREADY_EXISTS');
         return;
       }
 
       const invite = await authRepository.createInvite({
-        email,
-        invitedByUserId: req.auth.user.id,
-        role,
+        email: teamInvite.email,
+        invitedByUserId: authUser.id,
+        role: teamInvite.role,
       });
 
       res.status(201).json({

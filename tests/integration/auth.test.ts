@@ -3,13 +3,19 @@ import request from 'supertest'
 import { createApp } from '../../server/app.js'
 import { createInMemoryAuthRepository } from '../../server/lib/auth/repository.js'
 
-function createAuthApp(options: { bootstrapSetupToken?: string } = {}) {
+function createAuthApp(options: {
+  bootstrapSetupToken?: string
+  userInviteRateLimitMax?: number
+  userInviteRateLimitWindowMs?: number
+} = {}) {
   const authRepository = createInMemoryAuthRepository()
   const app = createApp({
     allowMissingApiKey: true,
     apiAccessKey: '',
     authRepository,
     bootstrapSetupToken: options.bootstrapSetupToken,
+    userInviteRateLimitMax: options.userInviteRateLimitMax,
+    userInviteRateLimitWindowMs: options.userInviteRateLimitWindowMs,
   })
 
   return { app, authRepository }
@@ -296,6 +302,50 @@ describe('Authentication API', () => {
       .set('Cookie', adminSessionCookie)
       .send({ email: 'new-owner@example.com', role: 'owner' })
       .expect(403)
+  })
+
+  it('rate limits bootstrap and team invite creation endpoints', async () => {
+    const { app } = createAuthApp({
+      userInviteRateLimitMax: 1,
+      userInviteRateLimitWindowMs: 60_000,
+    })
+
+    const bootstrapInvite = await request(app)
+      .post('/api/users/bootstrap-owner-invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    await request(app)
+      .post('/api/users/bootstrap-owner-invite')
+      .send({ email: 'owner-two@example.com' })
+      .expect(429)
+
+    const ownerSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: bootstrapInvite.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const ownerSessionCookie = ownerSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(ownerSessionCookie).toBeTruthy()
+    if (!ownerSessionCookie) return
+
+    await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', ownerSessionCookie)
+      .send({ email: 'editor@example.com', role: 'editor' })
+      .expect(201)
+
+    await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', ownerSessionCookie)
+      .send({ email: 'viewer@example.com', role: 'viewer' })
+      .expect(429)
   })
 
   it('allows owners and admins to list current users', async () => {
