@@ -358,6 +358,180 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(project.anchorCoverageSummary?.matchedAnchors).toBe(1)
     })
 
+    it('builds timeline in anchor-match order and drafts trims from selected moments', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 18,
+        },
+        script: 'Панорамные окна. Терраса с видом.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 1,
+            scene: 'Фасад с панорамными окнами',
+            duration: 8,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад и панорамные окна.',
+              tags: ['фасад', 'панорамные окна'],
+              matchHints: ['панорамные окна'],
+              moments: [
+                {
+                  id: 'moment-windows',
+                  label: 'Панорамные окна',
+                  startSec: 1.5,
+                  endSec: 4.5,
+                  tags: ['панорамные окна'],
+                  summary: 'Акцент на панорамных окнах.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-002',
+            order: 2,
+            scene: 'Терраса с видом на реку',
+            duration: 6,
+            videoFile: 'shots/shot-002.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса и река.',
+              tags: ['терраса'],
+              matchHints: ['терраса с видом'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.5,
+                  tags: ['терраса'],
+                  summary: 'Выход на террасу с видом.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-003',
+            order: 3,
+            scene: 'Лобби',
+            duration: 5,
+            videoFile: 'shots/shot-003.mp4',
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-terrace',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+          {
+            id: 'anchor-windows',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 2,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-terrace',
+            selectedShotId: 'shot-002',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.94,
+            status: 'matched',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-windows',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-windows',
+            confidence: 0.91,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 2,
+          matchedAnchors: 2,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 18)
+
+      expect(plan.timeline.map((entry) => entry.shotId)).toEqual(['shot-002', 'shot-001', 'shot-003'])
+      expect(plan.timeline[0]).toMatchObject({
+        shotId: 'shot-002',
+        trimStartSec: 0.5,
+        trimEndSec: 3.5,
+      })
+      expect(plan.timeline[1]).toMatchObject({
+        shotId: 'shot-001',
+        trimStartSec: 1.5,
+        trimEndSec: 4.5,
+      })
+    })
+
+    it('falls back to remaining approved shots when matches are weak or missing', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Fallback montage project',
+        shots: [
+          makeShot({ id: 'shot-001', order: 1, scene: 'Фасад', duration: 6, videoFile: 'shots/shot-001.mp4' }),
+          makeShot({ id: 'shot-002', order: 2, scene: 'Спальня', duration: 5, videoFile: 'shots/shot-002.mp4' }),
+          makeShot({ id: 'shot-003', order: 3, scene: 'Лобби', duration: 4, videoFile: 'shots/shot-003.mp4' }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-1', sourceText: 'Спальня', label: 'Спальня', order: 1, intent: 'detail' },
+          { id: 'anchor-2', sourceText: 'Детская игровая', label: 'Игровая', order: 2, intent: 'lifestyle' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-002',
+            confidence: 0.48,
+            status: 'weak_match',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-2',
+            confidence: 0,
+            status: 'unmatched',
+            candidates: [],
+          },
+        ],
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 15)
+
+      expect(plan.timeline.map((entry) => entry.shotId)).toEqual(['shot-002', 'shot-001', 'shot-003'])
+      expect(plan.timeline).toHaveLength(3)
+    })
+
     it('should select fade transition for aerial/drone scenes', () => {
       const project = {
         id: 'test-project',

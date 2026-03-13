@@ -1092,16 +1092,32 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
       return;
     }
 
+    let planningProject = project;
+
+    if (project.narrationAnchors?.length && (!project.anchorMatches || project.anchorMatches.length === 0)) {
+      const matchResult = matchNarrationAnchors(project);
+      planningProject = {
+        ...project,
+        anchorMatches: matchResult.anchorMatches,
+        anchorCoverageSummary: matchResult.anchorCoverageSummary,
+      };
+
+      await withProject(project.id, (p) => {
+        p.anchorMatches = matchResult.anchorMatches;
+        p.anchorCoverageSummary = matchResult.anchorCoverageSummary;
+      });
+    }
+
     // Determine voiceover duration
     let voiceoverDurationSec: number;
 
-    if (project.voiceoverFile) {
-      const voPath = resolveProjectPath(project.id, project.voiceoverFile);
+    if (planningProject.voiceoverFile) {
+      const voPath = resolveProjectPath(project.id, planningProject.voiceoverFile);
       const { probeDuration } = await import('../lib/normalize.js');
       voiceoverDurationSec = await probeDuration(voPath);
     } else {
       // Estimate from script: ~150 words/min for Russian
-      const wordCount = (project.script || '').split(/\s+/).filter(Boolean).length;
+      const wordCount = (planningProject.script || '').split(/\s+/).filter(Boolean).length;
       voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
     }
 
@@ -1111,7 +1127,7 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
 
     // Generate plan
     const { generateMontagePlan } = await import('../lib/montage-plan.js');
-    const montagePlan = generateMontagePlan(project, voiceoverDurationSec);
+    const montagePlan = generateMontagePlan(planningProject, voiceoverDurationSec);
 
     // Save to project
     await withProject(project.id, (p) => {

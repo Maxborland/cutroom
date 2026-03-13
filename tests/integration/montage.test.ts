@@ -1024,6 +1024,164 @@ describe('Montage Integration', () => {
   // ─── Montage Plan ─────────────────────────────────────────────────
 
   describe('POST /montage/generate-plan', () => {
+    it('auto-matches anchors before planning when anchors exist but persisted matches are missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Фасад с панорамными окнами',
+            videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад и окна.',
+              tags: ['фасад'],
+              matchHints: ['панорамные окна'],
+              moments: [],
+            },
+          },
+        ]
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ]
+        delete proj.anchorMatches
+        delete proj.anchorCoverageSummary
+      })
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockImplementationOnce((projectArg) => ({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            shotId: projectArg.anchorMatches?.[0]?.selectedShotId ?? 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 3,
+            durationSec: 6,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { intro: { title: 'Test', durationSec: 3, animation: 'fade_in' }, lowerThirds: [], outro: { title: 'End', durationSec: 3, animation: 'fade_in' } },
+        audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      }))
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-plan`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              selectedShotId: 'shot-1',
+              status: 'matched',
+            }),
+          ]),
+          anchorCoverageSummary: expect.objectContaining({
+            matchedAnchors: 1,
+          }),
+        }),
+        expect.any(Number),
+      )
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            selectedShotId: 'shot-1',
+            status: 'matched',
+          }),
+        ]),
+      )
+    })
+
+    it('passes anchor-matched project state into planner for anchor-first draft generation', async () => {
+      await withProject(projectId, (proj) => {
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            videoFile: 'clip-1.mp4',
+          },
+          {
+            ...proj.shots[0]!,
+            id: 'shot-2',
+            order: 2,
+            videoFile: 'clip-2.mp4',
+          },
+        ]
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ]
+        proj.anchorMatches = [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-2',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.91,
+            status: 'matched',
+            candidates: [],
+          },
+        ]
+      })
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockImplementationOnce((projectArg) => ({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            shotId: projectArg.anchorMatches?.[0]?.selectedShotId ?? 'shot-1',
+            clipFile: 'montage/normalized/shot-2.mp4',
+            startSec: 3,
+            durationSec: 6,
+            trimStartSec: 0.5,
+            trimEndSec: 3.5,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { intro: { title: 'Test', durationSec: 3, animation: 'fade_in' }, lowerThirds: [], outro: { title: 'End', durationSec: 3, animation: 'fade_in' } },
+        audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-plan`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              selectedShotId: 'shot-2',
+              selectedMomentId: 'moment-terrace',
+            }),
+          ]),
+        }),
+        expect.any(Number),
+      )
+      expect(res.body.montagePlan.timeline[0]).toMatchObject({
+        shotId: 'shot-2',
+        trimStartSec: 0.5,
+        trimEndSec: 3.5,
+      })
+    })
+
     it('generates plan from approved shots', async () => {
       // Set up voiceover file for duration probing
       const montageDir = resolveProjectPath(projectId, 'montage')
