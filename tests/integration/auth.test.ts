@@ -21,17 +21,34 @@ describe('Authentication API', () => {
     await request(app).get('/api/projects').expect(401)
   })
 
-  it('accepts invite and creates first session', async () => {
-    const { app, authRepository } = createAuthApp()
-    const invite = await authRepository.createInvite({
+  it('bootstraps the first invite on an empty system without authentication', async () => {
+    const { app } = createAuthApp()
+
+    const inviteResponse = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    expect(inviteResponse.body.invite).toMatchObject({
       email: 'owner@example.com',
-      invitedByUserId: null,
     })
+    expect(typeof inviteResponse.body.invite.token).toBe('string')
+    expect(inviteResponse.body.invite.inviteUrl).toContain(inviteResponse.body.invite.token)
+  })
+
+  it('accepts invite and creates first session', async () => {
+    const { app } = createAuthApp()
+    const inviteResponse = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    const inviteToken = inviteResponse.body.invite.token
 
     const acceptResponse = await request(app)
       .post('/api/auth/accept-invite')
       .send({
-        token: invite.token,
+        token: inviteToken,
         name: 'Owner',
         password: 'super-secret-pass',
       })
@@ -65,5 +82,44 @@ describe('Authentication API', () => {
       .get('/api/projects')
       .set('Cookie', sessionCookie)
       .expect(200)
+  })
+
+  it('requires authentication to create additional invites after the first user exists', async () => {
+    const { app } = createAuthApp()
+
+    const bootstrapInvite = await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    const bootstrapSession = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: bootstrapInvite.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    await request(app)
+      .post('/api/users/invite')
+      .send({ email: 'editor@example.com' })
+      .expect(401)
+
+    const sessionCookie = bootstrapSession.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(sessionCookie).toBeTruthy()
+    if (!sessionCookie) return
+
+    const secondInvite = await request(app)
+      .post('/api/users/invite')
+      .set('Cookie', sessionCookie)
+      .send({ email: 'editor@example.com' })
+      .expect(201)
+
+    expect(secondInvite.body.invite).toMatchObject({
+      email: 'editor@example.com',
+    })
   })
 })

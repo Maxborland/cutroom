@@ -1,7 +1,6 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { resolvePathWithin } from '../file-utils.js';
+import type { Pool, PoolClient } from 'pg';
+import { createDb } from '../../db/index.js';
 
 export interface AuthUserRecord {
   id: string;
@@ -91,34 +90,6 @@ function cloneSession(session: AuthSessionRecord): AuthSessionRecord {
 
 function emptyState(): AuthState {
   return { users: [], invites: [], sessions: [] };
-}
-
-async function writeFileAtomic(filePath: string, contents: string): Promise<void> {
-  const directory = path.dirname(filePath);
-  const filename = path.basename(filePath);
-  const tempPath = path.join(
-    directory,
-    `.${filename}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
-  );
-
-  await fs.mkdir(directory, { recursive: true });
-
-  try {
-    await fs.writeFile(tempPath, contents, 'utf-8');
-    await fs.rename(tempPath, filePath);
-  } catch (error) {
-    try {
-      await fs.copyFile(tempPath, filePath);
-      await fs.unlink(tempPath);
-    } catch {
-      try {
-        await fs.unlink(tempPath);
-      } catch {
-        // ignore cleanup errors
-      }
-      throw error;
-    }
-  }
 }
 
 class InMemoryAuthRepository implements AuthRepository {
@@ -222,104 +193,294 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 }
 
-class FileAuthRepository extends InMemoryAuthRepository {
-  private readonly filePath: string;
-  private loadPromise: Promise<void> | null = null;
-  private queue: Promise<unknown> = Promise.resolve();
+type AuthDb = Pick<Pool, 'query' | 'connect'>;
 
-  constructor(filePath: string) {
-    super(emptyState());
-    this.filePath = filePath;
+interface CreateAuthRepositoryOptions {
+  db?: AuthDb;
+  connectionString?: string;
+}
+
+type AuthUserRow = {
+  id: string;
+  email: string;
+  name: string;
+  password_hash: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type AuthInviteRow = {
+  token: string;
+  email: string;
+  invited_by_user_id: string | null;
+  created_at: Date | string;
+  accepted_at: Date | string | null;
+};
+
+type AuthSessionRow = {
+  token: string;
+  user_id: string;
+  created_at: Date | string;
+  expires_at: Date | string;
+};
+
+function normalizeTimestampValue(value: Date | string | null): string | null {
+  if (value == null) {
+    return null;
   }
 
-  private async ensureLoaded(): Promise<void> {
-    if (!this.loadPromise) {
-      this.loadPromise = (async () => {
-        try {
-          const raw = await fs.readFile(this.filePath, 'utf-8');
-          const parsed = JSON.parse(raw) as Partial<AuthState>;
-          this.state = {
-            users: Array.isArray(parsed.users) ? parsed.users : [],
-            invites: Array.isArray(parsed.invites) ? parsed.invites : [],
-            sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
-          };
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException | null)?.code;
-          if (code !== 'ENOENT') {
-            throw error;
-          }
-          this.state = emptyState();
-        }
-      })();
-    }
-
-    await this.loadPromise;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
   }
 
-  private async runExclusive<T>(persist: boolean, task: () => Promise<T>): Promise<T> {
-    const run = async () => {
-      await this.ensureLoaded();
-      const result = await task();
-      if (persist) {
-        await writeFileAtomic(this.filePath, JSON.stringify(this.state, null, 2));
-      }
-      return result;
-    };
+  return date.toISOString();
+}
 
-    const next = this.queue.catch(() => undefined).then(run);
-    this.queue = next.then(() => undefined, () => undefined);
-    return next;
+function mapUserRow(row: AuthUserRow | undefined): AuthUserRecord | null {
+  if (!row) {
+    return null;
   }
 
-  override async countUsers(): Promise<number> {
-    return this.runExclusive(false, () => super.countUsers());
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    passwordHash: row.password_hash,
+    createdAt: normalizeTimestampValue(row.created_at) ?? new Date().toISOString(),
+    updatedAt: normalizeTimestampValue(row.updated_at) ?? new Date().toISOString(),
+  };
+}
+
+function mapInviteRow(row: AuthInviteRow | undefined): AuthInviteRecord | null {
+  if (!row) {
+    return null;
   }
 
-  override async findUserById(userId: string): Promise<AuthUserRecord | null> {
-    return this.runExclusive(false, () => super.findUserById(userId));
+  return {
+    token: row.token,
+    email: row.email,
+    invitedByUserId: row.invited_by_user_id,
+    createdAt: normalizeTimestampValue(row.created_at) ?? new Date().toISOString(),
+    acceptedAt: normalizeTimestampValue(row.accepted_at),
+  };
+}
+
+function mapSessionRow(row: AuthSessionRow | undefined): AuthSessionRecord | null {
+  if (!row) {
+    return null;
   }
 
-  override async findUserByEmail(email: string): Promise<AuthUserRecord | null> {
-    return this.runExclusive(false, () => super.findUserByEmail(email));
-  }
+  return {
+    token: row.token,
+    userId: row.user_id,
+    createdAt: normalizeTimestampValue(row.created_at) ?? new Date().toISOString(),
+    expiresAt: normalizeTimestampValue(row.expires_at) ?? new Date().toISOString(),
+  };
+}
 
-  override async createInvite(input: CreateInviteInput): Promise<AuthInviteRecord> {
-    return this.runExclusive(true, () => super.createInvite(input));
-  }
+async function withTransaction<T>(db: AuthDb, task: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await db.connect();
 
-  override async findInviteByToken(token: string): Promise<AuthInviteRecord | null> {
-    return this.runExclusive(false, () => super.findInviteByToken(token));
-  }
-
-  override async acceptInvite(input: AcceptInviteInput): Promise<AuthUserRecord> {
-    return this.runExclusive(true, () => super.acceptInvite(input));
-  }
-
-  override async createSession(userId: string, expiresAt: Date): Promise<AuthSessionRecord> {
-    return this.runExclusive(true, () => super.createSession(userId, expiresAt));
-  }
-
-  override async findSessionByToken(token: string): Promise<AuthSessionRecord | null> {
-    return this.runExclusive(true, () => super.findSessionByToken(token));
-  }
-
-  override async deleteSession(token: string): Promise<void> {
-    await this.runExclusive(true, () => super.deleteSession(token));
+  try {
+    await client.query('BEGIN');
+    const result = await task(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
-const DEFAULT_AUTH_STATE_PATH = resolvePathWithin(process.cwd(), 'data', 'auth', 'state.json');
+export class PostgresAuthRepository implements AuthRepository {
+  private readonly db: AuthDb;
+
+  constructor(options: CreateAuthRepositoryOptions = {}) {
+    this.db = options.db ?? createDb(options.connectionString);
+  }
+
+  async countUsers(): Promise<number> {
+    const result = await this.db.query<{ count: string | number }>('SELECT COUNT(*) AS count FROM auth_users');
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async findUserById(userId: string): Promise<AuthUserRecord | null> {
+    const result = await this.db.query<AuthUserRow>(
+      `
+        SELECT id, email, name, password_hash, created_at, updated_at
+        FROM auth_users
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [userId],
+    );
+
+    return mapUserRow(result.rows[0]);
+  }
+
+  async findUserByEmail(email: string): Promise<AuthUserRecord | null> {
+    const result = await this.db.query<AuthUserRow>(
+      `
+        SELECT id, email, name, password_hash, created_at, updated_at
+        FROM auth_users
+        WHERE email = $1
+        LIMIT 1
+      `,
+      [normalizeEmail(email)],
+    );
+
+    return mapUserRow(result.rows[0]);
+  }
+
+  async createInvite(input: CreateInviteInput): Promise<AuthInviteRecord> {
+    return withTransaction(this.db, async (client) => {
+      const email = normalizeEmail(input.email);
+      const token = randomBytes(24).toString('hex');
+      const createdAt = new Date().toISOString();
+
+      await client.query(
+        `
+          DELETE FROM auth_invites
+          WHERE email = $1 AND accepted_at IS NULL
+        `,
+        [email],
+      );
+
+      const result = await client.query<AuthInviteRow>(
+        `
+          INSERT INTO auth_invites (token, email, invited_by_user_id, created_at, accepted_at)
+          VALUES ($1, $2, $3, $4, NULL)
+          RETURNING token, email, invited_by_user_id, created_at, accepted_at
+        `,
+        [token, email, input.invitedByUserId, createdAt],
+      );
+
+      return mapInviteRow(result.rows[0]) as AuthInviteRecord;
+    });
+  }
+
+  async findInviteByToken(token: string): Promise<AuthInviteRecord | null> {
+    const result = await this.db.query<AuthInviteRow>(
+      `
+        SELECT token, email, invited_by_user_id, created_at, accepted_at
+        FROM auth_invites
+        WHERE token = $1
+        LIMIT 1
+      `,
+      [token],
+    );
+
+    return mapInviteRow(result.rows[0]);
+  }
+
+  async acceptInvite(input: AcceptInviteInput): Promise<AuthUserRecord> {
+    return withTransaction(this.db, async (client) => {
+      const inviteResult = await client.query<AuthInviteRow>(
+        `
+          SELECT token, email, invited_by_user_id, created_at, accepted_at
+          FROM auth_invites
+          WHERE token = $1
+          FOR UPDATE
+        `,
+        [input.token],
+      );
+
+      const invite = mapInviteRow(inviteResult.rows[0]);
+      if (!invite) {
+        throw new AuthRepositoryError('INVITE_NOT_FOUND', 'Invite not found');
+      }
+
+      if (invite.acceptedAt) {
+        throw new AuthRepositoryError('INVITE_ALREADY_ACCEPTED', 'Invite has already been accepted');
+      }
+
+      const existingUserResult = await client.query<{ id: string }>(
+        `
+          SELECT id
+          FROM auth_users
+          WHERE email = $1
+          LIMIT 1
+        `,
+        [invite.email],
+      );
+
+      if (existingUserResult.rows[0]) {
+        throw new AuthRepositoryError('USER_ALREADY_EXISTS', 'User already exists');
+      }
+
+      const userId = randomUUID();
+      const timestamp = new Date().toISOString();
+
+      const userResult = await client.query<AuthUserRow>(
+        `
+          INSERT INTO auth_users (id, email, name, password_hash, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING id, email, name, password_hash, created_at, updated_at
+        `,
+        [userId, invite.email, input.name.trim(), input.passwordHash, timestamp, timestamp],
+      );
+
+      await client.query(
+        `
+          UPDATE auth_invites
+          SET accepted_at = $2
+          WHERE token = $1
+        `,
+        [invite.token, timestamp],
+      );
+
+      return mapUserRow(userResult.rows[0]) as AuthUserRecord;
+    });
+  }
+
+  async createSession(userId: string, expiresAt: Date): Promise<AuthSessionRecord> {
+    const token = randomBytes(32).toString('hex');
+    const createdAt = new Date().toISOString();
+
+    const result = await this.db.query<AuthSessionRow>(
+      `
+        INSERT INTO auth_sessions (token, user_id, created_at, expires_at)
+        VALUES ($1, $2, $3, $4)
+        RETURNING token, user_id, created_at, expires_at
+      `,
+      [token, userId, createdAt, expiresAt.toISOString()],
+    );
+
+    return mapSessionRow(result.rows[0]) as AuthSessionRecord;
+  }
+
+  async findSessionByToken(token: string): Promise<AuthSessionRecord | null> {
+    const result = await this.db.query<AuthSessionRow>(
+      `
+        SELECT token, user_id, created_at, expires_at
+        FROM auth_sessions
+        WHERE token = $1 AND expires_at > NOW()
+        LIMIT 1
+      `,
+      [token],
+    );
+
+    return mapSessionRow(result.rows[0]);
+  }
+
+  async deleteSession(token: string): Promise<void> {
+    await this.db.query('DELETE FROM auth_sessions WHERE token = $1', [token]);
+  }
+}
 
 export function createInMemoryAuthRepository(initialState?: Partial<AuthState>): AuthRepository {
   return new InMemoryAuthRepository(initialState);
 }
 
-export function createFileAuthRepository(filePath = DEFAULT_AUTH_STATE_PATH): AuthRepository {
-  return new FileAuthRepository(filePath);
+export function createAuthRepository(options: CreateAuthRepositoryOptions = {}): AuthRepository {
+  return new PostgresAuthRepository(options);
 }
 
 export function createDefaultAuthRepository(): AuthRepository {
-  return createFileAuthRepository();
+  return createAuthRepository();
 }
 
 export function toAuthUser(user: AuthUserRecord): AuthUser {

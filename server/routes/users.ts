@@ -1,16 +1,23 @@
 import { Router, type Request, type Response } from 'express';
 import { sendApiError } from '../lib/api-error.js';
-import { requireAuthenticatedUser } from '../lib/auth/middleware.js';
 import { type AuthRepository } from '../lib/auth/repository.js';
 
 export function createUsersRoutes(authRepository: AuthRepository): Router {
   const router = Router();
 
-  router.post('/invite', requireAuthenticatedUser, async (req: Request, res: Response) => {
+  router.post('/invite', async (req: Request, res: Response) => {
     try {
       const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
       if (!email) {
         sendApiError(res, 400, 'Email is required', 'INVITE_EMAIL_REQUIRED');
+        return;
+      }
+
+      const userCount = await authRepository.countUsers();
+      const isBootstrapInvite = userCount === 0;
+
+      if (!isBootstrapInvite && !req.auth?.user) {
+        sendApiError(res, 401, 'Authentication required', 'AUTH_REQUIRED');
         return;
       }
 
@@ -22,7 +29,7 @@ export function createUsersRoutes(authRepository: AuthRepository): Router {
 
       const invite = await authRepository.createInvite({
         email,
-        invitedByUserId: req.auth?.user.id ?? null,
+        invitedByUserId: isBootstrapInvite ? null : (req.auth?.user.id ?? null),
       });
 
       res.status(201).json({
