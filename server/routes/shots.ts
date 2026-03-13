@@ -281,7 +281,7 @@ router.put('/:shotId/status', async (req: Request, res: Response) => {
 });
 
 // POST /api/projects/:id/shots/:shotId/video — upload video
-router.post('/:shotId/video', (req: Request, res: Response, next: NextFunction) => {
+router.post('/:shotId/video', mutationLimiter, (req: Request, res: Response, next: NextFunction) => {
   videoUpload.single('video')(req, res, (err) => {
     if (err) {
       next(err);
