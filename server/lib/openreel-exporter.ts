@@ -80,6 +80,7 @@ export interface OpenReelClip {
   transform: OpenReelTransform;
   volume: number;
   keyframes: OpenReelKeyframe[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface OpenReelTransition {
@@ -145,6 +146,12 @@ export interface OpenReelBundle {
     kind: 'shot' | 'voiceover' | 'music';
     shotId?: string;
   }>;
+  semanticSummary?: {
+    anchors: number;
+    matched: number;
+    weak: number;
+    unmatched: number;
+  };
 }
 
 const DEFAULT_VIDEO_DURATION_SEC = 4;
@@ -232,6 +239,7 @@ function createClip(params: {
   inPoint?: number;
   outPoint?: number;
   volume?: number;
+  metadata?: Record<string, unknown>;
 }): OpenReelClip {
   const duration = clampPositiveNumber(params.duration, DEFAULT_VIDEO_DURATION_SEC);
   return {
@@ -247,7 +255,87 @@ function createClip(params: {
     transform: DEFAULT_TRANSFORM,
     volume: clampPositiveNumber(params.volume ?? 1, 1),
     keyframes: [],
+    metadata: params.metadata,
   };
+}
+
+function buildSemanticSummary(project: CutRoomProject): OpenReelBundle['semanticSummary'] | undefined {
+  if (project.anchorCoverageSummary) {
+    return {
+      anchors: project.anchorCoverageSummary.totalAnchors,
+      matched: project.anchorCoverageSummary.matchedAnchors,
+      weak: project.anchorCoverageSummary.weakMatches,
+      unmatched: project.anchorCoverageSummary.unmatchedAnchors,
+    };
+  }
+
+  if (!project.anchorMatches || project.anchorMatches.length === 0) {
+    return undefined;
+  }
+
+  return {
+    anchors: project.anchorMatches.length,
+    matched: project.anchorMatches.filter((match) => match.status === 'matched').length,
+    weak: project.anchorMatches.filter((match) => match.status === 'weak_match').length,
+    unmatched: project.anchorMatches.filter((match) => match.status === 'unmatched').length,
+  };
+}
+
+function createSemanticMatchQueue(project: CutRoomProject): Map<string, Array<{
+  anchorId: string;
+  anchorLabel: string;
+  anchorSourceText: string;
+  matchStatus: 'matched' | 'weak_match' | 'unmatched';
+  matchConfidence: number;
+  selectedMomentId?: string;
+  reason?: string;
+}>> {
+  const queue = new Map<string, Array<{
+    anchorId: string;
+    anchorLabel: string;
+    anchorSourceText: string;
+    matchStatus: 'matched' | 'weak_match' | 'unmatched';
+    matchConfidence: number;
+    selectedMomentId?: string;
+    reason?: string;
+  }>>();
+
+  if (!project.anchorMatches || project.anchorMatches.length === 0) {
+    return queue;
+  }
+
+  const anchorById = new Map((project.narrationAnchors ?? []).map((anchor) => [anchor.id, anchor]));
+  const orderedMatches = [...project.anchorMatches].sort((left, right) => {
+    const leftOrder = anchorById.get(left.anchorId)?.order ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = anchorById.get(right.anchorId)?.order ?? Number.MAX_SAFE_INTEGER;
+    return leftOrder - rightOrder;
+  });
+
+  for (const match of orderedMatches) {
+    if (!match.selectedShotId) continue;
+
+    const anchor = anchorById.get(match.anchorId);
+    if (!anchor) continue;
+
+    const reason = match.candidates.find((candidate) => (
+      candidate.shotId === match.selectedShotId
+      && (candidate.momentId ?? undefined) === (match.selectedMomentId ?? undefined)
+    ))?.reason ?? match.candidates.find((candidate) => candidate.shotId === match.selectedShotId)?.reason;
+
+    const next = queue.get(match.selectedShotId) ?? [];
+    next.push({
+      anchorId: anchor.id,
+      anchorLabel: anchor.label,
+      anchorSourceText: anchor.sourceText,
+      matchStatus: match.status,
+      matchConfidence: match.confidence,
+      selectedMomentId: match.selectedMomentId,
+      reason,
+    });
+    queue.set(match.selectedShotId, next);
+  }
+
+  return queue;
 }
 
 function createMediaItem(params: {
@@ -409,6 +497,8 @@ export async function buildOpenReelBundle(
   const mediaManifest: OpenReelBundle['mediaManifest'] = {};
   const mediaItems: OpenReelMediaItem[] = [];
   const tracks: OpenReelTrack[] = [];
+  const semanticSummary = buildSemanticSummary(project);
+  const semanticMatchQueue = createSemanticMatchQueue(project);
 
   const videoTrack = createTrack('track-video', 'video', 'Video');
   const orderedShots = getOrderedApprovedShots(project);
@@ -441,6 +531,8 @@ export async function buildOpenReelBundle(
       : sourceDuration;
     const inPoint = tlEntry?.trimStartSec && Number.isFinite(tlEntry.trimStartSec) ? tlEntry.trimStartSec : 0;
     const outPoint = inPoint + clipDuration;
+    const queuedSemantic = semanticMatchQueue.get(shot.id);
+    const semanticMatch = queuedSemantic?.shift();
 
     mediaItems.push(createMediaItem({
       id: mediaId,
@@ -469,6 +561,13 @@ export async function buildOpenReelBundle(
       inPoint,
       outPoint,
       volume: 1,
+      metadata: semanticMatch ? {
+        cutroomSemantic: {
+          ...semanticMatch,
+          trimStartSec: tlEntry?.trimStartSec,
+          trimEndSec: tlEntry?.trimEndSec,
+        },
+      } : undefined,
     }));
 
     shotClipIds.set(shot.id, clipId);
@@ -614,5 +713,6 @@ export async function buildOpenReelBundle(
     version: '1.0.0',
     project: openReelProject,
     mediaManifest,
+    semanticSummary,
   };
 }

@@ -290,4 +290,111 @@ describe('buildOpenReelBundle()', () => {
     expect(videoTrack!.clips[0].id).toBe('clip-shot-early');
     expect(videoTrack!.clips[1].id).toBe('clip-shot-late');
   });
+
+  it('preserves semantic anchor metadata and trim suggestions on exported clips', async () => {
+    mockedProbeDuration.mockResolvedValue(8);
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-terrace',
+          order: 1,
+          scene: 'Терраса',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'terrace.mp4',
+        },
+      ],
+      narrationAnchors: [
+        {
+          id: 'anchor-1',
+          sourceText: 'Терраса с видом',
+          label: 'Терраса',
+          order: 1,
+          intent: 'lifestyle',
+        },
+      ],
+      anchorMatches: [
+        {
+          anchorId: 'anchor-1',
+          selectedShotId: 'shot-terrace',
+          selectedMomentId: 'moment-terrace',
+          confidence: 0.91,
+          status: 'matched',
+          candidates: [
+            {
+              shotId: 'shot-terrace',
+              momentId: 'moment-terrace',
+              confidence: 0.91,
+              reason: 'Совпадение по videoDescription.matchHints',
+            },
+          ],
+        },
+      ],
+      anchorCoverageSummary: {
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      },
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            shotId: 'shot-terrace',
+            clipFile: 'montage/normalized/shot-terrace.mp4',
+            startSec: 0,
+            durationSec: 3.5,
+            trimStartSec: 1.2,
+            trimEndSec: 4.7,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: '', gainDb: 0 },
+          music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      },
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+    const clip = videoTrack?.clips.find((entry) => entry.mediaId === 'media-shot-shot-terrace');
+
+    expect(clip?.metadata).toMatchObject({
+      cutroomSemantic: {
+        anchorId: 'anchor-1',
+        anchorLabel: 'Терраса',
+        anchorSourceText: 'Терраса с видом',
+        matchStatus: 'matched',
+        matchConfidence: 0.91,
+        selectedMomentId: 'moment-terrace',
+        trimStartSec: 1.2,
+        trimEndSec: 4.7,
+        reason: 'Совпадение по videoDescription.matchHints',
+      },
+    });
+    expect(bundle.semanticSummary).toEqual({
+      anchors: 1,
+      matched: 1,
+      weak: 0,
+      unmatched: 0,
+    });
+  });
 });

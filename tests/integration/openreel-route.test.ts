@@ -54,6 +54,68 @@ describe('OpenReel route integration', () => {
   });
 
   it('GET /openreel-project returns a valid bundle', async () => {
+    await withProject(projectId, (p) => {
+      p.narrationAnchors = [
+        {
+          id: 'anchor-1',
+          sourceText: 'Внешний фасад',
+          label: 'Фасад',
+          order: 1,
+          intent: 'hook',
+        },
+      ];
+      p.anchorMatches = [
+        {
+          anchorId: 'anchor-1',
+          selectedShotId: 'shot-1',
+          selectedMomentId: 'moment-1',
+          confidence: 0.87,
+          status: 'matched',
+          candidates: [
+            {
+              shotId: 'shot-1',
+              momentId: 'moment-1',
+              confidence: 0.87,
+              reason: 'Совпадение по videoDescription.summary',
+            },
+          ],
+        },
+      ];
+      p.anchorCoverageSummary = {
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      };
+      p.montagePlan = {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            shotId: 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 0,
+            durationSec: 4,
+            trimStartSec: 0.5,
+            trimEndSec: 4.5,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 },
+          music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      };
+    });
+
     const response = await request(app)
       .get(`/api/projects/${projectId}/openreel-project`)
       .expect(200);
@@ -64,8 +126,20 @@ describe('OpenReel route integration', () => {
     expect(response.body.project.timeline).toBeDefined();
     expect(response.body.project.timeline.tracks).toBeInstanceOf(Array);
     expect(response.body.mediaManifest).toBeDefined();
+    expect(response.body.semanticSummary).toEqual({
+      anchors: 1,
+      matched: 1,
+      weak: 0,
+      unmatched: 0,
+    });
     expect(response.body.mediaManifest['media-shot-shot-1'].url)
       .toMatch(new RegExp(`/api/projects/${projectId}/shots/shot-1/video/.+`));
+    expect(response.body.project.timeline.tracks[0].clips[0].metadata.cutroomSemantic).toMatchObject({
+      anchorId: 'anchor-1',
+      selectedMomentId: 'moment-1',
+      trimStartSec: 0.5,
+      trimEndSec: 4.5,
+    });
   });
 
   it('GET /openreel-project returns 404 for non-existent project', async () => {
