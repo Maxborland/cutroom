@@ -636,7 +636,7 @@ function normalizeManualAnchorMatches(
       anchorId: anchor.id,
       selectedShotId,
       selectedMomentId: isManualOverride ? undefined : existing?.selectedMomentId,
-      confidence: isManualOverride ? Math.max(existing?.confidence ?? 0, 0.67) : (existing?.confidence ?? 0.67),
+      confidence: isManualOverride ? 1.0 : (existing?.confidence ?? 0.67),
       status: isManualOverride ? 'matched' : (existing?.status ?? 'matched'),
       candidates: existing?.candidates ?? [],
     }
@@ -855,7 +855,7 @@ function PlanStep({
                             <option value="">Не выбран</option>
                             {approvedShots.map((shot) => (
                               <option key={shot.id} value={shot.id}>
-                                {shot.id}
+                                {shot.scene || shot.id}
                               </option>
                             ))}
                           </select>

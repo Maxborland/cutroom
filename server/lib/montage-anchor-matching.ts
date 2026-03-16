@@ -57,7 +57,10 @@ function scoreTextValues(
   reason: string,
   moment?: ShotVideoDescriptionMoment,
 ): ScoredCandidate | null {
-  const normalizedValues = values.map((value) => value.trim()).filter(Boolean);
+  const normalizedValues = values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean);
   if (normalizedValues.length === 0) {
     return null;
   }
