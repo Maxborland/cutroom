@@ -31,7 +31,7 @@ Brief → Script → Shot Planning → Image/Video Generation → Review → Voi
 - 👁 **Director Review** — Human-in-the-loop approval for each shot
 - 🎙 **Voiceover** — ElevenLabs TTS with script-to-speech pipeline
 - 🎵 **Music** — LLM-generated prompts for Suno + manual upload
-- 🎞 **Auto-Montage** — Heuristic-based timeline assembly with transitions
+- 🎞 **Auto-Montage** — Semantic anchor-first timeline assembly with weak-match review
 - 📐 **4K Render** — Remotion-powered deterministic video rendering
 - 🔄 **LLM Refinement** — Refine montage plan with natural language feedback
 
@@ -111,6 +111,28 @@ src/
 ├── stores/                # Zustand state
 └── types/                 # TypeScript interfaces
 ```
+
+## Semantic Montage Flow
+
+The montage pipeline now supports a `video description first` semantic planning pass:
+
+```text
+voiceoverScript -> narration anchors -> video descriptions -> anchor matches -> draft montage plan
+```
+
+What this adds:
+
+- approved shot videos can be described before planning
+- narrator text can be split into ordered visual anchors
+- anchors are matched against described videos with `matched / weak_match / unmatched`
+- weak matches can be reviewed and overridden in the montage UI before draft generation
+- OpenReel handoff now preserves semantic metadata and draft trims for future editor-side tooling
+
+Operator guidance:
+
+- use `Описать видео` before `Извлечь якоря`, so matching has stronger visual evidence
+- review `Требует проверки` / `Нет совпадения` anchors in the montage plan step
+- save manual shot overrides before generating the draft plan when semantic confidence is low
 
 ## License
 

@@ -263,6 +263,275 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(plan.timeline[1].durationSec).toBeGreaterThanOrEqual(2)
     })
 
+    it('accepts semantic montage metadata on projects and shots without changing draft plan generation', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 12,
+        },
+        script: 'Панорамные окна с видом на город.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 0,
+            scene: 'Панорамный фасад комплекса',
+            duration: 6,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет вдоль фасада с акцентом на панорамные окна',
+              tags: ['фасад', 'панорамные окна', 'закат'],
+              matchHints: ['панорамные окна', 'архитектура комплекса'],
+              moments: [
+                {
+                  id: 'moment-001',
+                  label: 'Окна и верхние этажи',
+                  startSec: 1,
+                  endSec: 4,
+                  tags: ['панорамные окна'],
+                  summary: 'Камера подчеркивает панорамные окна верхних этажей',
+                },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'панорамные окна с видом на город',
+            label: 'панорамные окна',
+            order: 0,
+            startSec: 0,
+            endSec: 4,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-001',
+            confidence: 0.93,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-001',
+                momentId: 'moment-001',
+                confidence: 0.93,
+                reason: 'Совпадение по videoDescription.matchHints и moments.tags',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 12)
+
+      expect(plan.timeline).toHaveLength(1)
+      expect(plan.timeline[0].shotId).toBe('shot-001')
+      expect(project.shots[0].videoDescription?.moments[0]?.id).toBe('moment-001')
+      expect(project.narrationAnchors?.[0]?.label).toBe('панорамные окна')
+      expect(project.anchorMatches?.[0]?.selectedShotId).toBe('shot-001')
+      expect(project.anchorCoverageSummary?.matchedAnchors).toBe(1)
+    })
+
+    it('builds timeline in anchor-match order and drafts trims from selected moments', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 18,
+        },
+        script: 'Панорамные окна. Терраса с видом.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 1,
+            scene: 'Фасад с панорамными окнами',
+            duration: 8,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад и панорамные окна.',
+              tags: ['фасад', 'панорамные окна'],
+              matchHints: ['панорамные окна'],
+              moments: [
+                {
+                  id: 'moment-windows',
+                  label: 'Панорамные окна',
+                  startSec: 1.5,
+                  endSec: 4.5,
+                  tags: ['панорамные окна'],
+                  summary: 'Акцент на панорамных окнах.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-002',
+            order: 2,
+            scene: 'Терраса с видом на реку',
+            duration: 6,
+            videoFile: 'shots/shot-002.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса и река.',
+              tags: ['терраса'],
+              matchHints: ['терраса с видом'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.5,
+                  tags: ['терраса'],
+                  summary: 'Выход на террасу с видом.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-003',
+            order: 3,
+            scene: 'Лобби',
+            duration: 5,
+            videoFile: 'shots/shot-003.mp4',
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-terrace',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+          {
+            id: 'anchor-windows',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 2,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-terrace',
+            selectedShotId: 'shot-002',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.94,
+            status: 'matched',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-windows',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-windows',
+            confidence: 0.91,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 2,
+          matchedAnchors: 2,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 18)
+
+      expect(plan.timeline.map((entry) => entry.shotId)).toEqual(['shot-002', 'shot-001', 'shot-003'])
+      expect(plan.timeline[0]).toMatchObject({
+        shotId: 'shot-002',
+        trimStartSec: 0.5,
+        trimEndSec: 3.5,
+      })
+      expect(plan.timeline[1]).toMatchObject({
+        shotId: 'shot-001',
+        trimStartSec: 1.5,
+        trimEndSec: 4.5,
+      })
+    })
+
+    it('falls back to remaining approved shots when matches are weak or missing', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Fallback montage project',
+        shots: [
+          makeShot({ id: 'shot-001', order: 1, scene: 'Фасад', duration: 6, videoFile: 'shots/shot-001.mp4' }),
+          makeShot({ id: 'shot-002', order: 2, scene: 'Спальня', duration: 5, videoFile: 'shots/shot-002.mp4' }),
+          makeShot({ id: 'shot-003', order: 3, scene: 'Лобби', duration: 4, videoFile: 'shots/shot-003.mp4' }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-1', sourceText: 'Спальня', label: 'Спальня', order: 1, intent: 'detail' },
+          { id: 'anchor-2', sourceText: 'Детская игровая', label: 'Игровая', order: 2, intent: 'lifestyle' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-002',
+            confidence: 0.48,
+            status: 'weak_match',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-2',
+            confidence: 0,
+            status: 'unmatched',
+            candidates: [],
+          },
+        ],
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 15)
+
+      expect(plan.timeline.map((entry) => entry.shotId)).toEqual(['shot-002', 'shot-001', 'shot-003'])
+      expect(plan.timeline).toHaveLength(3)
+    })
+
     it('should select fade transition for aerial/drone scenes', () => {
       const project = {
         id: 'test-project',
@@ -782,6 +1051,222 @@ describe('Montage Plan Generation (Phase 4)', () => {
       // Should have called ffmpeg with -loop 1 for image to video
       const ffmpegCalls = mockExecFile.mock.calls.filter((call) => String(call[0]).includes('ffmpeg'))
       expect(ffmpegCalls.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  describe('matchNarrationAnchors()', () => {
+    let matchNarrationAnchors: (project: Project) => {
+      anchorMatches: NonNullable<Project['anchorMatches']>
+      anchorCoverageSummary: NonNullable<Project['anchorCoverageSummary']>
+    }
+
+    beforeEach(async () => {
+      const mod = await import('../../server/lib/' + 'montage-anchor-matching.js') as {
+        matchNarrationAnchors: typeof matchNarrationAnchors
+      }
+      matchNarrationAnchors = mod.matchNarrationAnchors
+    })
+
+    it('prefers videoDescription.matchHints over tags, summary, and fallback fields for a strong match', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-hints',
+            order: 0,
+            scene: 'Тихая спальня с мягким светом',
+            imagePrompt: 'soft bedroom interior',
+            videoPrompt: 'slow bedroom push-in',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера показывает спальню и текстуры отделки.',
+              tags: ['спальня', 'интерьер'],
+              matchHints: ['кухня с мраморным островом'],
+              moments: [],
+            },
+          }),
+          makeShot({
+            id: 'shot-fallback',
+            order: 1,
+            scene: 'Кухня с мраморным островом и высоким потолком',
+            imagePrompt: 'marble island kitchen',
+            videoPrompt: 'camera glides through marble island kitchen',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет по фасаду и лобби.',
+              tags: ['фасад'],
+              matchHints: ['терраса'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Кухня с мраморным островом',
+            label: 'Кухня с островом',
+            order: 1,
+            intent: 'feature',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches).toHaveLength(1)
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-hints',
+        status: 'matched',
+      })
+      expect(result.anchorMatches[0].candidates[0]).toMatchObject({
+        shotId: 'shot-hints',
+      })
+      expect(result.anchorMatches[0].candidates[0].reason).toMatch(/matchHints/i)
+      expect(result.anchorMatches[0].candidates[1]).toMatchObject({
+        shotId: 'shot-fallback',
+      })
+      expect(result.anchorMatches[0].candidates[0].confidence).toBeGreaterThan(result.anchorMatches[0].candidates[1].confidence)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('matches anchors against videoDescription.tags when matchHints do not hit', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-tags',
+            order: 0,
+            scene: 'Спокойная зона отдыха',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера мягко скользит по lounge зоне.',
+              tags: ['терраса на крыше'],
+              matchHints: ['лобби'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса на крыше',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-tags',
+        status: 'matched',
+      })
+      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/tags/i)
+    })
+
+    it('uses videoDescription.summary as a weak match when stronger signals are absent', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-summary',
+            order: 0,
+            scene: 'Нейтральный интерьер',
+            imagePrompt: 'neutral interior',
+            videoPrompt: 'neutral interior camera move',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера задерживается на приватном кабинете у окна и рабочем столе.',
+              tags: ['интерьер'],
+              matchHints: [],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Приватный кабинет у окна',
+            label: 'Кабинет',
+            order: 1,
+            intent: 'detail',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-summary',
+        status: 'weak_match',
+      })
+      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/summary/i)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 0,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('marks anchors as unmatched when no description or fallback signal is relevant', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Фасад комплекса на рассвете',
+            imagePrompt: 'sunrise exterior',
+            videoPrompt: 'slow drone over facade',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет вдоль фасада и лобби.',
+              tags: ['фасад', 'лобби'],
+              matchHints: ['архитектура комплекса'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Детская игровая комната',
+            label: 'Игровая',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toEqual({
+        anchorId: 'anchor-1',
+        confidence: 0,
+        status: 'unmatched',
+        candidates: [],
+      })
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 0,
+        weakMatches: 0,
+        unmatchedAnchors: 1,
+      })
     })
   })
 })

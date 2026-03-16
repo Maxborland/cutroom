@@ -5,12 +5,15 @@ import path from 'node:path';
 import multer from 'multer';
 import { readLimiter, mutationLimiter, generationLimiter } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
+import type { NarrationAnchor, ShotVideoDescription, ShotVideoDescriptionMoment } from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
+import { matchNarrationAnchors, summarizeAnchorCoverage } from '../lib/montage-anchor-matching.js';
 
 const router = Router({ mergeParams: true });
+const VIDEO_DESCRIPTION_VERSION = 1;
 
 // Helper: load project or 404
 async function loadProject(req: Request, res: Response) {
@@ -20,6 +23,225 @@ async function loadProject(req: Request, res: Response) {
     return null;
   }
   return project;
+}
+
+function isExternalMediaRef(value: string) {
+  return /^https?:\/\//i.test(value) || /^data:/i.test(value);
+}
+
+async function resolveLocalShotVideoPath(projectId: string, shotId: string, videoFile: string) {
+  const candidates = [
+    resolveProjectPath(projectId, 'shots', shotId, 'video', videoFile),
+    resolveProjectPath(projectId, videoFile),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function normalizeMoment(moment: unknown, index: number): ShotVideoDescriptionMoment | null {
+  if (!moment || typeof moment !== 'object') {
+    return null;
+  }
+
+  const record = moment as Record<string, unknown>;
+  const label = typeof record.label === 'string' && record.label.trim()
+    ? record.label.trim()
+    : `Moment ${index + 1}`;
+  const summary = typeof record.summary === 'string' && record.summary.trim()
+    ? record.summary.trim()
+    : label;
+  const id = typeof record.id === 'string' && record.id.trim()
+    ? record.id.trim()
+    : `moment-${index + 1}`;
+  const startSec = typeof record.startSec === 'number' && Number.isFinite(record.startSec)
+    ? record.startSec
+    : undefined;
+  const endSec = typeof record.endSec === 'number' && Number.isFinite(record.endSec)
+    ? record.endSec
+    : undefined;
+  const tags = Array.isArray(record.tags)
+    ? record.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+    : [];
+
+  return { id, label, startSec, endSec, tags, summary };
+}
+
+function buildFallbackVideoDescription(shot: {
+  scene?: string;
+  audioDescription?: string;
+  imagePrompt?: string;
+  videoPrompt?: string;
+}): ShotVideoDescription {
+  const summarySource = [
+    shot.videoPrompt,
+    shot.audioDescription,
+    shot.imagePrompt,
+    shot.scene,
+  ].find((value) => typeof value === 'string' && value.trim().length > 0)?.trim() || 'Видео шота готово к монтажу.';
+  const tags = [
+    shot.scene,
+    shot.audioDescription,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const matchHints = [
+    shot.videoPrompt,
+    shot.imagePrompt,
+    shot.audioDescription,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  return {
+    version: VIDEO_DESCRIPTION_VERSION,
+    summary: summarySource,
+    tags,
+    matchHints,
+    moments: [],
+  };
+}
+
+function parseVideoDescriptionResponse(
+  rawResponse: string,
+  shot: {
+    scene?: string;
+    audioDescription?: string;
+    imagePrompt?: string;
+    videoPrompt?: string;
+  },
+): ShotVideoDescription {
+  const trimmed = rawResponse.trim();
+  const normalized = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '');
+
+  try {
+    const parsed = JSON.parse(normalized) as Record<string, unknown>;
+    const fallback = buildFallbackVideoDescription(shot);
+    const summary = typeof parsed.summary === 'string' && parsed.summary.trim()
+      ? parsed.summary.trim()
+      : fallback.summary;
+    const tags = Array.isArray(parsed.tags)
+      ? parsed.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+      : fallback.tags;
+    const matchHints = Array.isArray(parsed.matchHints)
+      ? parsed.matchHints.filter((hint): hint is string => typeof hint === 'string' && hint.trim().length > 0)
+      : fallback.matchHints;
+    const moments = Array.isArray(parsed.moments)
+      ? parsed.moments
+        .map((moment, index) => normalizeMoment(moment, index))
+        .filter((moment): moment is ShotVideoDescriptionMoment => Boolean(moment))
+      : [];
+
+    return {
+      version: VIDEO_DESCRIPTION_VERSION,
+      summary,
+      tags,
+      matchHints,
+      moments,
+    };
+  } catch {
+    return buildFallbackVideoDescription(shot);
+  }
+}
+
+const VALID_ANCHOR_INTENTS: NarrationAnchor['intent'][] = ['hook', 'feature', 'detail', 'lifestyle', 'cta'];
+
+function normalizeAnchor(anchor: unknown, index: number): NarrationAnchor | null {
+  if (!anchor || typeof anchor !== 'object') {
+    return null;
+  }
+
+  const record = anchor as Record<string, unknown>;
+  const sourceText = typeof record.sourceText === 'string' && record.sourceText.trim()
+    ? record.sourceText.trim()
+    : typeof record.label === 'string' && record.label.trim()
+      ? record.label.trim()
+      : null;
+
+  if (!sourceText) {
+    return null;
+  }
+
+  const label = typeof record.label === 'string' && record.label.trim()
+    ? record.label.trim()
+    : sourceText;
+  const id = typeof record.id === 'string' && record.id.trim()
+    ? record.id.trim()
+    : `anchor-${index + 1}`;
+  const order = typeof record.order === 'number' && Number.isFinite(record.order) && record.order >= 0
+    ? record.order
+    : index;
+  const intent = typeof record.intent === 'string' && VALID_ANCHOR_INTENTS.includes(record.intent as NarrationAnchor['intent'])
+    ? record.intent as NarrationAnchor['intent']
+    : 'feature';
+
+  return {
+    id,
+    sourceText,
+    label,
+    order,
+    intent,
+  };
+}
+
+function buildFallbackAnchors(voiceoverScript: string): NarrationAnchor[] {
+  const segments = voiceoverScript
+    .split(/[.!?]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return segments.map((segment, index) => ({
+    id: `anchor-${index + 1}`,
+    sourceText: segment,
+    label: segment,
+    order: index,
+    intent: index === 0 ? 'hook' : 'feature',
+  }));
+}
+
+function parseNarrationAnchorsResponse(rawResponse: string, voiceoverScript: string): NarrationAnchor[] {
+  const trimmed = rawResponse.trim();
+  const normalized = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '');
+
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    const rawAnchors = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { anchors?: unknown[] }).anchors)
+        ? (parsed as { anchors: unknown[] }).anchors
+        : [];
+    const anchors = rawAnchors
+      .map((anchor, index) => normalizeAnchor(anchor, index))
+      .filter((anchor): anchor is NarrationAnchor => Boolean(anchor));
+
+    const orderedAnchors = anchors
+      .map((anchor, index) => ({ anchor, sourceIndex: index }))
+      .sort((left, right) => {
+        const byOrder = left.anchor.order - right.anchor.order;
+        if (byOrder !== 0) return byOrder;
+        const byStart = (left.anchor.startSec ?? left.sourceIndex) - (right.anchor.startSec ?? right.sourceIndex);
+        if (byStart !== 0) return byStart;
+        return left.sourceIndex - right.sourceIndex;
+      })
+      .map(({ anchor }, index) => ({
+        ...anchor,
+        order: index + 1,
+      }));
+
+    return orderedAnchors.length > 0 ? orderedAnchors : buildFallbackAnchors(voiceoverScript);
+  } catch {
+    return buildFallbackAnchors(voiceoverScript);
+  }
 }
 
 // POST /api/projects/:id/montage/generate-vo-script
@@ -649,6 +871,311 @@ router.put('/montage/music-prompt', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/projects/:id/montage/describe-videos
+router.post('/montage/describe-videos', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const approvedShots = project.shots.filter((shot) => shot.status === 'approved');
+    if (approvedShots.length === 0) {
+      res.json({ described: 0, skipped: 0, shots: [], skippedShots: [] });
+      return;
+    }
+
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 400, 'OpenRouter API key is not configured. Please set it in Settings.');
+      return;
+    }
+
+    const settings = await getGlobalSettings();
+    const model = settings.defaultDescribeModel || settings.defaultTextModel || settings.defaultScriptModel || 'openai/gpt-4o-mini';
+    const describedShots: Array<{ shotId: string; videoDescription: ShotVideoDescription }> = [];
+    const skippedShots: Array<{ shotId: string; reason: string }> = [];
+
+    for (const shot of approvedShots) {
+      if (!shot.videoFile) {
+        skippedShots.push({ shotId: shot.id, reason: 'missing_local_video' });
+        continue;
+      }
+
+      if (isExternalMediaRef(shot.videoFile)) {
+        skippedShots.push({ shotId: shot.id, reason: 'external_video_not_cached' });
+        continue;
+      }
+
+      const localVideoPath = await resolveLocalShotVideoPath(project.id, shot.id, shot.videoFile);
+      if (!localVideoPath) {
+        skippedShots.push({ shotId: shot.id, reason: 'missing_local_video' });
+        continue;
+      }
+
+      const systemPrompt = `You describe a finished real-estate video shot for AI-assisted montage planning.
+Return ONLY valid JSON with this exact shape:
+{
+  "summary": "short Russian summary",
+  "tags": ["visual tag"],
+  "matchHints": ["phrase usable to match narrator anchors"],
+  "moments": [
+    {
+      "id": "moment-1",
+      "label": "short label",
+      "startSec": 0,
+      "endSec": 3,
+      "tags": ["tag"],
+      "summary": "moment summary in Russian"
+    }
+  ]
+}
+If exact moments are unclear, return an empty moments array.`;
+
+      const userPrompt = [
+        `Shot scene: ${shot.scene || 'n/a'}`,
+        `Audio description: ${shot.audioDescription || 'n/a'}`,
+        `Image prompt: ${shot.imagePrompt || 'n/a'}`,
+        `Video prompt: ${shot.videoPrompt || 'n/a'}`,
+        `Local video file is available: ${path.basename(localVideoPath)}`,
+      ].join('\n');
+
+      try {
+        const llmResponse = await chatCompletion(
+          model,
+          [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          0.2,
+        );
+
+        describedShots.push({
+          shotId: shot.id,
+          videoDescription: parseVideoDescriptionResponse(llmResponse, shot),
+        });
+      } catch (err) {
+        console.error(`Failed to describe video for shot ${shot.id}:`, err);
+        skippedShots.push({ shotId: shot.id, reason: 'description_failed' });
+      }
+    }
+
+    if (describedShots.length > 0) {
+      const descriptionsByShotId = new Map(
+        describedShots.map(({ shotId, videoDescription }) => [shotId, videoDescription]),
+      );
+
+      await withProject(project.id, (proj) => {
+        for (const shot of proj.shots) {
+          const videoDescription = descriptionsByShotId.get(shot.id);
+          if (videoDescription) {
+            shot.videoDescription = videoDescription;
+          }
+        }
+      });
+    }
+
+    res.json({
+      described: describedShots.length,
+      skipped: skippedShots.length,
+      shots: describedShots,
+      skippedShots,
+    });
+  } catch (err) {
+    console.error('Failed to describe montage videos:', err);
+    sendApiError(res, 500, 'Failed to describe videos');
+  }
+});
+
+// POST /api/projects/:id/montage/extract-anchors
+router.post('/montage/extract-anchors', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const voiceoverScript = project.voiceoverScript?.trim();
+    if (!voiceoverScript) {
+      sendApiError(res, 400, 'Сначала добавьте текст озвучки, чтобы извлечь смысловые якоря.');
+      return;
+    }
+
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      sendApiError(res, 400, 'OpenRouter API key is not configured. Please set it in Settings.');
+      return;
+    }
+
+    const settings = await getGlobalSettings();
+    const model = settings.defaultScriptModel || settings.defaultTextModel || 'openai/gpt-4o-mini';
+    const systemPrompt = `You extract ordered narrator anchors for AI-assisted montage planning.
+Return ONLY valid JSON in one of these forms:
+[
+  {
+    "id": "anchor-1",
+    "sourceText": "exact Russian phrase from the voiceover",
+    "label": "short Russian anchor label",
+    "order": 1,
+    "intent": "hook|feature|detail|lifestyle|cta"
+  }
+]
+or
+{ "anchors": [ ... ] }
+
+Rules:
+- Keep sourceText in Russian and close to the original voiceover wording
+- Preserve story order
+- Prefer 3-8 meaningful anchors
+- Keep labels short and montage-friendly`;
+
+    const anchorsResponse = await chatCompletion(
+      model,
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: voiceoverScript },
+      ],
+      0.2,
+    );
+
+    const anchors = parseNarrationAnchorsResponse(anchorsResponse, voiceoverScript);
+
+    await withProject(project.id, (proj) => {
+      proj.narrationAnchors = anchors;
+      delete proj.anchorMatches;
+      delete proj.anchorCoverageSummary;
+    });
+
+    res.json({ anchors });
+  } catch (err) {
+    console.error('Failed to extract narration anchors:', err);
+    sendApiError(res, 500, 'Failed to extract narration anchors');
+  }
+});
+
+// POST /api/projects/:id/montage/match-anchors
+router.post('/montage/match-anchors', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.narrationAnchors || project.narrationAnchors.length === 0) {
+      sendApiError(res, 400, 'Сначала извлеките смысловые якоря из текста озвучки.');
+      return;
+    }
+
+    const approvedShots = project.shots.filter((shot) => shot.status === 'approved');
+    if (approvedShots.length === 0) {
+      sendApiError(res, 400, 'Нет утвержденных шотов для сопоставления с якорями.');
+      return;
+    }
+
+    const result = matchNarrationAnchors(project);
+
+    await withProject(project.id, (proj) => {
+      proj.anchorMatches = result.anchorMatches;
+      proj.anchorCoverageSummary = result.anchorCoverageSummary;
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Failed to match narration anchors:', err);
+    sendApiError(res, 500, 'Failed to match narration anchors');
+  }
+});
+
+// PUT /api/projects/:id/montage/anchor-matches
+router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    if (!project.narrationAnchors || project.narrationAnchors.length === 0) {
+      sendApiError(res, 400, 'Сначала извлеките смысловые якоря из текста озвучки.');
+      return;
+    }
+
+    const rawAnchorMatches = req.body?.anchorMatches;
+    if (!Array.isArray(rawAnchorMatches)) {
+      sendApiError(res, 400, 'anchorMatches must be an array');
+      return;
+    }
+
+    const anchorIds = new Set(project.narrationAnchors.map((anchor) => anchor.id));
+    const approvedShotIds = new Set(project.shots.filter((shot) => shot.status === 'approved').map((shot) => shot.id));
+    const normalizedMatches = [];
+
+    for (const rawMatch of rawAnchorMatches) {
+      if (!rawMatch || typeof rawMatch !== 'object') {
+        sendApiError(res, 400, 'Некорректный формат anchorMatches.');
+        return;
+      }
+
+      const match = rawMatch as Record<string, unknown>;
+      const anchorId = typeof match.anchorId === 'string' ? match.anchorId : '';
+      const selectedShotId = typeof match.selectedShotId === 'string' && match.selectedShotId.trim()
+        ? match.selectedShotId.trim()
+        : undefined;
+      const selectedMomentId = typeof match.selectedMomentId === 'string' && match.selectedMomentId.trim()
+        ? match.selectedMomentId.trim()
+        : undefined;
+      const confidence = typeof match.confidence === 'number' && Number.isFinite(match.confidence)
+        ? match.confidence
+        : 0;
+      const status = match.status;
+      const candidates = Array.isArray(match.candidates)
+        ? match.candidates.filter((candidate): candidate is {
+          shotId: string;
+          momentId?: string;
+          confidence: number;
+          reason: string;
+        } => {
+          if (!candidate || typeof candidate !== 'object') return false;
+          const record = candidate as Record<string, unknown>;
+          return typeof record.shotId === 'string'
+            && typeof record.confidence === 'number'
+            && typeof record.reason === 'string';
+        })
+        : [];
+
+      if (!anchorId || !anchorIds.has(anchorId)) {
+        sendApiError(res, 400, 'Указан неизвестный якорь для ручного сопоставления.');
+        return;
+      }
+
+      if (selectedShotId && !approvedShotIds.has(selectedShotId)) {
+        sendApiError(res, 400, 'Для якоря выбран неизвестный или неутвержденный шот.');
+        return;
+      }
+
+      if (status !== 'matched' && status !== 'weak_match' && status !== 'unmatched') {
+        sendApiError(res, 400, 'Недопустимый статус сопоставления якоря.');
+        return;
+      }
+
+      normalizedMatches.push({
+        anchorId,
+        selectedShotId,
+        selectedMomentId,
+        confidence,
+        status,
+        candidates,
+      });
+    }
+
+    const coverage = summarizeAnchorCoverage(normalizedMatches);
+
+    await withProject(project.id, (proj) => {
+      proj.anchorMatches = normalizedMatches;
+      proj.anchorCoverageSummary = coverage;
+    });
+
+    res.json({
+      anchorMatches: normalizedMatches,
+      anchorCoverageSummary: coverage,
+    });
+  } catch (err) {
+    console.error('Failed to update anchor matches:', err);
+    sendApiError(res, 500, 'Failed to update anchor matches');
+  }
+});
+
 // POST /api/projects/:id/montage/generate-plan
 router.post('/montage/generate-plan', generationLimiter, async (req: Request, res: Response) => {
   try {
@@ -661,16 +1188,32 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
       return;
     }
 
+    let planningProject = project;
+
+    if (project.narrationAnchors?.length && (!project.anchorMatches || project.anchorMatches.length === 0)) {
+      const matchResult = matchNarrationAnchors(project);
+      planningProject = {
+        ...project,
+        anchorMatches: matchResult.anchorMatches,
+        anchorCoverageSummary: matchResult.anchorCoverageSummary,
+      };
+
+      await withProject(project.id, (p) => {
+        p.anchorMatches = matchResult.anchorMatches;
+        p.anchorCoverageSummary = matchResult.anchorCoverageSummary;
+      });
+    }
+
     // Determine voiceover duration
     let voiceoverDurationSec: number;
 
-    if (project.voiceoverFile) {
-      const voPath = resolveProjectPath(project.id, project.voiceoverFile);
+    if (planningProject.voiceoverFile) {
+      const voPath = resolveProjectPath(project.id, planningProject.voiceoverFile);
       const { probeDuration } = await import('../lib/normalize.js');
       voiceoverDurationSec = await probeDuration(voPath);
     } else {
       // Estimate from script: ~150 words/min for Russian
-      const wordCount = (project.script || '').split(/\s+/).filter(Boolean).length;
+      const wordCount = (planningProject.script || '').split(/\s+/).filter(Boolean).length;
       voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
     }
 
@@ -680,7 +1223,7 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
 
     // Generate plan
     const { generateMontagePlan } = await import('../lib/montage-plan.js');
-    const montagePlan = generateMontagePlan(project, voiceoverDurationSec);
+    const montagePlan = generateMontagePlan(planningProject, voiceoverDurationSec);
 
     // Save to project
     await withProject(project.id, (p) => {

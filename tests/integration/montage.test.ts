@@ -7,6 +7,7 @@ import request from 'supertest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createApp } from './setup.js'
+import { api } from '../../src/lib/api'
 import {
   createProject,
   deleteProject,
@@ -494,9 +495,868 @@ describe('Montage Integration', () => {
     })
   })
 
+  describe('POST /montage/describe-videos', () => {
+    it('describes approved shots with local video files and persists shot.videoDescription', async () => {
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.videoPrompt = 'Evening aerial around the facade'
+      })
+
+      const description = {
+        summary: 'Плавный пролет вдоль фасада и панорамных окон.',
+        tags: ['фасад', 'панорамные окна'],
+        matchHints: ['панорамные окна', 'архитектура комплекса'],
+        moments: [
+          {
+            id: 'moment-1',
+            label: 'Фасад',
+            startSec: 0,
+            endSec: 3,
+            tags: ['фасад'],
+            summary: 'Камера мягко проходит вдоль фасада.',
+          },
+        ],
+      }
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify(description))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(res.body.described).toBe(1)
+      expect(res.body.skipped).toBe(0)
+      expect(res.body.shots).toEqual([
+        {
+          shotId: 'shot-1',
+          videoDescription: {
+            version: 1,
+            ...description,
+          },
+        },
+      ])
+      expect(res.body.skippedShots).toEqual([])
+
+      const project = await getProject(projectId)
+      expect(project?.shots[0]?.videoDescription).toEqual({
+        version: 1,
+        ...description,
+      })
+    })
+
+    it('prefers defaultDescribeModel when generating video descriptions', async () => {
+      const settingsPath = path.join(process.cwd(), 'data', 'settings.json')
+      const existing = JSON.parse(await fs.readFile(settingsPath, 'utf-8').catch(() => '{}'))
+      await fs.writeFile(settingsPath, JSON.stringify({
+        ...existing,
+        openRouterApiKey: 'test-key',
+        defaultDescribeModel: 'openai/gpt-4.1-mini',
+        defaultTextModel: 'openai/gpt-4o',
+        defaultScriptModel: 'openai/gpt-4o',
+      }, null, 2))
+
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.videoPrompt = 'Evening aerial around the facade'
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
+        summary: 'Плавный пролет вдоль фасада.',
+        tags: ['фасад'],
+        matchHints: ['фасад'],
+        moments: [],
+      }))
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(chatCompletion).toHaveBeenCalledWith(
+        'openai/gpt-4.1-mini',
+        expect.any(Array),
+        0.2,
+      )
+    })
+
+    it('skips approved shots without a local cached video and reports them cleanly', async () => {
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.videoPrompt = 'Exterior drone pass'
+        proj.shots.push({
+          id: 'shot-2',
+          order: 2,
+          scene: 'lobby',
+          audioDescription: 'Lobby push-in',
+          imagePrompt: '',
+          videoPrompt: 'Walk into the lobby',
+          duration: 5,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'https://cdn.example.com/final.mp4',
+        })
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
+        summary: 'Плавный обзор фасада.',
+        tags: ['фасад'],
+        matchHints: ['фасад'],
+        moments: [],
+      }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(res.body.described).toBe(1)
+      expect(res.body.skipped).toBe(1)
+      expect(res.body.shots).toHaveLength(1)
+      expect(res.body.skippedShots).toEqual([
+        {
+          shotId: 'shot-2',
+          reason: 'external_video_not_cached',
+        },
+      ])
+
+      const project = await getProject(projectId)
+      expect(project?.shots.find((shot) => shot.id === 'shot-2')?.videoDescription).toBeUndefined()
+    })
+
+    it('skips approved shots when the local video file is missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'missing.mp4'
+        proj.shots[0]!.videoPrompt = 'Exterior drone pass'
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(res.body).toEqual({
+        described: 0,
+        skipped: 1,
+        shots: [],
+        skippedShots: [
+          {
+            shotId: 'shot-1',
+            reason: 'missing_local_video',
+          },
+        ],
+      })
+      expect(chatCompletion).not.toHaveBeenCalled()
+
+      const project = await getProject(projectId)
+      expect(project?.shots[0]?.videoDescription).toBeUndefined()
+    })
+  })
+
+  describe('api.montage.describeVideos', () => {
+    it('posts to the describe-videos endpoint and returns per-shot descriptions', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        described: 1,
+        skipped: 1,
+        shots: [
+          {
+            shotId: 'shot-1',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный обзор фасада.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [],
+            },
+          },
+        ],
+        skippedShots: [
+          {
+            shotId: 'shot-2',
+            reason: 'missing_local_video',
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const result = await api.montage.describeVideos(projectId)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/describe-videos`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      expect(result).toEqual({
+        described: 1,
+        skipped: 1,
+        shots: [
+          {
+            shotId: 'shot-1',
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный обзор фасада.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [],
+            },
+          },
+        ],
+        skippedShots: [
+          {
+            shotId: 'shot-2',
+            reason: 'missing_local_video',
+          },
+        ],
+      })
+    })
+  })
+
+  describe('POST /montage/extract-anchors', () => {
+    it('extracts ordered anchors from voiceover script and persists them on the project', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = 'Просторная кухня с островом. Затем терраса с видом на реку.'
+      })
+
+      const anchors = [
+        {
+          id: 'anchor-2',
+          sourceText: 'Затем терраса с видом на реку',
+          label: 'Терраса с видом',
+          order: 2,
+          intent: 'lifestyle',
+        },
+        {
+          id: 'anchor-1',
+          sourceText: 'Просторная кухня с островом',
+          label: 'Кухня с островом',
+          order: 1,
+          intent: 'feature',
+        },
+      ]
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({ anchors }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/extract-anchors`)
+        .expect(200)
+
+      expect(res.body.anchors).toHaveLength(2)
+      expect(res.body.anchors[0]).toMatchObject({
+        id: 'anchor-1',
+        sourceText: 'Просторная кухня с островом',
+        label: 'Кухня с островом',
+        intent: 'feature',
+      })
+      expect(res.body.anchors[1]).toMatchObject({
+        id: 'anchor-2',
+        sourceText: 'Затем терраса с видом на реку',
+        label: 'Терраса с видом',
+        intent: 'lifestyle',
+      })
+      expect(res.body.anchors[0].order).toBeLessThan(res.body.anchors[1].order)
+
+      const project = await getProject(projectId)
+      expect(project?.narrationAnchors).toEqual(res.body.anchors)
+    })
+
+    it('returns 400 when voiceover script is missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverScript = ''
+        proj.voiceoverScriptApproved = false
+      })
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/extract-anchors`)
+        .expect(400)
+
+      expect(res.body.error).toContain('озвуч')
+      expect(chatCompletion).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('api.montage.extractAnchors', () => {
+    it('posts to the extract-anchors endpoint and returns ordered anchors', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        anchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const result = await api.montage.extractAnchors(projectId)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/extract-anchors`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      expect(result).toEqual({
+        anchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ],
+      })
+    })
+  })
+
+  describe('POST /montage/match-anchors', () => {
+    it('matches anchors with strong, weak, and unmatched outcomes and persists coverage summary', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна в гостиной',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+          {
+            id: 'anchor-2',
+            sourceText: 'Приватный кабинет у окна',
+            label: 'Кабинет',
+            order: 2,
+            intent: 'detail',
+          },
+          {
+            id: 'anchor-3',
+            sourceText: 'Детская игровая комната',
+            label: 'Игровая',
+            order: 3,
+            intent: 'lifestyle',
+          },
+        ]
+
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Фасад и панорамные окна',
+            imagePrompt: 'living room with panoramic windows',
+            videoPrompt: 'camera reveals panoramic windows in the living room',
+            videoDescription: {
+              version: 1,
+              summary: 'Камера проходит через светлую гостиную.',
+              tags: ['гостиная', 'свет'],
+              matchHints: ['панорамные окна в гостиной'],
+              moments: [],
+            },
+          },
+          {
+            id: 'shot-2',
+            order: 2,
+            scene: 'Рабочая зона',
+            audioDescription: 'Тихий кабинет',
+            imagePrompt: 'private home office by the window',
+            videoPrompt: 'slow move across a private office',
+            duration: 5,
+            assetRefs: [],
+            status: 'approved',
+            generatedImages: [],
+            enhancedImages: [],
+            selectedImage: null,
+            videoFile: null,
+            videoDescription: {
+              version: 1,
+              summary: 'Камера задерживается на кабинете у окна и рабочем столе.',
+              tags: ['интерьер'],
+              matchHints: [],
+              moments: [],
+            },
+          },
+          {
+            id: 'shot-3',
+            order: 3,
+            scene: 'Лобби и фасад',
+            audioDescription: 'Входная группа',
+            imagePrompt: 'premium lobby and facade',
+            videoPrompt: 'drone reveals facade then lobby',
+            duration: 5,
+            assetRefs: [],
+            status: 'approved',
+            generatedImages: [],
+            enhancedImages: [],
+            selectedImage: null,
+            videoFile: null,
+            videoDescription: {
+              version: 1,
+              summary: 'Плавный пролет по фасаду и входной группе.',
+              tags: ['фасад', 'лобби'],
+              matchHints: ['архитектура комплекса'],
+              moments: [],
+            },
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/match-anchors`)
+        .expect(200)
+
+      expect(res.body.anchorMatches).toHaveLength(3)
+      expect(res.body.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-1',
+        status: 'matched',
+      })
+      expect(res.body.anchorMatches[0].candidates[0]?.reason).toMatch(/matchHints/i)
+      expect(res.body.anchorMatches[1]).toMatchObject({
+        anchorId: 'anchor-2',
+        selectedShotId: 'shot-2',
+        status: 'weak_match',
+      })
+      expect(res.body.anchorMatches[1].candidates[0]?.reason).toMatch(/summary/i)
+      expect(res.body.anchorMatches[2]).toEqual({
+        anchorId: 'anchor-3',
+        confidence: 0,
+        status: 'unmatched',
+        candidates: [],
+      })
+      expect(res.body.anchorCoverageSummary).toEqual({
+        totalAnchors: 3,
+        matchedAnchors: 1,
+        weakMatches: 1,
+        unmatchedAnchors: 1,
+      })
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(res.body.anchorMatches)
+      expect(project?.anchorCoverageSummary).toEqual(res.body.anchorCoverageSummary)
+    })
+  })
+
+  describe('api.montage.matchAnchors', () => {
+    it('posts to the match-anchors endpoint and returns persisted matches', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-1',
+            confidence: 0.92,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-1',
+                confidence: 0.92,
+                reason: 'Совпадение по videoDescription.matchHints.',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const result = await api.montage.matchAnchors(projectId)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/match-anchors`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      expect(result).toEqual({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-1',
+            confidence: 0.92,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-1',
+                confidence: 0.92,
+                reason: 'Совпадение по videoDescription.matchHints.',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      })
+    })
+  })
+
+  describe('PUT /montage/anchor-matches', () => {
+    it('persists manual shot overrides and recalculates coverage summary', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+          {
+            id: 'anchor-2',
+            sourceText: 'Игровая комната',
+            label: 'Игровая',
+            order: 2,
+            intent: 'lifestyle',
+          },
+        ]
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'terrace',
+            videoFile: 'clip-1.mp4',
+          },
+          {
+            ...proj.shots[0]!,
+            id: 'shot-2',
+            order: 2,
+            scene: 'kids room',
+            videoFile: 'clip-2.mp4',
+          },
+        ]
+        proj.anchorMatches = [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-1',
+            confidence: 0.42,
+            status: 'weak_match',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-2',
+            confidence: 0,
+            status: 'unmatched',
+            candidates: [],
+          },
+        ]
+      })
+
+      const updatedMatches = [
+        {
+          anchorId: 'anchor-1',
+          selectedShotId: 'shot-1',
+          confidence: 0.42,
+          status: 'weak_match',
+          candidates: [],
+        },
+        {
+          anchorId: 'anchor-2',
+          selectedShotId: 'shot-2',
+          confidence: 0.65,
+          status: 'matched',
+          candidates: [],
+        },
+      ]
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({ anchorMatches: updatedMatches })
+        .expect(200)
+
+      expect(res.body.anchorMatches).toEqual(updatedMatches)
+      expect(res.body.anchorCoverageSummary).toEqual({
+        totalAnchors: 2,
+        matchedAnchors: 1,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(updatedMatches)
+      expect(project?.anchorCoverageSummary).toEqual({
+        totalAnchors: 2,
+        matchedAnchors: 1,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('returns 400 when override references an unknown approved shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({
+          anchorMatches: [
+            {
+              anchorId: 'anchor-1',
+              selectedShotId: 'missing-shot',
+              confidence: 0.5,
+              status: 'matched',
+              candidates: [],
+            },
+          ],
+        })
+        .expect(400)
+
+      expect(res.body.error).toContain('шот')
+    })
+  })
+
+  describe('api.montage.updateAnchorMatches', () => {
+    it('puts manual anchor match overrides to the API', async () => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-2',
+            confidence: 0.65,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const payload = [
+        {
+          anchorId: 'anchor-1',
+          selectedShotId: 'shot-2',
+          confidence: 0.65,
+          status: 'matched' as const,
+          candidates: [],
+        },
+      ]
+
+      const result = await api.montage.updateAnchorMatches(projectId, payload)
+
+      expect(mockFetch).toHaveBeenCalledWith(`/api/projects/${projectId}/montage/anchor-matches`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anchorMatches: payload }),
+      })
+      expect(result.anchorMatches).toEqual(payload)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      })
+    })
+  })
+
   // ─── Montage Plan ─────────────────────────────────────────────────
 
   describe('POST /montage/generate-plan', () => {
+    it('auto-matches anchors before planning when anchors exist but persisted matches are missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Фасад с панорамными окнами',
+            videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад и окна.',
+              tags: ['фасад'],
+              matchHints: ['панорамные окна'],
+              moments: [],
+            },
+          },
+        ]
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Панорамные окна',
+            label: 'Панорамные окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ]
+        delete proj.anchorMatches
+        delete proj.anchorCoverageSummary
+      })
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockImplementationOnce((projectArg) => ({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            shotId: projectArg.anchorMatches?.[0]?.selectedShotId ?? 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 3,
+            durationSec: 6,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { intro: { title: 'Test', durationSec: 3, animation: 'fade_in' }, lowerThirds: [], outro: { title: 'End', durationSec: 3, animation: 'fade_in' } },
+        audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      }))
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-plan`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              selectedShotId: 'shot-1',
+              status: 'matched',
+            }),
+          ]),
+          anchorCoverageSummary: expect.objectContaining({
+            matchedAnchors: 1,
+          }),
+        }),
+        expect.any(Number),
+      )
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            selectedShotId: 'shot-1',
+            status: 'matched',
+          }),
+        ]),
+      )
+    })
+
+    it('passes anchor-matched project state into planner for anchor-first draft generation', async () => {
+      await withProject(projectId, (proj) => {
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            videoFile: 'clip-1.mp4',
+          },
+          {
+            ...proj.shots[0]!,
+            id: 'shot-2',
+            order: 2,
+            videoFile: 'clip-2.mp4',
+          },
+        ]
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ]
+        proj.anchorMatches = [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-2',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.91,
+            status: 'matched',
+            candidates: [],
+          },
+        ]
+      })
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockImplementationOnce((projectArg) => ({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            shotId: projectArg.anchorMatches?.[0]?.selectedShotId ?? 'shot-1',
+            clipFile: 'montage/normalized/shot-2.mp4',
+            startSec: 3,
+            durationSec: 6,
+            trimStartSec: 0.5,
+            trimEndSec: 3.5,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { intro: { title: 'Test', durationSec: 3, animation: 'fade_in' }, lowerThirds: [], outro: { title: 'End', durationSec: 3, animation: 'fade_in' } },
+        audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-plan`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              selectedShotId: 'shot-2',
+              selectedMomentId: 'moment-terrace',
+            }),
+          ]),
+        }),
+        expect.any(Number),
+      )
+      expect(res.body.montagePlan.timeline[0]).toMatchObject({
+        shotId: 'shot-2',
+        trimStartSec: 0.5,
+        trimEndSec: 3.5,
+      })
+    })
+
     it('generates plan from approved shots', async () => {
       // Set up voiceover file for duration probing
       const montageDir = resolveProjectPath(projectId, 'montage')

@@ -48,6 +48,52 @@ function extractAreaLabel(scene: string): string {
   return words || scene;
 }
 
+type PlannedShot = {
+  shot: ShotMeta;
+  selectedMoment?: NonNullable<ShotMeta['videoDescription']>['moments'][number];
+  anchorStatus?: 'matched' | 'weak_match';
+};
+
+function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): PlannedShot[] {
+  const shotById = new Map(approvedShots.map((shot) => [shot.id, shot]));
+  const anchorOrder = new Map((project.narrationAnchors ?? []).map((anchor) => [anchor.id, anchor.order]));
+  const usedShotIds = new Set<string>();
+  const plannedShots: PlannedShot[] = [];
+
+  const orderedMatches = [...(project.anchorMatches ?? [])]
+    .sort((left, right) => (anchorOrder.get(left.anchorId) ?? Number.MAX_SAFE_INTEGER) - (anchorOrder.get(right.anchorId) ?? Number.MAX_SAFE_INTEGER));
+
+  for (const match of orderedMatches) {
+    if (match.status === 'unmatched' || !match.selectedShotId || usedShotIds.has(match.selectedShotId)) {
+      continue;
+    }
+
+    const shot = shotById.get(match.selectedShotId);
+    if (!shot) {
+      continue;
+    }
+
+    const selectedMoment = match.selectedMomentId
+      ? shot.videoDescription?.moments.find((moment) => moment.id === match.selectedMomentId)
+      : undefined;
+
+    plannedShots.push({
+      shot,
+      selectedMoment,
+      anchorStatus: match.status,
+    });
+    usedShotIds.add(shot.id);
+  }
+
+  for (const shot of approvedShots) {
+    if (!usedShotIds.has(shot.id)) {
+      plannedShots.push({ shot });
+    }
+  }
+
+  return plannedShots.length > 0 ? plannedShots : approvedShots.map((shot) => ({ shot }));
+}
+
 // ── Transition heuristics ────────────────────────────────────────────
 
 function selectTransition(
@@ -103,19 +149,20 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   const INTRO_DURATION = 3;
   const OUTRO_DURATION = 4;
   const MIN_CLIP_DURATION = 2;
+  const plannedShots = buildPlannedShots(project, approvedShots);
 
   // Step 2: Total available time for shots = voiceover duration
   const availableTime = voiceoverDurationSec;
 
   // Step 3: Calculate total source shot durations
-  const totalShotDuration = approvedShots.reduce((sum, s) => sum + s.duration, 0);
+  const totalShotDuration = plannedShots.reduce((sum, entry) => sum + entry.shot.duration, 0);
 
   // Step 4: Distribute durations proportionally with minimum floor
   // Guard: if total minimum exceeds available time, expand available time
-  const minTotal = approvedShots.length * MIN_CLIP_DURATION;
+  const minTotal = plannedShots.length * MIN_CLIP_DURATION;
   const effectiveAvailable = Math.max(availableTime, minTotal);
 
-  let allocatedDurations = approvedShots.map(shot => {
+  let allocatedDurations = plannedShots.map(({ shot }) => {
     const proportional = (shot.duration / totalShotDuration) * effectiveAvailable;
     return Math.max(proportional, MIN_CLIP_DURATION);
   });
@@ -139,8 +186,9 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   let currentSec = INTRO_DURATION;
   const timeline: TimelineEntry[] = [];
 
-  for (let i = 0; i < approvedShots.length; i++) {
-    const shot = approvedShots[i];
+  for (let i = 0; i < plannedShots.length; i++) {
+    const plannedShot = plannedShots[i];
+    const shot = plannedShot.shot;
     const duration = allocatedDurations[i];
 
     const entry: TimelineEntry = {
@@ -150,13 +198,22 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
       durationSec: duration,
     };
 
+    if (plannedShot.selectedMoment) {
+      if (plannedShot.selectedMoment.startSec !== undefined) {
+        entry.trimStartSec = plannedShot.selectedMoment.startSec;
+      }
+      if (plannedShot.selectedMoment.endSec !== undefined) {
+        entry.trimEndSec = plannedShot.selectedMoment.endSec;
+      }
+    }
+
     // If source is shorter, mark as needing extension (hold last frame)
     if (shot.duration < duration) {
       entry.motionEffect = 'ken_burns';
     }
 
     // If source is longer, trim end
-    if (shot.duration > duration) {
+    if (!plannedShot.selectedMoment && shot.duration > duration) {
       entry.trimEndSec = shot.duration - duration;
     }
 
@@ -167,9 +224,9 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   // Step 6: Build transitions
   const transitions: TransitionEntry[] = [];
 
-  for (let i = 0; i < approvedShots.length; i++) {
-    const prevShot = i === 0 ? null : approvedShots[i - 1];
-    const currentShot = approvedShots[i];
+  for (let i = 0; i < plannedShots.length; i++) {
+    const prevShot = i === 0 ? null : plannedShots[i - 1].shot;
+    const currentShot = plannedShots[i].shot;
     const isFirstAfterIntro = i === 0;
 
     const { type, durationSec } = selectTransition(prevShot, currentShot, isFirstAfterIntro);
@@ -186,8 +243,8 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   const lowerThirds: LowerThird[] = [];
   let lastArea = '';
 
-  for (let i = 0; i < approvedShots.length; i++) {
-    const shot = approvedShots[i];
+  for (let i = 0; i < plannedShots.length; i++) {
+    const shot = plannedShots[i].shot;
     const area = detectArea(shot.scene);
 
     if (area !== lastArea) {

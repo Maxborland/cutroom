@@ -10,6 +10,10 @@ import type {
   VideoGenerationResult,
   MontagePlan,
   RenderJob,
+  AnchorCoverageSummary,
+  AnchorMatch,
+  NarrationAnchor,
+  ShotVideoDescription,
 } from '../types/index'
 import type { OpenReelBundle } from './openreel-bridge'
 
@@ -53,6 +57,28 @@ export interface RenderStartResponse {
   jobId: string
   status: 'queued'
   quality: RenderJob['quality']
+}
+
+export interface DescribeVideosResponse {
+  described: number
+  skipped: number
+  shots: Array<{
+    shotId: string
+    videoDescription: ShotVideoDescription
+  }>
+  skippedShots: Array<{
+    shotId: string
+    reason: string
+  }>
+}
+
+export interface ExtractAnchorsResponse {
+  anchors: NarrationAnchor[]
+}
+
+export interface MatchAnchorsResponse {
+  anchorMatches: AnchorMatch[]
+  anchorCoverageSummary: AnchorCoverageSummary
 }
 
 export class ApiRequestError extends Error {
@@ -419,6 +445,17 @@ export const api = {
     },
     musicUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/music`,
     voiceoverUrl: (projectId: string) => `${BASE}/projects/${projectId}/montage/voiceover`,
+    describeVideos: (projectId: string) =>
+      request<DescribeVideosResponse>(`/projects/${projectId}/montage/describe-videos`, { method: 'POST' }),
+    extractAnchors: (projectId: string) =>
+      request<ExtractAnchorsResponse>(`/projects/${projectId}/montage/extract-anchors`, { method: 'POST' }),
+    matchAnchors: (projectId: string) =>
+      request<MatchAnchorsResponse>(`/projects/${projectId}/montage/match-anchors`, { method: 'POST' }),
+    updateAnchorMatches: (projectId: string, anchorMatches: AnchorMatch[]) =>
+      request<MatchAnchorsResponse>(`/projects/${projectId}/montage/anchor-matches`, {
+        method: 'PUT',
+        body: JSON.stringify({ anchorMatches }),
+      }),
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
     reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>

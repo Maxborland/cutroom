@@ -7,6 +7,12 @@ export interface OpenReelBundle {
     kind: 'shot' | 'voiceover' | 'music'
     shotId?: string
   }>
+  semanticSummary?: {
+    anchors: number
+    matched: number
+    weak: number
+    unmatched: number
+  }
   modifiedAt?: number
 }
 
