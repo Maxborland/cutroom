@@ -88,6 +88,20 @@ function assertAllowedHostname(hostname: string): void {
   }
 }
 
+// Trusted CDN domains whose IPs may fall into reserved ranges
+// (e.g. fal.media resolves to 198.18.x.x via Cloudflare WARP / DNS proxies).
+const TRUSTED_CDN_SUFFIXES = [
+  '.fal.media',
+  '.fal.ai',
+  '.replicate.delivery',
+  '.replicate.com',
+];
+
+function isTrustedCdnHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return TRUSTED_CDN_SUFFIXES.some((suffix) => h === suffix.slice(1) || h.endsWith(suffix));
+}
+
 async function assertPublicHostnameOrIp(hostname: string): Promise<void> {
   const host = hostname.replace(/^\[(.*)\]$/, '$1');
   const ipVersion = net.isIP(host);
@@ -101,6 +115,10 @@ async function assertPublicHostnameOrIp(hostname: string): Promise<void> {
   }
 
   assertAllowedHostname(host);
+
+  // Trusted CDN hostnames bypass DNS-based IP checks because their IPs
+  // may land in reserved ranges when accessed through DNS proxy services.
+  if (isTrustedCdnHostname(host)) return;
 
   const resolved = await dns.lookup(host, { all: true });
   if (!resolved || resolved.length === 0) {

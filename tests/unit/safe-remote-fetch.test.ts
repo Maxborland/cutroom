@@ -52,6 +52,22 @@ describe('safe-remote-fetch', () => {
     expect(parsed.hostname).toBe('example.com')
   })
 
+  it('allows trusted CDN hostnames even when they resolve to reserved IPs', async () => {
+    // fal.media may resolve to 198.18.x.x via Cloudflare WARP / DNS proxies
+    const callsBefore = (dns.lookup as any).mock.calls.length
+    const parsed = await assertSafeRemoteUrl('https://v3b.fal.media/files/image.jpg')
+    expect(parsed.hostname).toBe('v3b.fal.media')
+    // dns.lookup should NOT have been called for the trusted CDN
+    expect((dns.lookup as any).mock.calls.length).toBe(callsBefore)
+  })
+
+  it('allows replicate.delivery trusted CDN hostname', async () => {
+    const callsBefore = (dns.lookup as any).mock.calls.length
+    const parsed = await assertSafeRemoteUrl('https://pbxt.replicate.delivery/abc/out.png')
+    expect(parsed.hostname).toBe('pbxt.replicate.delivery')
+    expect((dns.lookup as any).mock.calls.length).toBe(callsBefore)
+  })
+
   it('rejects redirects to private hosts', async () => {
     ;(dns.lookup as any).mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
 
