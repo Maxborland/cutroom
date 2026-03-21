@@ -1,0 +1,53 @@
+image: node:20-alpine
+
+variables:
+  GIT_SSL_NO_VERIFY: "true"
+
+stages:
+  - install
+  - lint
+  - test
+  - build
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules/
+
+install:
+  stage: install
+  script:
+    - npm ci
+
+lint:
+  stage: lint
+  needs: [install]
+  script:
+    - npm run lint
+  allow_failure: true
+
+test:unit:
+  stage: test
+  needs: [install]
+  script:
+    - npm run test:unit
+
+test:integration:
+  stage: test
+  needs: [install]
+  script:
+    - npm run test:integration
+  allow_failure: true
+
+build:
+  stage: build
+  needs: [install]
+  script:
+    - npm run build
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "master"
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 day
