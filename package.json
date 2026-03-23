@@ -31,13 +31,13 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@fal-ai/client": "^1.9.4",
-    "@tailwindcss/vite": "^4.2.1",
+    "@tailwindcss/vite": "^4.2.2",
     "archiver": "^7.0.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.1",
-    "framer-motion": "^12.34.3",
-    "lucide-react": "^0.576.0",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^0.577.0",
     "multer": "^2.1.0",
     "pg": "^8.20.0",
     "react": "^19.2.0",
@@ -47,7 +47,7 @@
     "sharp": "^0.34.5",
     "tailwindcss": "^4.1.18",
     "uuid": "^13.0.0",
-    "zustand": "^5.0.11"
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -58,9 +58,9 @@
     "@types/archiver": "^7.0.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "@types/multer": "^2.0.0",
+    "@types/multer": "^2.1.0",
     "@types/node": "^25.3.3",
-    "@types/pg": "^8.18.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/supertest": "^7.2.0",
@@ -75,8 +75,8 @@
     "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.56.1",
+    "typescript-eslint": "^8.57.1",
     "vite": "^7.3.1",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.0"
   }
 }
