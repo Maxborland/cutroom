@@ -81,6 +81,25 @@ export interface MatchAnchorsResponse {
   anchorCoverageSummary: AnchorCoverageSummary
 }
 
+export interface OpenReelExportArtifact {
+  filename: string
+  exportedAt: number
+}
+
+export interface OpenReelSaveProjectPayload {
+  version: string
+  project: unknown
+  exportArtifact?: {
+    filename: string
+  }
+}
+
+export interface OpenReelSaveProjectResponse {
+  saved: boolean
+  modifiedAt: number
+  exportArtifact?: OpenReelExportArtifact
+}
+
 export class ApiRequestError extends Error {
   readonly status: number
   readonly code?: string
@@ -385,8 +404,8 @@ export const api = {
   openreel: {
     getProject: (projectId: string) =>
       request<OpenReelBundle>(`/projects/${projectId}/openreel-project`),
-    saveProject: (projectId: string, data: { version: string; project: unknown }) =>
-      request<{ saved: boolean; modifiedAt: number }>(`/projects/${projectId}/openreel-project`, {
+    saveProject: (projectId: string, data: OpenReelSaveProjectPayload) =>
+      request<OpenReelSaveProjectResponse>(`/projects/${projectId}/openreel-project`, {
         method: 'PUT',
         body: JSON.stringify(data),
       }),

@@ -91,7 +91,13 @@ export interface Project {
   anchorMatches?: AnchorMatch[]
   anchorCoverageSummary?: AnchorCoverageSummary
   montagePlan?: MontagePlan
+  latestExportArtifact?: ProjectExportArtifact
   renders?: RenderJob[]
+}
+
+export interface ProjectExportArtifact {
+  filename: string
+  exportedAt: string
 }
 
 // ── Montage Types ────────────────────────────────────────────────────

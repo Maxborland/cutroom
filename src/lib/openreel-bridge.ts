@@ -13,6 +13,10 @@ export interface OpenReelBundle {
     weak: number
     unmatched: number
   }
+  exportArtifact?: {
+    filename: string
+    exportedAt: number
+  }
   modifiedAt?: number
 }
 

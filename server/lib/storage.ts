@@ -50,7 +50,13 @@ export interface Project {
   anchorMatches?: AnchorMatch[];
   anchorCoverageSummary?: AnchorCoverageSummary;
   montagePlan?: MontagePlan;
+  latestExportArtifact?: ProjectExportArtifact;
   renders?: RenderJob[];
+}
+
+export interface ProjectExportArtifact {
+  filename: string;
+  exportedAt: string;
 }
 
 export interface ShotMeta {
@@ -529,6 +535,13 @@ function normalizeProject(data: any): Project {
   }
   if (!project.script) {
     project.script = '';
+  }
+  if (project.latestExportArtifact) {
+    if (typeof project.latestExportArtifact.filename !== 'string' || !project.latestExportArtifact.filename.trim()) {
+      delete project.latestExportArtifact;
+    } else if (typeof project.latestExportArtifact.exportedAt !== 'string' || !project.latestExportArtifact.exportedAt.trim()) {
+      project.latestExportArtifact.exportedAt = project.updated;
+    }
   }
   if (!(project as any).directorState) {
     (project as any).directorState = { reviews: [], latestByStage: {} };

@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { Router, Request, Response } from 'express';
 import { sendApiError } from '../lib/api-error.js';
 import { buildOpenReelBundle } from '../lib/openreel-exporter.js';
 import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
-import { ensureDir, getProject, resolveProjectPath } from '../lib/storage.js';
+import { ensureDir, getProject, resolveProjectPath, withProject } from '../lib/storage.js';
 
 const router = Router({ mergeParams: true });
 
@@ -54,7 +55,11 @@ router.put('/openreel-project', mutationLimiter, async (req: Request, res: Respo
       return;
     }
 
-    const body = req.body as { version?: unknown; project?: unknown } | undefined;
+    const body = req.body as {
+      version?: unknown;
+      project?: unknown;
+      exportArtifact?: { filename?: unknown } | undefined;
+    } | undefined;
     if (!body || typeof body !== 'object') {
       sendApiError(res, 400, 'Invalid request body');
       return;
@@ -70,6 +75,19 @@ router.put('/openreel-project', mutationLimiter, async (req: Request, res: Respo
       return;
     }
 
+    const exportArtifact = body.exportArtifact && typeof body.exportArtifact === 'object'
+      ? {
+          filename: typeof body.exportArtifact.filename === 'string'
+            ? path.basename(body.exportArtifact.filename.trim())
+            : '',
+        }
+      : null;
+
+    if (exportArtifact && !exportArtifact.filename) {
+      sendApiError(res, 400, 'exportArtifact.filename is required');
+      return;
+    }
+
     // Sanity check: reject unreasonably large project payloads (>10MB serialized)
     const serialized = JSON.stringify(body.project);
     if (serialized.length > 10 * 1024 * 1024) {
@@ -82,14 +100,43 @@ router.put('/openreel-project', mutationLimiter, async (req: Request, res: Respo
       version: '1.0.0',
       project: body.project,
       modifiedAt,
+      ...(exportArtifact
+        ? {
+            exportArtifact: {
+              filename: exportArtifact.filename,
+              exportedAt: modifiedAt,
+            },
+          }
+        : {}),
     };
+
+    if (exportArtifact) {
+      await withProject(projectId, (current) => {
+        current.stage = 'rendered';
+        current.latestExportArtifact = {
+          filename: exportArtifact.filename,
+          exportedAt: new Date(modifiedAt).toISOString(),
+        };
+      });
+    }
 
     const openreelDir = resolveProjectPath(projectId, 'openreel');
     const openreelProjectPath = resolveProjectPath(projectId, 'openreel', 'project.json');
     await ensureDir(openreelDir);
     await fs.writeFile(openreelProjectPath, JSON.stringify(payload, null, 2), 'utf-8');
 
-    res.json({ saved: true, modifiedAt });
+    res.json({
+      saved: true,
+      modifiedAt,
+      ...(exportArtifact
+        ? {
+            exportArtifact: {
+              filename: exportArtifact.filename,
+              exportedAt: modifiedAt,
+            },
+          }
+        : {}),
+    });
   } catch (err) {
     console.error('Failed to save OpenReel project snapshot:', err);
     sendApiError(res, 500, 'Failed to save OpenReel project snapshot');

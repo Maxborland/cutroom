@@ -5,6 +5,7 @@ import { createApp } from './setup.js';
 import {
   createProject,
   deleteProject,
+  getProject,
   resolveProjectPath,
   withProject,
 } from '../../server/lib/storage.js';
@@ -238,6 +239,59 @@ describe('OpenReel route integration', () => {
     expect(saved.version).toBe('1.0.0');
     expect(saved.project).toEqual(payload.project);
     expect(saved.modifiedAt).toBe(response.body.modifiedAt);
+  });
+
+  it('PUT /openreel-project records the latest export artifact when present', async () => {
+    const payload = {
+      version: '1.0.0',
+      project: {
+        id: projectId,
+        timeline: {
+          tracks: [],
+        },
+      },
+      exportArtifact: {
+        filename: 'openreel-final.mp4',
+      },
+    };
+
+    const response = await request(app)
+      .put(`/api/projects/${projectId}/openreel-project`)
+      .send(payload)
+      .expect(200);
+
+    expect(response.body.saved).toBe(true);
+    expect(response.body.exportArtifact).toEqual({
+      filename: 'openreel-final.mp4',
+      exportedAt: expect.any(Number),
+    });
+
+    const savedRaw = await fs.readFile(
+      resolveProjectPath(projectId, 'openreel', 'project.json'),
+      'utf-8',
+    );
+    const saved = JSON.parse(savedRaw);
+
+    expect(saved.exportArtifact).toEqual({
+      filename: 'openreel-final.mp4',
+      exportedAt: response.body.exportArtifact.exportedAt,
+    });
+
+    const savedProject = await getProject(projectId);
+    expect(savedProject?.stage).toBe('rendered');
+    expect(savedProject?.latestExportArtifact).toEqual({
+      filename: 'openreel-final.mp4',
+      exportedAt: expect.any(String),
+    });
+
+    const reopened = await request(app)
+      .get(`/api/projects/${projectId}/openreel-project`)
+      .expect(200);
+
+    expect(reopened.body.exportArtifact).toEqual({
+      filename: 'openreel-final.mp4',
+      exportedAt: response.body.exportArtifact.exportedAt,
+    });
   });
 
   it('GET /openreel-project keeps the saved snapshot semantically consistent', async () => {
