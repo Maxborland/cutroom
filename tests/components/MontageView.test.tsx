@@ -63,6 +63,22 @@ function makeProject(overrides: Partial<Project> = {}): Project {
         generatedImages: [],
         enhancedImages: [],
         videoFile: 'clip-1.mp4',
+        videoDescription: {
+          version: 1,
+          summary: 'Фасад и панорамные окна',
+          tags: ['фасад'],
+          matchHints: ['фасад'],
+          moments: [
+            {
+              id: 'moment-facade',
+              label: 'Фасад',
+              startSec: 0.5,
+              endSec: 2.5,
+              tags: ['фасад'],
+              summary: 'Кадр фасада с плавным движением камеры',
+            },
+          ],
+        },
       },
       {
         id: 'shot-2',
@@ -77,6 +93,22 @@ function makeProject(overrides: Partial<Project> = {}): Project {
         generatedImages: [],
         enhancedImages: [],
         videoFile: 'clip-2.mp4',
+        videoDescription: {
+          version: 1,
+          summary: 'Терраса с видом',
+          tags: ['терраса'],
+          matchHints: ['терраса'],
+          moments: [
+            {
+              id: 'moment-terrace',
+              label: 'Терраса',
+              startSec: 1.25,
+              endSec: 3.75,
+              tags: ['терраса'],
+              summary: 'Терраса и вид на закат',
+            },
+          ],
+        },
       },
     ],
     settings: {
@@ -104,6 +136,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
       {
         anchorId: 'anchor-1',
         selectedShotId: 'shot-1',
+        selectedMomentId: 'moment-facade',
         confidence: 0.44,
         status: 'weak_match',
         candidates: [],
@@ -150,10 +183,12 @@ describe('MontageView semantic planning panel', () => {
     expect(screen.getByRole('button', { name: 'Извлечь якоря' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Сопоставить' })).toBeInTheDocument()
     expect(screen.getByText(/требуют проверки/i)).toBeInTheDocument()
-    expect(screen.getByDisplayValue('shot-1')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Выбор шота для якоря Терраса' })).toHaveValue('shot-1')
+    expect(screen.getByRole('combobox', { name: 'Выбор момента для якоря Терраса' })).toHaveValue('moment-facade')
+    expect(screen.getByRole('option', { name: 'Фасад (0:00–0:02)' })).toBeInTheDocument()
   })
 
-  it('saves manual shot overrides for weak matches', async () => {
+  it('saves manual shot and moment overrides for weak matches', async () => {
     const user = userEvent.setup()
     const updateAnchorMatchesMock = vi.mocked(api.montage.updateAnchorMatches)
     updateAnchorMatchesMock.mockResolvedValue({
@@ -161,6 +196,7 @@ describe('MontageView semantic planning panel', () => {
         {
           anchorId: 'anchor-1',
           selectedShotId: 'shot-2',
+          selectedMomentId: 'moment-terrace',
           confidence: 0.44,
           status: 'matched',
           candidates: [],
@@ -178,6 +214,7 @@ describe('MontageView semantic planning panel', () => {
 
     await user.click(screen.getByRole('button', { name: 'План монтажа' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Выбор шота для якоря Терраса' }), 'shot-2')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Выбор момента для якоря Терраса' }), 'moment-terrace')
     await user.click(screen.getByRole('button', { name: 'Сохранить выбор' }))
 
     await waitFor(() => {
@@ -185,6 +222,7 @@ describe('MontageView semantic planning panel', () => {
         expect.objectContaining({
           anchorId: 'anchor-1',
           selectedShotId: 'shot-2',
+          selectedMomentId: 'moment-terrace',
           status: 'matched',
         }),
       ])

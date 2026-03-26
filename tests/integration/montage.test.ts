@@ -1135,6 +1135,22 @@ describe('Montage Integration', () => {
             order: 1,
             scene: 'terrace',
             videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса и фасад',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 1,
+                  endSec: 3,
+                  tags: ['терраса'],
+                  summary: 'Терраса с видом',
+                },
+              ],
+            },
           },
           {
             ...proj.shots[0]!,
@@ -1142,12 +1158,29 @@ describe('Montage Integration', () => {
             order: 2,
             scene: 'kids room',
             videoFile: 'clip-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Детская комната',
+              tags: ['kids'],
+              matchHints: ['игровая'],
+              moments: [
+                {
+                  id: 'moment-kids-room',
+                  label: 'Детская',
+                  startSec: 0.75,
+                  endSec: 2.25,
+                  tags: ['kids'],
+                  summary: 'Детская комната с игрушками',
+                },
+              ],
+            },
           },
         ]
         proj.anchorMatches = [
           {
             anchorId: 'anchor-1',
             selectedShotId: 'shot-1',
+            selectedMomentId: 'moment-terrace',
             confidence: 0.42,
             status: 'weak_match',
             candidates: [],
@@ -1165,6 +1198,7 @@ describe('Montage Integration', () => {
         {
           anchorId: 'anchor-1',
           selectedShotId: 'shot-1',
+          selectedMomentId: 'moment-terrace',
           confidence: 0.42,
           status: 'weak_match',
           candidates: [],
@@ -1172,6 +1206,7 @@ describe('Montage Integration', () => {
         {
           anchorId: 'anchor-2',
           selectedShotId: 'shot-2',
+          selectedMomentId: 'moment-kids-room',
           confidence: 0.65,
           status: 'matched',
           candidates: [],
@@ -1199,6 +1234,63 @@ describe('Montage Integration', () => {
         weakMatches: 1,
         unmatchedAnchors: 0,
       })
+    })
+
+    it('returns 400 when selectedMomentId does not exist on the selected shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ]
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'terrace',
+            videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса и фасад',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 1,
+                  endSec: 3,
+                  tags: ['терраса'],
+                  summary: 'Терраса с видом',
+                },
+              ],
+            },
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({
+          anchorMatches: [
+            {
+              anchorId: 'anchor-1',
+              selectedShotId: 'shot-1',
+              selectedMomentId: 'moment-missing',
+              confidence: 0.5,
+              status: 'matched',
+              candidates: [],
+            },
+          ],
+        })
+        .expect(400)
+
+      expect(res.body.error).toContain('момент')
     })
 
     it('returns 400 when override references an unknown approved shot', async () => {
@@ -1240,6 +1332,7 @@ describe('Montage Integration', () => {
           {
             anchorId: 'anchor-1',
             selectedShotId: 'shot-2',
+            selectedMomentId: 'moment-terrace',
             confidence: 0.65,
             status: 'matched',
             candidates: [],
@@ -1260,6 +1353,7 @@ describe('Montage Integration', () => {
         {
           anchorId: 'anchor-1',
           selectedShotId: 'shot-2',
+          selectedMomentId: 'moment-terrace',
           confidence: 0.65,
           status: 'matched' as const,
           candidates: [],

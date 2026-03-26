@@ -1216,6 +1216,20 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         return;
       }
 
+      if (selectedMomentId) {
+        if (!selectedShotId) {
+          sendApiError(res, 400, 'Для выбора момента сначала укажите шот.');
+          return;
+        }
+
+        const shot = project.shots.find((candidate) => candidate.id === selectedShotId);
+        const availableMomentIds = new Set((shot?.videoDescription?.moments ?? []).map((moment) => moment.id));
+        if (!shot || availableMomentIds.size === 0 || !availableMomentIds.has(selectedMomentId)) {
+          sendApiError(res, 400, 'Для выбранного шота не найден указанный момент.');
+          return;
+        }
+      }
+
       if (status !== 'matched' && status !== 'weak_match' && status !== 'unmatched') {
         sendApiError(res, 400, 'Недопустимый статус сопоставления якоря.');
         return;
