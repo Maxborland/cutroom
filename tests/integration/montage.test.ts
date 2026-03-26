@@ -1514,7 +1514,7 @@ describe('Montage Integration', () => {
             { clipId: 'clip-anchor-2', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 8, durationSec: 7, anchorId: 'anchor-2', selectedMomentId: 'moment-2' },
           ],
           transitions: [
-            { fromShotId: 'shot-1', toShotId: 'shot-1', type: 'fade', durationSec: 0.5 },
+            { fromClipId: 'clip-anchor-1', toClipId: 'clip-anchor-2', fromShotId: 'shot-1', toShotId: 'shot-1', type: 'fade', durationSec: 0.5 },
           ],
           motionGraphics: { lowerThirds: [] },
           audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
@@ -1536,6 +1536,12 @@ describe('Montage Integration', () => {
       expect(res.body.montagePlan.timeline[1].clipId).toBe('clip-anchor-1')
       expect(res.body.montagePlan.timeline[0].startSec).toBe(0)
       expect(res.body.montagePlan.timeline[1].startSec).toBe(7)
+      expect(res.body.montagePlan.transitions[0]).toMatchObject({
+        fromClipId: 'clip-anchor-2',
+        toClipId: 'clip-anchor-1',
+        fromShotId: 'shot-1',
+        toShotId: 'shot-1',
+      })
     })
 
     it('returns 400 when timeline has unknown clipId', async () => {

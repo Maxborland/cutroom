@@ -1280,6 +1280,21 @@ function findTimelineEntryByIdentity<T extends { clipId?: string; shotId: string
   return timeline.find((entry) => getTimelineEntryIdentity(entry) === identity);
 }
 
+function getTransitionEndpointIdentity(
+  transition: { fromClipId?: string; fromShotId: string; toClipId?: string; toShotId: string },
+  side: 'from' | 'to',
+): string {
+  if (side === 'from') {
+    return typeof transition.fromClipId === 'string' && transition.fromClipId.trim()
+      ? transition.fromClipId
+      : transition.fromShotId;
+  }
+
+  return typeof transition.toClipId === 'string' && transition.toClipId.trim()
+    ? transition.toClipId
+    : transition.toShotId;
+}
+
 function resolveRequestedTimelineIdentity<T extends { clipId?: string; shotId: string }>(
   timeline: T[],
   entry: { clipId?: string; shotId: string },
@@ -1371,6 +1386,8 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     const transitions = [];
     if (reordered.length > 0 && project.montagePlan.motionGraphics.intro) {
       transitions.push({
+        fromClipId: 'intro',
+        toClipId: reordered[0].clipId,
         fromShotId: 'intro',
         toShotId: reordered[0].shotId,
         type: 'fade' as const,
@@ -1380,9 +1397,13 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     for (let i = 0; i < reordered.length - 1; i++) {
       // Preserve existing transition type if it exists between these shots
       const existing = project.montagePlan.transitions.find(
-        t => t.fromShotId === reordered[i].shotId && t.toShotId === reordered[i + 1].shotId
+        t =>
+          getTransitionEndpointIdentity(t, 'from') === getTimelineEntryIdentity(reordered[i]) &&
+          getTransitionEndpointIdentity(t, 'to') === getTimelineEntryIdentity(reordered[i + 1])
       );
       transitions.push({
+        fromClipId: reordered[i].clipId,
+        toClipId: reordered[i + 1].clipId,
         fromShotId: reordered[i].shotId,
         toShotId: reordered[i + 1].shotId,
         type: existing?.type ?? 'crossfade',
@@ -1391,6 +1412,8 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     }
     if (reordered.length > 0 && project.montagePlan.motionGraphics.outro) {
       transitions.push({
+        fromClipId: reordered[reordered.length - 1].clipId,
+        toClipId: 'outro',
         fromShotId: reordered[reordered.length - 1].shotId,
         toShotId: 'outro',
         type: 'fade' as const,

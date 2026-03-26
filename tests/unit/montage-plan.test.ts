@@ -198,6 +198,11 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
       // Transitions: between each pair + intro->first shot = 3 transitions
       expect(plan.transitions).toHaveLength(3)
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-shot-001'],
+        ['clip-shot-001', 'clip-shot-002'],
+        ['clip-shot-002', 'clip-shot-003'],
+      ])
     })
 
     it('should only include approved shots, sorted by order', () => {
@@ -224,6 +229,10 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
         'clip-shot-001',
         'clip-shot-003',
+      ])
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-shot-001'],
+        ['clip-shot-001', 'clip-shot-003'],
       ])
     })
 
@@ -287,6 +296,10 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(plan.timeline[1].selectedMomentId).toBe('moment-sunset')
       expect(plan.timeline[0].shotId).toBe('shot-001')
       expect(plan.timeline[1].shotId).toBe('shot-001')
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-anchor-1'],
+        ['clip-anchor-1', 'clip-anchor-2'],
+      ])
     })
 
     it('should assign stable clip ids to fallback approved-shot clips', () => {

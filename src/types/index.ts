@@ -168,6 +168,8 @@ export interface TimelineEntry {
 }
 
 export interface TransitionEntry {
+  fromClipId?: string
+  toClipId?: string
   fromShotId: string
   toShotId: string
   type: 'cut' | 'fade' | 'crossfade' | 'slide_left' | 'slide_right' | 'zoom_blur' | 'wipe'

@@ -458,13 +458,13 @@ export const api = {
       }),
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
-    reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>
+    reorderTimeline: (projectId: string, timeline: { clipId?: string; shotId: string; durationSec: number }[]) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline`, {
         method: 'PUT',
         body: JSON.stringify({ timeline }),
       }),
-    updateTimelineEntry: (projectId: string, shotId: string, data: { durationSec?: number; trimEndSec?: number; motionEffect?: string | null }) =>
-      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline/${shotId}`, {
+    updateTimelineEntry: (projectId: string, clipId: string, data: { durationSec?: number; trimEndSec?: number; motionEffect?: string | null }) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline/${clipId}`, {
         method: 'PUT',
         body: JSON.stringify(data),
       }),

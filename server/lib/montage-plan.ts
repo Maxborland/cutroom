@@ -238,13 +238,17 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   const transitions: TransitionEntry[] = [];
 
   for (let i = 0; i < plannedShots.length; i++) {
-    const prevShot = i === 0 ? null : plannedShots[i - 1].shot;
-    const currentShot = plannedShots[i].shot;
+    const prevPlannedShot = i === 0 ? null : plannedShots[i - 1];
+    const prevShot = prevPlannedShot?.shot ?? null;
+    const currentPlannedShot = plannedShots[i];
+    const currentShot = currentPlannedShot.shot;
     const isFirstAfterIntro = i === 0;
 
     const { type, durationSec } = selectTransition(prevShot, currentShot, isFirstAfterIntro);
 
     transitions.push({
+      fromClipId: i === 0 ? 'intro' : prevPlannedShot!.clipId,
+      toClipId: currentPlannedShot.clipId,
       fromShotId: i === 0 ? 'intro' : prevShot!.id,
       toShotId: currentShot.id,
       type,
