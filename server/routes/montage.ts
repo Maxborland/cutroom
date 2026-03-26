@@ -11,6 +11,7 @@ import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
 import { matchNarrationAnchors, summarizeAnchorCoverage } from '../lib/montage-anchor-matching.js';
+import { sampleVideoFrames } from '../lib/video-description.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DESCRIPTION_VERSION = 1;
@@ -149,6 +150,58 @@ function parseVideoDescriptionResponse(
   } catch {
     return buildFallbackVideoDescription(shot);
   }
+}
+
+function buildVideoDescriptionContext(shot: {
+  scene?: string;
+  audioDescription?: string;
+  imagePrompt?: string;
+  videoPrompt?: string;
+  videoFile?: string | null;
+}) {
+  return [
+    `Shot scene: ${shot.scene?.trim() || '—'}`,
+    `Audio description: ${shot.audioDescription?.trim() || '—'}`,
+    `Image prompt: ${shot.imagePrompt?.trim() || '—'}`,
+    `Video prompt: ${shot.videoPrompt?.trim() || '—'}`,
+    `Cached video file: ${shot.videoFile?.trim() || '—'}`,
+  ].join('\n');
+}
+
+function buildVideoDescriptionUserContent(
+  shot: {
+    scene?: string;
+    audioDescription?: string;
+    imagePrompt?: string;
+    videoPrompt?: string;
+    videoFile?: string | null;
+  },
+  sampledFrames: Array<{ timeSec: number; imageDataUrl: string }>,
+) {
+  const contextText = buildVideoDescriptionContext(shot);
+
+  if (sampledFrames.length === 0) {
+    return contextText;
+  }
+
+  const evidenceText = [
+    'These sampled frames are the primary evidence for describing the shot.',
+    `Sampled frame times: ${sampledFrames.map((frame) => `${frame.timeSec.toFixed(2)}s`).join(', ')}`,
+    'Use the sampled images first, then use the text context only as fallback context.',
+    contextText,
+    'Return valid JSON with version, summary, tags, matchHints, and moments.',
+  ].join('\n\n');
+
+  return [
+    ...sampledFrames.map((frame) => ({
+      type: 'image_url' as const,
+      image_url: { url: frame.imageDataUrl },
+    })),
+    {
+      type: 'text' as const,
+      text: evidenceText,
+    },
+  ];
 }
 
 const VALID_ANCHOR_INTENTS: NarrationAnchor['intent'][] = ['hook', 'feature', 'detail', 'lifestyle', 'cta'];
@@ -911,7 +964,27 @@ router.post('/montage/describe-videos', generationLimiter, async (req: Request, 
         continue;
       }
 
+      let sampledFrames: Array<{ timeSec: number; imageDataUrl: string }> = [];
+      try {
+        const sampled = await sampleVideoFrames(localVideoPath);
+        if (Array.isArray(sampled)) {
+          sampledFrames = sampled.filter((frame): frame is { timeSec: number; imageDataUrl: string } => (
+            frame
+            && typeof frame === 'object'
+            && typeof frame.timeSec === 'number'
+            && Number.isFinite(frame.timeSec)
+            && typeof frame.imageDataUrl === 'string'
+            && frame.imageDataUrl.trim().length > 0
+          ));
+        }
+      } catch (err) {
+        console.warn(`Failed to sample frames for shot ${shot.id}; falling back to text context:`, err);
+        sampledFrames = [];
+      }
+
       const systemPrompt = `You describe a finished real-estate video shot for AI-assisted montage planning.
+Use sampled video frames as the primary source of truth when they are provided.
+Use the provided shot text as fallback context only.
 Return ONLY valid JSON with this exact shape:
 {
   "summary": "short Russian summary",
@@ -930,20 +1003,18 @@ Return ONLY valid JSON with this exact shape:
 }
 If exact moments are unclear, return an empty moments array.`;
 
-      const userPrompt = [
-        `Shot scene: ${shot.scene || 'n/a'}`,
-        `Audio description: ${shot.audioDescription || 'n/a'}`,
-        `Image prompt: ${shot.imagePrompt || 'n/a'}`,
-        `Video prompt: ${shot.videoPrompt || 'n/a'}`,
-        `Local video file is available: ${path.basename(localVideoPath)}`,
-      ].join('\n');
-
       try {
         const llmResponse = await chatCompletion(
           model,
           [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
+            {
+              role: 'user',
+              content: buildVideoDescriptionUserContent({
+                ...shot,
+                videoFile: path.basename(localVideoPath),
+              }, sampledFrames),
+            },
           ],
           0.2,
         );

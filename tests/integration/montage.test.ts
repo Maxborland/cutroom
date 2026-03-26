@@ -16,6 +16,7 @@ import {
   resolveProjectPath,
   ensureDir,
 } from '../../server/lib/storage.js'
+import { sampleVideoFrames } from '../../server/lib/video-description.js'
 
 // Mock external dependencies
 vi.mock('../../server/lib/openrouter.js', () => ({
@@ -25,6 +26,9 @@ vi.mock('../../server/lib/openrouter.js', () => ({
 vi.mock('../../server/lib/normalize.js', () => ({
   normalizeClips: vi.fn().mockResolvedValue(new Map()),
   probeDuration: vi.fn().mockResolvedValue(30),
+}))
+vi.mock('../../server/lib/video-description.js', () => ({
+  sampleVideoFrames: vi.fn(),
 }))
 
 vi.mock('../../server/lib/tts-providers.js', () => ({
@@ -65,6 +69,7 @@ vi.mock('../../server/lib/render-worker.js', () => ({
 
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
+const mockedSampleVideoFrames = vi.mocked(sampleVideoFrames)
 
 const app = createApp()
 
@@ -496,7 +501,7 @@ describe('Montage Integration', () => {
   })
 
   describe('POST /montage/describe-videos', () => {
-    it('describes approved shots with local video files and persists shot.videoDescription', async () => {
+    it('describes approved shots with sampled video evidence and persists shot.videoDescription', async () => {
       const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
       await ensureDir(path.dirname(videoPath))
       await fs.writeFile(videoPath, 'video-bytes')
@@ -505,6 +510,17 @@ describe('Montage Integration', () => {
         proj.shots[0]!.videoFile = 'clip.mp4'
         proj.shots[0]!.videoPrompt = 'Evening aerial around the facade'
       })
+
+      mockedSampleVideoFrames.mockResolvedValueOnce([
+        {
+          timeSec: 0.5,
+          imageDataUrl: 'data:image/jpeg;base64,ZmFrZS1mcmFtZS0x',
+        },
+        {
+          timeSec: 2.5,
+          imageDataUrl: 'data:image/jpeg;base64,ZmFrZS1mcmFtZS0y',
+        },
+      ])
 
       const description = {
         summary: 'Плавный пролет вдоль фасада и панорамных окон.',
@@ -529,6 +545,35 @@ describe('Montage Integration', () => {
         .post(`/api/projects/${projectId}/montage/describe-videos`)
         .expect(200)
 
+      expect(mockedSampleVideoFrames).toHaveBeenCalledWith(videoPath)
+      expect(chatCompletion).toHaveBeenCalledWith(
+        expect.any(String),
+        [
+          expect.objectContaining({
+            role: 'system',
+            content: expect.any(String),
+          }),
+          expect.objectContaining({
+            role: 'user',
+            content: [
+              expect.objectContaining({
+                type: 'image_url',
+                image_url: { url: 'data:image/jpeg;base64,ZmFrZS1mcmFtZS0x' },
+              }),
+              expect.objectContaining({
+                type: 'image_url',
+                image_url: { url: 'data:image/jpeg;base64,ZmFrZS1mcmFtZS0y' },
+              }),
+              expect.objectContaining({
+                type: 'text',
+                text: expect.stringContaining('These sampled frames are the primary evidence'),
+              }),
+            ],
+          }),
+        ],
+        0.2,
+      )
+
       expect(res.body.described).toBe(1)
       expect(res.body.skipped).toBe(0)
       expect(res.body.shots).toEqual([
@@ -547,6 +592,49 @@ describe('Montage Integration', () => {
         version: 1,
         ...description,
       })
+    })
+
+    it('falls back to text-only context when sampled video evidence is unavailable', async () => {
+      const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
+      await ensureDir(path.dirname(videoPath))
+      await fs.writeFile(videoPath, 'video-bytes')
+
+      await withProject(projectId, (proj) => {
+        proj.shots[0]!.videoFile = 'clip.mp4'
+        proj.shots[0]!.scene = 'Панорамный фасад'
+      })
+
+      mockedSampleVideoFrames.mockRejectedValueOnce(new Error('ffmpeg unavailable'))
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
+        summary: 'Панорамный фасад с подсветкой.',
+        tags: ['фасад'],
+        matchHints: ['фасад'],
+        moments: [],
+      }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/describe-videos`)
+        .expect(200)
+
+      expect(mockedSampleVideoFrames).toHaveBeenCalledWith(videoPath)
+      expect(chatCompletion).toHaveBeenCalledWith(
+        expect.any(String),
+        [
+          expect.objectContaining({
+            role: 'system',
+            content: expect.any(String),
+          }),
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Shot scene: Панорамный фасад'),
+          }),
+        ],
+        0.2,
+      )
+      expect(res.body.described).toBe(1)
+      expect(res.body.skipped).toBe(0)
     })
 
     it('prefers defaultDescribeModel when generating video descriptions', async () => {
