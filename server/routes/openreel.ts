@@ -28,6 +28,7 @@ router.get('/openreel-project', readLimiter, async (req: Request, res: Response)
         res.json({
           ...snapshot,
           mediaManifest: freshBundle.mediaManifest,
+          semanticSummary: freshBundle.semanticSummary,
         });
         return;
       }
