@@ -134,7 +134,10 @@ export interface MontageStyle {
 }
 
 export interface TimelineEntry {
+  clipId?: string;
   shotId: string;
+  anchorId?: string;
+  selectedMomentId?: string;
   clipFile: string;
   startSec: number;
   durationSec: number;

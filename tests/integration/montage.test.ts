@@ -1502,6 +1502,40 @@ describe('Montage Integration', () => {
       expect(res.body.montagePlan.timeline[1].startSec).toBe(7)
     })
 
+    it('reorders semantic clips by clipId even when they reuse the same source shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            { clipId: 'clip-anchor-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 3, durationSec: 5, anchorId: 'anchor-1', selectedMomentId: 'moment-1' },
+            { clipId: 'clip-anchor-2', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 8, durationSec: 7, anchorId: 'anchor-2', selectedMomentId: 'moment-2' },
+          ],
+          transitions: [
+            { fromShotId: 'shot-1', toShotId: 'shot-1', type: 'fade', durationSec: 0.5 },
+          ],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline`)
+        .send({
+          timeline: [
+            { clipId: 'clip-anchor-2', shotId: 'shot-1', durationSec: 7 },
+            { clipId: 'clip-anchor-1', shotId: 'shot-1', durationSec: 5 },
+          ],
+        })
+        .expect(200)
+
+      expect(res.body.montagePlan.timeline[0].clipId).toBe('clip-anchor-2')
+      expect(res.body.montagePlan.timeline[1].clipId).toBe('clip-anchor-1')
+      expect(res.body.montagePlan.timeline[0].startSec).toBe(0)
+      expect(res.body.montagePlan.timeline[1].startSec).toBe(7)
+    })
+
     it('returns 400 when timeline has unknown shotId', async () => {
       await withProject(projectId, (proj) => {
         proj.montagePlan = {
@@ -1575,6 +1609,34 @@ describe('Montage Integration', () => {
 
       expect(res.body.montagePlan.timeline[0].durationSec).toBe(10)
       expect(res.body.montagePlan.timeline[1].startSec).toBe(10) // recalculated
+    })
+
+    it('updates a specific semantic clip by clipId without touching a sibling clip that uses the same shot', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            { clipId: 'clip-anchor-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5, anchorId: 'anchor-1', selectedMomentId: 'moment-1' },
+            { clipId: 'clip-anchor-2', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 5, durationSec: 7, anchorId: 'anchor-2', selectedMomentId: 'moment-2' },
+          ],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/clip-anchor-2`)
+        .send({ durationSec: 10 })
+        .expect(200)
+
+      expect(res.body.montagePlan.timeline[0].durationSec).toBe(5)
+      expect(res.body.montagePlan.timeline[1].durationSec).toBe(10)
+      expect(res.body.montagePlan.timeline[0].clipId).toBe('clip-anchor-1')
+      expect(res.body.montagePlan.timeline[1].clipId).toBe('clip-anchor-2')
+      expect(res.body.montagePlan.timeline[1].startSec).toBe(5)
     })
 
     it('returns 404 for unknown shotId', async () => {

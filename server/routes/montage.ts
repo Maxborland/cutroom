@@ -1272,6 +1272,34 @@ router.put('/montage/plan', async (req: Request, res: Response) => {
 const VALID_TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide_right', 'zoom_blur', 'wipe'] as const;
 const VALID_MOTION_EFFECTS = ['ken_burns', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right'] as const;
 
+function getTimelineEntryIdentity(entry: { clipId?: string; shotId: string }): string {
+  return typeof entry.clipId === 'string' && entry.clipId.trim() ? entry.clipId : entry.shotId;
+}
+
+function findTimelineEntryByIdentity<T extends { clipId?: string; shotId: string }>(timeline: T[], identity: string): T | undefined {
+  return timeline.find((entry) => getTimelineEntryIdentity(entry) === identity);
+}
+
+function resolveRequestedTimelineIdentity<T extends { clipId?: string; shotId: string }>(
+  timeline: T[],
+  entry: { clipId?: string; shotId: string },
+): string | null {
+  if (typeof entry.clipId === 'string' && entry.clipId.trim()) {
+    return entry.clipId;
+  }
+
+  const matchingByShot = timeline.filter((timelineEntry) => timelineEntry.shotId === entry.shotId);
+  if (matchingByShot.length === 1) {
+    return getTimelineEntryIdentity(matchingByShot[0]);
+  }
+
+  if (matchingByShot.length === 0) {
+    return entry.shotId;
+  }
+
+  return null;
+}
+
 // PUT /api/projects/:id/montage/plan/timeline
 // Reorder timeline + rebuild transitions
 router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
@@ -1289,9 +1317,9 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       sendApiError(res, 400, 'timeline must be an array');
       return;
     }
-    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; durationSec: number }>;
+    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; clipId?: string; durationSec: number }>;
 
-    // Validate: all entries must have shotId and durationSec
+    // Validate: all entries must have clip identity and duration
     for (const entry of timeline) {
       if (!entry.shotId || typeof entry.durationSec !== 'number' || entry.durationSec <= 0) {
         sendApiError(res, 400, `Invalid timeline entry: shotId and positive durationSec required`);
@@ -1299,18 +1327,24 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       }
     }
 
-    // Validate: incoming shot IDs must match existing plan
-    const existingIds = new Set(project.montagePlan.timeline.map(e => e.shotId));
-    const newIds = new Set(timeline.map((entry) => entry.shotId));
-    for (const id of newIds) {
-      if (!existingIds.has(id)) {
-        sendApiError(res, 400, `Unknown shot ID: ${String(id).slice(0, 50)}`);
+    // Validate: incoming clip identities must match existing plan
+    const existingIds = new Set(project.montagePlan.timeline.map((entry) => getTimelineEntryIdentity(entry)));
+    const newIds = new Set<string>();
+    for (const entry of timeline) {
+      const identity = resolveRequestedTimelineIdentity(project.montagePlan.timeline, entry);
+      if (!identity) {
+        sendApiError(res, 400, `Timeline entry shot ${String(entry.shotId).slice(0, 50)} is ambiguous; provide clipId`);
         return;
       }
+      if (!existingIds.has(identity)) {
+        sendApiError(res, 400, `Unknown timeline entry ID: ${String(identity).slice(0, 50)}`);
+        return;
+      }
+      newIds.add(identity);
     }
 
     if (timeline.length !== project.montagePlan.timeline.length || newIds.size !== existingIds.size) {
-      sendApiError(res, 400, 'Timeline must contain all existing shots exactly once');
+      sendApiError(res, 400, 'Timeline must contain all existing clips exactly once');
       return;
     }
 
@@ -1318,10 +1352,15 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
     let cursor = introSec;
     const reordered = timeline.map((entry) => {
-      const existing = project.montagePlan!.timeline.find(e => e.shotId === entry.shotId);
+      const entryId = resolveRequestedTimelineIdentity(project.montagePlan.timeline, entry);
+      if (!entryId) {
+        throw new Error(`Timeline entry shot ${entry.shotId} is ambiguous`);
+      }
+      const existing = findTimelineEntryByIdentity(project.montagePlan!.timeline, entryId);
       const result = {
         ...existing,
         ...entry,
+        clipId: entryId,
         startSec: cursor,
       };
       cursor += result.durationSec;
@@ -1373,9 +1412,9 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/projects/:id/montage/plan/timeline/:shotId
+// PUT /api/projects/:id/montage/plan/timeline/:clipId
 // Update individual clip: durationSec, trimEndSec, motionEffect
-router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response) => {
+router.put('/montage/plan/timeline/:clipId', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -1385,10 +1424,11 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
       return;
     }
 
-    const { shotId } = req.params;
-    const entry = project.montagePlan.timeline.find(e => e.shotId === shotId);
+    const { clipId } = req.params;
+    const entryId = resolveRequestedTimelineIdentity(project.montagePlan.timeline, { shotId: clipId, clipId });
+    const entry = entryId ? findTimelineEntryByIdentity(project.montagePlan.timeline, entryId) : undefined;
     if (!entry) {
-      sendApiError(res, 404, `Shot ${String(shotId).slice(0, 50)} not in timeline`);
+      sendApiError(res, 404, `Clip ${String(clipId).slice(0, 50)} not in timeline`);
       return;
     }
 
@@ -1415,7 +1455,7 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
 
     const updatedPlan = await withProject(project.id, (p) => {
       if (!p.montagePlan) return null;
-      const target = p.montagePlan.timeline.find(e => e.shotId === shotId);
+      const target = entryId ? findTimelineEntryByIdentity(p.montagePlan.timeline, entryId) : undefined;
       if (!target) return null;
 
       if (durationSec !== undefined) target.durationSec = durationSec;

@@ -50,6 +50,8 @@ function extractAreaLabel(scene: string): string {
 
 type PlannedShot = {
   shot: ShotMeta;
+  clipId: string;
+  anchorId?: string;
   selectedMoment?: NonNullable<ShotMeta['videoDescription']>['moments'][number];
   anchorStatus?: 'matched' | 'weak_match';
 };
@@ -64,7 +66,7 @@ function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): Planned
     .sort((left, right) => (anchorOrder.get(left.anchorId) ?? Number.MAX_SAFE_INTEGER) - (anchorOrder.get(right.anchorId) ?? Number.MAX_SAFE_INTEGER));
 
   for (const match of orderedMatches) {
-    if (match.status === 'unmatched' || !match.selectedShotId || usedShotIds.has(match.selectedShotId)) {
+    if (match.status === 'unmatched' || !match.selectedShotId) {
       continue;
     }
 
@@ -79,6 +81,8 @@ function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): Planned
 
     plannedShots.push({
       shot,
+      clipId: match.anchorId ? `clip-${match.anchorId}` : `clip-${shot.id}`,
+      anchorId: match.anchorId,
       selectedMoment,
       anchorStatus: match.status,
     });
@@ -192,7 +196,10 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
     const duration = allocatedDurations[i];
 
     const entry: TimelineEntry = {
+      clipId: plannedShot.clipId,
       shotId: shot.id,
+      anchorId: plannedShot.anchorId,
+      selectedMomentId: plannedShot.selectedMoment?.id,
       clipFile: `montage/normalized/${shot.id}.mp4`,
       startSec: currentSec,
       durationSec: duration,
