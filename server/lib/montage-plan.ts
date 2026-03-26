@@ -56,6 +56,10 @@ type PlannedShot = {
   anchorStatus?: 'matched' | 'weak_match';
 };
 
+function makeFallbackClipId(shot: ShotMeta): string {
+  return `clip-${shot.id}`;
+}
+
 function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): PlannedShot[] {
   const shotById = new Map(approvedShots.map((shot) => [shot.id, shot]));
   const anchorOrder = new Map((project.narrationAnchors ?? []).map((anchor) => [anchor.id, anchor.order]));
@@ -91,11 +95,13 @@ function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): Planned
 
   for (const shot of approvedShots) {
     if (!usedShotIds.has(shot.id)) {
-      plannedShots.push({ shot });
+      plannedShots.push({ shot, clipId: makeFallbackClipId(shot) });
     }
   }
 
-  return plannedShots.length > 0 ? plannedShots : approvedShots.map((shot) => ({ shot }));
+  return plannedShots.length > 0
+    ? plannedShots
+    : approvedShots.map((shot) => ({ shot, clipId: makeFallbackClipId(shot) }));
 }
 
 // ── Transition heuristics ────────────────────────────────────────────

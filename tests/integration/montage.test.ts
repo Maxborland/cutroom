@@ -50,7 +50,7 @@ vi.mock('../../server/lib/montage-plan.js', () => ({
   generateMontagePlan: vi.fn().mockReturnValue({
     version: 1,
     format: { width: 3840, height: 2160, fps: 30 },
-    timeline: [{ shotId: 'shot-1', clipFile: 'montage/normalized/shot-1.mp4', startSec: 3, durationSec: 10 }],
+    timeline: [{ clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'montage/normalized/shot-1.mp4', startSec: 3, durationSec: 10 }],
     transitions: [],
     motionGraphics: { intro: { title: 'Test', durationSec: 3, animation: 'fade_in' }, lowerThirds: [], outro: { title: 'End', durationSec: 3, animation: 'fade_in' } },
     audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
@@ -1236,6 +1236,7 @@ describe('Montage Integration', () => {
         format: { width: 3840, height: 2160, fps: 30 },
         timeline: [
           {
+            clipId: 'clip-shot-1',
             shotId: projectArg.anchorMatches?.[0]?.selectedShotId ?? 'shot-1',
             clipFile: 'montage/normalized/shot-1.mp4',
             startSec: 3,
@@ -1373,6 +1374,7 @@ describe('Montage Integration', () => {
       expect(res.body.montagePlan).toBeDefined()
       expect(res.body.montagePlan.version).toBe(1)
       expect(res.body.montagePlan.timeline).toBeInstanceOf(Array)
+      expect(res.body.montagePlan.timeline.every((entry: { clipId?: string }) => typeof entry.clipId === 'string' && entry.clipId.trim())).toBe(true)
     })
 
     it('returns 400 with no approved shots', async () => {
@@ -1472,8 +1474,8 @@ describe('Montage Integration', () => {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
           timeline: [
-            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 3, durationSec: 5 },
-            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 8, durationSec: 7 },
+            { clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 3, durationSec: 5 },
+            { clipId: 'clip-shot-2', shotId: 'shot-2', clipFile: 'b.mp4', startSec: 8, durationSec: 7 },
           ],
           transitions: [
             { fromShotId: 'shot-1', toShotId: 'shot-2', type: 'fade', durationSec: 0.5 },
@@ -1489,8 +1491,8 @@ describe('Montage Integration', () => {
         .put(`/api/projects/${projectId}/montage/plan/timeline`)
         .send({
           timeline: [
-            { shotId: 'shot-2', durationSec: 7 },
-            { shotId: 'shot-1', durationSec: 5 },
+            { clipId: 'clip-shot-2', shotId: 'shot-2', durationSec: 7 },
+            { clipId: 'clip-shot-1', shotId: 'shot-1', durationSec: 5 },
           ],
         })
         .expect(200)
@@ -1536,12 +1538,12 @@ describe('Montage Integration', () => {
       expect(res.body.montagePlan.timeline[1].startSec).toBe(7)
     })
 
-    it('returns 400 when timeline has unknown shotId', async () => {
+    it('returns 400 when timeline has unknown clipId', async () => {
       await withProject(projectId, (proj) => {
         proj.montagePlan = {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
-          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          timeline: [{ clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
           transitions: [],
           motionGraphics: { lowerThirds: [] },
           audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
@@ -1551,7 +1553,7 @@ describe('Montage Integration', () => {
 
       await request(app)
         .put(`/api/projects/${projectId}/montage/plan/timeline`)
-        .send({ timeline: [{ shotId: 'nonexistent', durationSec: 5 }] })
+        .send({ timeline: [{ clipId: 'clip-nonexistent', shotId: 'nonexistent', durationSec: 5 }] })
         .expect(400)
     })
 
@@ -1561,8 +1563,8 @@ describe('Montage Integration', () => {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
           timeline: [
-            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
-            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
+            { clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
+            { clipId: 'clip-shot-2', shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
           ],
           transitions: [],
           motionGraphics: { lowerThirds: [] },
@@ -1573,7 +1575,7 @@ describe('Montage Integration', () => {
 
       await request(app)
         .put(`/api/projects/${projectId}/montage/plan/timeline`)
-        .send({ timeline: [{ shotId: 'shot-1', durationSec: 5 }] })
+        .send({ timeline: [{ clipId: 'clip-shot-1', shotId: 'shot-1', durationSec: 5 }] })
         .expect(400)
     })
 
@@ -1585,15 +1587,15 @@ describe('Montage Integration', () => {
     })
   })
 
-  describe('PUT /montage/plan/timeline/:shotId', () => {
+  describe('PUT /montage/plan/timeline/:clipId', () => {
     it('updates clip duration and recalculates startSec', async () => {
       await withProject(projectId, (proj) => {
         proj.montagePlan = {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
           timeline: [
-            { shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
-            { shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
+            { clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 },
+            { clipId: 'clip-shot-2', shotId: 'shot-2', clipFile: 'b.mp4', startSec: 5, durationSec: 7 },
           ],
           transitions: [],
           motionGraphics: { lowerThirds: [] },
@@ -1603,7 +1605,7 @@ describe('Montage Integration', () => {
       })
 
       const res = await request(app)
-        .put(`/api/projects/${projectId}/montage/plan/timeline/shot-1`)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/clip-shot-1`)
         .send({ durationSec: 10 })
         .expect(200)
 
@@ -1639,12 +1641,12 @@ describe('Montage Integration', () => {
       expect(res.body.montagePlan.timeline[1].startSec).toBe(5)
     })
 
-    it('returns 404 for unknown shotId', async () => {
+    it('returns 404 for unknown clipId', async () => {
       await withProject(projectId, (proj) => {
         proj.montagePlan = {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
-          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          timeline: [{ clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
           transitions: [],
           motionGraphics: { lowerThirds: [] },
           audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
@@ -1663,7 +1665,7 @@ describe('Montage Integration', () => {
         proj.montagePlan = {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
-          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          timeline: [{ clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
           transitions: [],
           motionGraphics: { lowerThirds: [] },
           audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
@@ -1672,7 +1674,7 @@ describe('Montage Integration', () => {
       })
 
       await request(app)
-        .put(`/api/projects/${projectId}/montage/plan/timeline/shot-1`)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/clip-shot-1`)
         .send({ durationSec: -5 })
         .expect(400)
     })
@@ -1684,7 +1686,7 @@ describe('Montage Integration', () => {
         proj.montagePlan = {
           version: 1,
           format: { width: 3840, height: 2160, fps: 30 },
-          timeline: [{ shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
+          timeline: [{ clipId: 'clip-shot-1', shotId: 'shot-1', clipFile: 'a.mp4', startSec: 0, durationSec: 5 }],
           transitions: [{ fromShotId: 'intro', toShotId: 'shot-1', type: 'fade', durationSec: 0.5 }],
           motionGraphics: { lowerThirds: [] },
           audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
