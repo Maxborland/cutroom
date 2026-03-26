@@ -15,6 +15,7 @@ import { sampleVideoFrames } from '../lib/video-description.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DESCRIPTION_VERSION = 1;
+const VIDEO_DESCRIPTION_SAMPLE_COUNT = 2;
 
 // Helper: load project or 404
 async function loadProject(req: Request, res: Response) {
@@ -966,7 +967,7 @@ router.post('/montage/describe-videos', generationLimiter, async (req: Request, 
 
       let sampledFrames: Array<{ timeSec: number; imageDataUrl: string }> = [];
       try {
-        const sampled = await sampleVideoFrames(localVideoPath);
+        const sampled = await sampleVideoFrames(localVideoPath, VIDEO_DESCRIPTION_SAMPLE_COUNT);
         if (Array.isArray(sampled)) {
           sampledFrames = sampled.filter((frame): frame is { timeSec: number; imageDataUrl: string } => (
             frame

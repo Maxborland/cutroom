@@ -545,7 +545,7 @@ describe('Montage Integration', () => {
         .post(`/api/projects/${projectId}/montage/describe-videos`)
         .expect(200)
 
-      expect(mockedSampleVideoFrames).toHaveBeenCalledWith(videoPath)
+      expect(mockedSampleVideoFrames).toHaveBeenCalledWith(videoPath, 2)
       expect(chatCompletion).toHaveBeenCalledWith(
         expect.any(String),
         [
@@ -594,7 +594,7 @@ describe('Montage Integration', () => {
       })
     })
 
-    it('falls back to text-only context when sampled video evidence is unavailable', async () => {
+    it('falls back to text-only context when sampled video evidence times out', async () => {
       const videoPath = resolveProjectPath(projectId, 'shots', 'shot-1', 'video', 'clip.mp4')
       await ensureDir(path.dirname(videoPath))
       await fs.writeFile(videoPath, 'video-bytes')
@@ -604,7 +604,7 @@ describe('Montage Integration', () => {
         proj.shots[0]!.scene = 'Панорамный фасад'
       })
 
-      mockedSampleVideoFrames.mockRejectedValueOnce(new Error('ffmpeg unavailable'))
+      mockedSampleVideoFrames.mockRejectedValueOnce(new Error('ffmpeg timed out after 8000ms'))
 
       const { chatCompletion } = await import('../../server/lib/openrouter.js')
       vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
@@ -618,7 +618,7 @@ describe('Montage Integration', () => {
         .post(`/api/projects/${projectId}/montage/describe-videos`)
         .expect(200)
 
-      expect(mockedSampleVideoFrames).toHaveBeenCalledWith(videoPath)
+      expect(mockedSampleVideoFrames).toHaveBeenCalledWith(videoPath, 2)
       expect(chatCompletion).toHaveBeenCalledWith(
         expect.any(String),
         [

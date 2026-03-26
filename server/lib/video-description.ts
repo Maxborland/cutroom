@@ -7,16 +7,30 @@ export interface SampledVideoFrame {
 }
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
-const MAX_STDOUT_SIZE = 16 * 1024 * 1024;
+const MAX_STDOUT_SIZE = 2 * 1024 * 1024;
+const FFMPEG_TIMEOUT_MS = 8_000;
+const MAX_SAMPLED_FRAMES = 2;
+const FRAME_SCALE_WIDTH = 960;
+const FRAME_JPEG_QUALITY = '8';
 
 function execFileBuffer(cmd: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     childProcess.execFile(
       cmd,
       args,
-      { encoding: 'buffer', maxBuffer: MAX_STDOUT_SIZE },
+      {
+        encoding: 'buffer',
+        maxBuffer: MAX_STDOUT_SIZE,
+        timeout: FFMPEG_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      },
       (error, stdout, stderr) => {
         if (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+            reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS}ms`));
+            return;
+          }
+
           const message = stderr && stderr.length > 0
             ? `${error.message}: ${stderr.toString()}`
             : error.message;
@@ -59,7 +73,8 @@ async function captureVideoFrame(filePath: string, timeSec: number): Promise<Buf
     '-ss', String(Math.max(timeSec, 0)),
     '-i', filePath,
     '-frames:v', '1',
-    '-q:v', '2',
+    '-vf', `scale='min(${FRAME_SCALE_WIDTH},iw)':-2`,
+    '-q:v', FRAME_JPEG_QUALITY,
     '-f', 'image2pipe',
     '-vcodec', 'mjpeg',
     'pipe:1',
@@ -67,8 +82,9 @@ async function captureVideoFrame(filePath: string, timeSec: number): Promise<Buf
 }
 
 export async function sampleVideoFrames(filePath: string, sampleCount = 3): Promise<SampledVideoFrame[]> {
+  const boundedSampleCount = Math.max(1, Math.min(Math.floor(sampleCount), MAX_SAMPLED_FRAMES));
   const durationSec = await probeDuration(filePath);
-  const times = buildSampleTimes(durationSec, sampleCount);
+  const times = buildSampleTimes(durationSec, boundedSampleCount);
 
   if (times.length === 0) {
     return [];
