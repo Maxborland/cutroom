@@ -101,6 +101,6 @@ describe('OpenReelEditorPage', () => {
 
     expect(await screen.findByText('Черновик из монтажного плана')).toBeInTheDocument()
     expect(screen.getByText('1 сильное, 1 требует проверки')).toBeInTheDocument()
-    expect(screen.getByText('Откройте монтажный черновик в OpenReel, чтобы доработать клипы и затем сохранить финальный рендер из редактора.')).toBeInTheDocument()
+    expect(screen.getByText('Откройте монтажный черновик в OpenReel, чтобы доработать клипы и синхронизировать правки с проектом.')).toBeInTheDocument()
   })
 })

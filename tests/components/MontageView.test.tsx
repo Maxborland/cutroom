@@ -236,9 +236,19 @@ describe('MontageView semantic planning panel', () => {
     await user.click(screen.getByRole('button', { name: 'План монтажа' }))
 
     expect(screen.getByText('Черновик готов для редактора')).toBeInTheDocument()
-    expect(screen.getByText('Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и рендер уже из текущего состояния проекта.')).toBeInTheDocument()
+    expect(screen.getByText('Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Открыть в редакторе' })).toBeInTheDocument()
     expect(screen.getByText('1 сильное совпадение')).toBeInTheDocument()
+  })
+
+  it('does not show the editor CTA before a semantic draft exists', async () => {
+    const user = userEvent.setup()
+    renderMontage(makeProject({ montagePlan: undefined }))
+
+    await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+
+    expect(screen.queryByRole('button', { name: 'Открыть в редакторе' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Черновик готов для редактора')).not.toBeInTheDocument()
   })
 
   it('saves manual shot and moment overrides for weak matches', async () => {

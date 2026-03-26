@@ -768,29 +768,26 @@ function PlanStep({
           План монтажа
         </h3>
 
-        <div className="mb-4">
-          <button
-            onClick={onOpenEditor}
-            className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
-          >
-            <Clapperboard size={14} />
-            Открыть в редакторе
-          </button>
-        </div>
-
         {plan && (
-          <div className="mb-4 bg-emerald-dim border-2 border-emerald rounded-[5px] p-4 space-y-2">
+          <div className="mb-4 bg-emerald-dim border-2 border-emerald rounded-[5px] p-4 space-y-3">
             <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
               Черновик готов для редактора
             </p>
             <p className="text-sm text-text-primary">
-              Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и рендер уже из текущего состояния проекта.
+              Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.
             </p>
             {coverage && (
               <p className="font-mono text-xs text-text-secondary">
                 {coverage.matchedAnchors} {coverage.matchedAnchors === 1 ? 'сильное совпадение' : 'сильных совпадений'}
               </p>
             )}
+            <button
+              onClick={onOpenEditor}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+            >
+              <Clapperboard size={14} />
+              Открыть в редакторе
+            </button>
           </div>
         )}
 

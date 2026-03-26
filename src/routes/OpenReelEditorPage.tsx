@@ -191,7 +191,7 @@ export function OpenReelEditorPage() {
               {formatSemanticSummary(bundle.semanticSummary)}
             </p>
             <p className="text-xs text-text-secondary">
-              Откройте монтажный черновик в OpenReel, чтобы доработать клипы и затем сохранить финальный рендер из редактора.
+              Откройте монтажный черновик в OpenReel, чтобы доработать клипы и синхронизировать правки с проектом.
             </p>
           </div>
         )}
