@@ -240,7 +240,7 @@ describe('OpenReel route integration', () => {
     expect(saved.modifiedAt).toBe(response.body.modifiedAt);
   });
 
-  it('GET /openreel-project keeps semantic summary when returning a saved snapshot', async () => {
+  it('GET /openreel-project keeps the saved snapshot semantically consistent', async () => {
     await withProject(projectId, (p) => {
       p.narrationAnchors = [
         {
@@ -348,27 +348,55 @@ describe('OpenReel route integration', () => {
       };
     });
 
+    const snapshotPayload = {
+      version: '1.0.0',
+      project: {
+        id: projectId,
+        timeline: {
+          tracks: [],
+        },
+      },
+    };
+
     await request(app)
       .put(`/api/projects/${projectId}/openreel-project`)
-      .send({
-        version: '1.0.0',
-        project: {
-          id: projectId,
-          timeline: { tracks: [] },
-        },
-      })
+      .send(snapshotPayload)
       .expect(200);
+
+    await withProject(projectId, (p) => {
+      p.narrationAnchors = [
+        {
+          id: 'anchor-3',
+          sourceText: 'Позднее изменение',
+          label: 'Новый якорь',
+          order: 1,
+          intent: 'feature',
+        },
+      ];
+      p.anchorMatches = [
+        {
+          anchorId: 'anchor-3',
+          selectedShotId: 'shot-1',
+          selectedMomentId: 'moment-3',
+          confidence: 0.51,
+          status: 'weak_match',
+          candidates: [],
+        },
+      ];
+      p.anchorCoverageSummary = {
+        totalAnchors: 1,
+        matchedAnchors: 0,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      };
+    });
 
     const response = await request(app)
       .get(`/api/projects/${projectId}/openreel-project`)
       .expect(200);
 
-    expect(response.body.semanticSummary).toEqual({
-      anchors: 2,
-      matched: 2,
-      weak: 0,
-      unmatched: 0,
-    });
+    expect(response.body.semanticSummary).toBeUndefined();
+    expect(response.body.project).toEqual(snapshotPayload.project);
     expect(response.body.mediaManifest['media-shot-shot-1'].url)
       .toMatch(new RegExp(`/api/projects/${projectId}/shots/shot-1/video/.+`));
   });
