@@ -778,6 +778,22 @@ function PlanStep({
           </button>
         </div>
 
+        {plan && (
+          <div className="mb-4 bg-emerald-dim border-2 border-emerald rounded-[5px] p-4 space-y-2">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
+              Черновик готов для редактора
+            </p>
+            <p className="text-sm text-text-primary">
+              Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и рендер уже из текущего состояния проекта.
+            </p>
+            {coverage && (
+              <p className="font-mono text-xs text-text-secondary">
+                {coverage.matchedAnchors} {coverage.matchedAnchors === 1 ? 'сильное совпадение' : 'сильных совпадений'}
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="mb-4 bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div>

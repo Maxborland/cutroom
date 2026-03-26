@@ -37,6 +37,12 @@ const mockBundle = {
   version: '1.0.0',
   project: { id: 'project-1', timeline: { tracks: [] } },
   mediaManifest: {},
+  semanticSummary: {
+    anchors: 2,
+    matched: 1,
+    weak: 1,
+    unmatched: 0,
+  },
 }
 
 function renderEditorPage(initialPath = '/editor/project-1') {
@@ -86,5 +92,15 @@ describe('OpenReelEditorPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('montage-route')).toBeInTheDocument()
     })
+  })
+
+  it('renders semantic summary from the bundle header when present', async () => {
+    getProjectMock.mockResolvedValue(mockBundle)
+
+    renderEditorPage()
+
+    expect(await screen.findByText('Черновик из монтажного плана')).toBeInTheDocument()
+    expect(screen.getByText('1 сильное, 1 требует проверки')).toBeInTheDocument()
+    expect(screen.getByText('Откройте монтажный черновик в OpenReel, чтобы доработать клипы и затем сохранить финальный рендер из редактора.')).toBeInTheDocument()
   })
 })

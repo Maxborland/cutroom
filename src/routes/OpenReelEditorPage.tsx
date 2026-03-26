@@ -15,6 +15,16 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+function formatSemanticSummary(summary: NonNullable<OpenReelBundle['semanticSummary']>): string {
+  const strongPart = `${summary.matched} ${summary.matched === 1 ? 'сильное' : 'сильных'}`
+  const reviewPart = `${summary.weak} ${summary.weak === 1 ? 'требует проверки' : 'требуют проверки'}`
+  const unmatchedPart = summary.unmatched > 0
+    ? `, ${summary.unmatched} ${summary.unmatched === 1 ? 'остается без совпадения' : 'остаются без совпадений'}`
+    : ''
+
+  return `${strongPart}, ${reviewPart}${unmatchedPart}`
+}
+
 export function OpenReelEditorPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
@@ -171,21 +181,37 @@ export function OpenReelEditorPage() {
     }
 
     return (
-      <OpenReelHost
-        bundle={bundle}
-        syncStatus={syncStatus}
-        onProjectChange={handleProjectChange}
-        onExportProgress={({ phase, progress }) => {
-          setExportStatus(`Экспорт: ${phase} (${Math.round(progress)}%)`)
-        }}
-        onExportComplete={({ filename }) => {
-          setExportStatus(`Экспорт завершён: ${filename}`)
-        }}
-        onError={(message) => {
-          setSyncStatus('error')
-          setSaveError(message)
-        }}
-      />
+      <div className="space-y-4">
+        {bundle.semanticSummary && (
+          <div className="bg-surface-2 border-2 border-emerald rounded-[5px] p-4 space-y-2">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
+              Черновик из монтажного плана
+            </p>
+            <p className="text-sm text-text-primary">
+              {formatSemanticSummary(bundle.semanticSummary)}
+            </p>
+            <p className="text-xs text-text-secondary">
+              Откройте монтажный черновик в OpenReel, чтобы доработать клипы и затем сохранить финальный рендер из редактора.
+            </p>
+          </div>
+        )}
+
+        <OpenReelHost
+          bundle={bundle}
+          syncStatus={syncStatus}
+          onProjectChange={handleProjectChange}
+          onExportProgress={({ phase, progress }) => {
+            setExportStatus(`Экспорт: ${phase} (${Math.round(progress)}%)`)
+          }}
+          onExportComplete={({ filename }) => {
+            setExportStatus(`Экспорт завершён: ${filename}`)
+          }}
+          onError={(message) => {
+            setSyncStatus('error')
+            setSaveError(message)
+          }}
+        />
+      </div>
     )
   }
 

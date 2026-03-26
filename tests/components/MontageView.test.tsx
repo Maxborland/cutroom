@@ -188,6 +188,59 @@ describe('MontageView semantic planning panel', () => {
     expect(screen.getByRole('option', { name: 'Фасад (0:00–0:02)' })).toBeInTheDocument()
   })
 
+  it('shows editor-first handoff copy when a semantic draft already exists', async () => {
+    const user = userEvent.setup()
+    renderMontage(makeProject({
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: 'clip-anchor-1',
+            shotId: 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 0,
+            durationSec: 4,
+            trimStartSec: 0.5,
+            trimEndSec: 4.5,
+            anchorId: 'anchor-1',
+            selectedMomentId: 'moment-facade',
+          },
+        ],
+        transitions: [],
+        motionGraphics: {
+          intro: { title: 'Тестовый проект', durationSec: 3, animation: 'fade_in' },
+          lowerThirds: [],
+          outro: { title: 'Тестовый проект', durationSec: 4, animation: 'fade_in' },
+        },
+        audio: {
+          voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 },
+          music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#1a1a2e',
+          secondaryColor: '#e2b44d',
+          textColor: '#ffffff',
+        },
+      },
+      anchorCoverageSummary: {
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      },
+    }))
+
+    await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+
+    expect(screen.getByText('Черновик готов для редактора')).toBeInTheDocument()
+    expect(screen.getByText('Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и рендер уже из текущего состояния проекта.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Открыть в редакторе' })).toBeInTheDocument()
+    expect(screen.getByText('1 сильное совпадение')).toBeInTheDocument()
+  })
+
   it('saves manual shot and moment overrides for weak matches', async () => {
     const user = userEvent.setup()
     const updateAnchorMatchesMock = vi.mocked(api.montage.updateAnchorMatches)
