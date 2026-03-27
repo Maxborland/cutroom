@@ -178,6 +178,88 @@ describe('Models API', () => {
     )
   })
 
+  it('hydrates fal model capabilities from endpoint openapi schema when listing metadata is empty', async () => {
+    await request(app)
+      .put('/api/settings')
+      .send({ falApiKey: 'fal_test_key_123' })
+      .expect(200)
+
+    global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString()
+
+      if (url.includes('openrouter.ai/api/v1/models')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [] }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models') && url.includes('category=text-to-image')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              models: [
+                {
+                  endpoint_id: 'fal-ai/nano-banana-pro/edit',
+                  metadata: {
+                    display_name: 'Nano Banana Pro Edit',
+                    category: 'image-to-image',
+                  },
+                },
+              ],
+            }),
+        })
+      }
+
+      if (url.includes('fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai%2Fnano-banana-pro%2Fedit')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              openapi: '3.1.0',
+              info: { title: 'Fal Queue API', version: '1.0.0' },
+              paths: {},
+              components: {
+                schemas: {
+                  NanoBananaEditInput: {
+                    type: 'object',
+                    properties: {
+                      resolution: { enum: ['1K', '2K', '4K'], default: '2K' },
+                      aspect_ratio: { enum: ['1:1', '16:9', '9:16'], default: '16:9' },
+                    },
+                  },
+                },
+              },
+            }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ models: [] }),
+        })
+      }
+
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    const res = await request(app).get('/api/models').expect(200)
+
+    expect(res.body.imageGenModels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'fal/nano-banana-pro',
+          imageResolutionSupport: 'explicit',
+          imageResolutionOptions: ['1K', '2K', '4K'],
+          imageAspectRatioSupport: 'explicit',
+          imageAspectRatioOptions: ['1:1', '16:9', '9:16'],
+        }),
+      ]),
+    )
+  })
+
   it('should fall back to static generation models when fal discovery fails', async () => {
     await request(app)
       .put('/api/settings')

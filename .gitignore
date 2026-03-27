@@ -3,6 +3,7 @@ dist/
 data/
 *.log
 .env
+.env.self-hosted
 test-results/
 playwright-report/
 .worktrees/

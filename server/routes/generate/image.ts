@@ -3,8 +3,10 @@ import { readLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
   saveProject,
+  withProject,
 } from '../../lib/storage.js';
 import { getProjectStorageAdapter } from '../../lib/storage-adapters/index.js';
+import { chooseFalCapabilityOption, fetchFalEndpointCapabilities } from '../../lib/fal-schema.js';
 import { chatCompletion, generateImage as generateImageOpenRouter, type ReferenceImage, type ImageGenOptions } from '../../lib/openrouter.js';
 import { generateImage as generateImageMulti } from '../../lib/generation.js';
 import { resolveImageModel, resolveOpenRouterImageFallbackModel } from '../../lib/generation-models.js';
@@ -164,6 +166,21 @@ export interface GenerateShotImageOptions {
   signal?: AbortSignal;
 }
 
+function logFalImageRequest(params: {
+  route: 'primary' | 'no-ref';
+  modelId: string;
+  endpoint: string;
+  resolution?: string;
+  aspectRatio?: string;
+  hasReference: boolean;
+}) {
+  console.log(
+    `[generate-image] Fal request route=${params.route} model=${params.modelId} endpoint=${params.endpoint} `
+    + `resolution=${params.resolution || 'auto'} aspectRatio=${params.aspectRatio || 'auto'} `
+    + `hasReference=${params.hasReference ? 'yes' : 'no'}`,
+  );
+}
+
 export async function generateShotImageForProject(options: GenerateShotImageOptions): Promise<{
   shotId: string;
   filename: string;
@@ -211,6 +228,30 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
     ? `${prompt}\n\nSVG reference hints from brief assets:\n${svgTextHints.join('\n')}`
     : prompt;
 
+  async function resolveFalImageInputs(model: { provider: 'fal' | 'replicate'; endpoint: string }) {
+    if (model.provider !== 'fal') {
+      return {
+        aspectRatio: effective.imageAspectRatio,
+        resolution: resolveProviderImageResolution(effective.imageQuality),
+      }
+    }
+
+    try {
+      const capabilities = await fetchFalEndpointCapabilities(model.endpoint)
+      return {
+        aspectRatio: chooseFalCapabilityOption(effective.imageAspectRatio, capabilities.aspectRatioOptions)
+          || effective.imageAspectRatio,
+        resolution: chooseFalCapabilityOption(effective.imageQuality, capabilities.resolutionOptions)
+          || resolveProviderImageResolution(effective.imageQuality),
+      }
+    } catch {
+      return {
+        aspectRatio: effective.imageAspectRatio,
+        resolution: resolveProviderImageResolution(effective.imageQuality),
+      }
+    }
+  }
+
   if (preparedRefs.summary.requested > 0) {
     console.log(
       `[generate-image] Prepared refs: ready=${preparedRefs.summary.prepared}/${preparedRefs.summary.requested}, `
@@ -219,8 +260,13 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
     );
   }
 
-  shot.status = 'img_gen';
-  await saveProject(project);
+  await withProject(project.id, (current) => {
+    const currentShot = current.shots.find((candidate) => candidate.id === shot.id);
+    if (!currentShot) {
+      throw new Error('Shot not found');
+    }
+    currentShot.status = 'img_gen';
+  });
 
   try {
     let resultUrl: string;
@@ -261,12 +307,20 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
               resultUrl = await generateViaOpenRouter(fallbackModelId);
             } else {
               try {
-                const resolution = resolveProviderImageResolution(effective.imageQuality);
+                const { resolution, aspectRatio } = await resolveFalImageInputs(noRefModel);
+                logFalImageRequest({
+                  route: 'no-ref',
+                  modelId: noRefModelId,
+                  endpoint: noRefModel.endpoint,
+                  resolution,
+                  aspectRatio,
+                  hasReference: false,
+                });
                 resultUrl = await generateImageMulti(
                   {
                     model: noRefModel,
                     prompt: promptWithReferenceHints,
-                    aspectRatio: effective.imageAspectRatio,
+                    aspectRatio,
                     resolution,
                   },
                   options.signal,
@@ -291,14 +345,22 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
         }
       } else {
         try {
-          const resolution = resolveProviderImageResolution(effective.imageQuality);
+          const { resolution, aspectRatio } = await resolveFalImageInputs(genModel);
+          logFalImageRequest({
+            route: 'primary',
+            modelId,
+            endpoint: genModel.endpoint,
+            resolution,
+            aspectRatio,
+            hasReference: refDataUrls.length > 0,
+          });
 
           resultUrl = await generateImageMulti(
             {
               model: genModel,
               prompt: promptWithReferenceHints,
               referenceImageUrl: refDataUrls.length > 0 ? refDataUrls[0] : undefined,
-              aspectRatio: effective.imageAspectRatio,
+              aspectRatio,
               resolution,
             },
             options.signal,
@@ -353,19 +415,15 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
       }
     }
 
-    const refreshed = await getProject(project.id);
-    if (!refreshed) {
-      throw new Error('Project not found');
-    }
+    await withProject(project.id, (current) => {
+      const currentShot = current.shots.find((candidate) => candidate.id === shot.id);
+      if (!currentShot) {
+        throw new Error('Shot not found');
+      }
 
-    const refreshedShot = refreshed.shots.find((s) => s.id === shot.id);
-    if (!refreshedShot) {
-      throw new Error('Shot not found');
-    }
-
-    refreshedShot.generatedImages.push(storedImageRef);
-    refreshedShot.status = 'img_review';
-    await saveProject(refreshed);
+      currentShot.generatedImages.push(storedImageRef);
+      currentShot.status = 'img_review';
+    });
 
     if (needsBackgroundCache) {
       void cacheExternalImageReference(project.id, shot.id, storedImageRef);
@@ -377,14 +435,12 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
       url: responseUrl,
     };
   } catch (err) {
-    const refreshed = await getProject(project.id);
-    if (refreshed) {
-      const refreshedShot = refreshed.shots.find((s) => s.id === shot.id);
-      if (refreshedShot) {
-        refreshedShot.status = 'draft';
-        await saveProject(refreshed);
+    await withProject(project.id, (current) => {
+      const currentShot = current.shots.find((candidate) => candidate.id === shot.id);
+      if (currentShot) {
+        currentShot.status = 'draft';
       }
-    }
+    }).catch(() => {})
     throw err;
   }
 }

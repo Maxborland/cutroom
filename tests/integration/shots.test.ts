@@ -176,8 +176,10 @@ describe('Shots API', () => {
   })
 
   describe('DELETE /api/projects/:id/shots/:shotId/video', () => {
-    it('deletes external video url without filesystem access errors', async () => {
+    it('deletes external video url without filesystem access errors and returns to image review when images remain', async () => {
       shot.videoFile = 'https://cdn.example.com/video.mp4'
+      shot.generatedImages = ['fallback-frame.png']
+      shot.status = 'vid_review'
       await saveProject(project)
 
       const res = await request(app)
@@ -188,6 +190,29 @@ describe('Shots API', () => {
 
       const saved = await getProject(project.id)
       expect(saved?.shots[0]?.videoFile).toBeNull()
+      expect(saved?.shots[0]?.status).toBe('img_review')
+    })
+  })
+
+  describe('POST /api/projects/:id/shots/:shotId/video', () => {
+    it('uploads a manual video and moves the shot into video review', async () => {
+      shot.videoFile = null
+      shot.status = 'img_review'
+      await saveProject(project)
+
+      const res = await request(app)
+        .post(`/api/projects/${project.id}/shots/${shot.id}/video`)
+        .attach('video', Buffer.from('fake-video-bytes'), {
+          filename: 'manual-upload.mp4',
+          contentType: 'video/mp4',
+        })
+        .expect(200)
+
+      expect(res.body.filename).toBe('manual-upload.mp4')
+
+      const saved = await getProject(project.id)
+      expect(saved?.shots[0]?.videoFile).toBe('manual-upload.mp4')
+      expect(saved?.shots[0]?.status).toBe('vid_review')
     })
   })
 
@@ -457,7 +482,8 @@ describe('Shots API', () => {
           .expect(400)
 
         expect(res.body.code).toBe('VIDEO_CACHE_URL_FORBIDDEN')
-        expect(fetchMock).not.toHaveBeenCalled()
+        const fetchedUrls = fetchMock.mock.calls.map(([input]) => String(input))
+        expect(fetchedUrls.some((url) => url.includes('/forbidden.mp4'))).toBe(false)
 
         const saved = await getProject(project.id)
         expect(saved?.shots[0]?.status).toBe('img_review')
@@ -491,7 +517,8 @@ describe('Shots API', () => {
 
         expect(res.body.generated).toBe(0)
         expect(res.body.total).toBe(1)
-        expect(fetchMock).not.toHaveBeenCalled()
+        const fetchedUrls = fetchMock.mock.calls.map(([input]) => String(input))
+        expect(fetchedUrls.some((url) => url.includes('/batch-forbidden.mp4'))).toBe(false)
 
         const saved = await getProject(project.id)
         expect(saved?.shots[0]?.status).toBe('img_review')

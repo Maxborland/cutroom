@@ -75,6 +75,11 @@ function isErrorWithMessage(error: unknown, message: string): boolean {
   return error instanceof Error && error.message === message;
 }
 
+function getStatusAfterVideoRemoval(shot: Pick<ShotMeta, 'generatedImages' | 'enhancedImages'>): ShotMeta['status'] {
+  const hasImages = (shot.generatedImages?.length ?? 0) > 0 || (shot.enhancedImages?.length ?? 0) > 0;
+  return hasImages ? 'img_review' : 'draft';
+}
+
 /**
  * Delete all generated images, enhanced images, and video for a shot.
  * Resets the shot metadata arrays. Does NOT save the project.
@@ -317,6 +322,7 @@ router.post('/:shotId/video', mutationLimiter, (req: Request, res: Response, nex
       }
 
       target.videoFile = file.filename;
+      target.status = 'vid_review';
     });
 
     res.json({
@@ -458,6 +464,7 @@ router.delete('/:shotId/video', mutationLimiter, async (req: Request, res: Respo
       }
 
       target.videoFile = null;
+      target.status = getStatusAfterVideoRemoval(target);
       return target;
     });
 
@@ -487,7 +494,7 @@ router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     sendApiError(res, 404, 'Shot not found');
     return;
   }
-  if (anyErr?.code === 'LIMIT_FILE_SIZE') {
+  if (errorWithCode?.code === 'LIMIT_FILE_SIZE') {
     sendApiError(res, 413, 'Uploaded file is too large');
     return;
   }

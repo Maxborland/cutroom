@@ -72,6 +72,7 @@ vi.stubGlobal('fetch', mockFetch)
 const mockedSampleVideoFrames = vi.mocked(sampleVideoFrames)
 
 const app = createApp()
+const legacyRenderApp = createApp({ enableLegacyMontageRender: true })
 
 describe('Montage Integration', () => {
   let projectId: string
@@ -1380,6 +1381,51 @@ describe('Montage Integration', () => {
 
       expect(res.body.error).toContain('шот')
     })
+
+    it('returns 400 when payload duplicates an anchor or omits another one', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+          {
+            id: 'anchor-2',
+            sourceText: 'Игровая комната',
+            label: 'Игровая',
+            order: 2,
+            intent: 'lifestyle',
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({
+          anchorMatches: [
+            {
+              anchorId: 'anchor-1',
+              selectedShotId: 'shot-1',
+              confidence: 0.7,
+              status: 'matched',
+              candidates: [],
+            },
+            {
+              anchorId: 'anchor-1',
+              selectedShotId: 'shot-1',
+              confidence: 0.6,
+              status: 'weak_match',
+              candidates: [],
+            },
+          ],
+        })
+        .expect(400)
+
+      expect(res.body.error).toContain('якор')
+    })
   })
 
   describe('api.montage.updateAnchorMatches', () => {
@@ -1954,6 +2000,37 @@ describe('Montage Integration', () => {
         .send({ durationSec: -5 })
         .expect(400)
     })
+
+    it('rejects trimEndSec earlier than trimStartSec', async () => {
+      await withProject(projectId, (proj) => {
+        proj.montagePlan = {
+          version: 1,
+          format: { width: 3840, height: 2160, fps: 30 },
+          timeline: [
+            {
+              clipId: 'clip-shot-1',
+              shotId: 'shot-1',
+              clipFile: 'a.mp4',
+              startSec: 0,
+              durationSec: 5,
+              trimStartSec: 4,
+              trimEndSec: 5,
+            },
+          ],
+          transitions: [],
+          motionGraphics: { lowerThirds: [] },
+          audio: { voiceover: { file: '', gainDb: 0 }, music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+          style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#000', secondaryColor: '#fff', textColor: '#fff' },
+        } as any
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/plan/timeline/clip-shot-1`)
+        .send({ trimEndSec: 3.5 })
+        .expect(400)
+
+      expect(res.body.error).toContain('trimEndSec')
+    })
   })
 
   describe('PUT /montage/plan/transitions/:index', () => {
@@ -2196,8 +2273,10 @@ describe('Montage Integration', () => {
   })
 
   describe('GET /montage/render/:jobId', () => {
-    it('returns render job status', async () => {
+    it('returns 404 when legacy render API is disabled by default', async () => {
+      const defaultApp = createApp()
       const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockReset()
       vi.mocked(getRenderJob).mockResolvedValueOnce({
         id: 'job-1',
         createdAt: new Date().toISOString(),
@@ -2208,7 +2287,25 @@ describe('Montage Integration', () => {
         outputFile: 'montage/renders/job-1.mp4',
       })
 
-      const res = await request(app)
+      await request(defaultApp)
+        .get(`/api/projects/${projectId}/montage/render/job-1`)
+        .expect(404)
+    })
+
+    it('returns render job status', async () => {
+      const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockReset()
+      vi.mocked(getRenderJob).mockResolvedValueOnce({
+        id: 'job-1',
+        createdAt: new Date().toISOString(),
+        quality: 'preview',
+        resolution: '1280x720',
+        status: 'done',
+        progress: 100,
+        outputFile: 'montage/renders/job-1.mp4',
+      })
+
+      const res = await request(legacyRenderApp)
         .get(`/api/projects/${projectId}/montage/render/job-1`)
         .expect(200)
 
@@ -2218,9 +2315,10 @@ describe('Montage Integration', () => {
 
     it('returns 404 for unknown job', async () => {
       const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockReset()
       vi.mocked(getRenderJob).mockResolvedValueOnce(null)
 
-      await request(app)
+      await request(legacyRenderApp)
         .get(`/api/projects/${projectId}/montage/render/unknown`)
         .expect(404)
     })
@@ -2229,9 +2327,10 @@ describe('Montage Integration', () => {
   describe('DELETE /montage/render/:jobId', () => {
     it('deletes a render job', async () => {
       const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(deleteRenderJob).mockReset()
       vi.mocked(deleteRenderJob).mockResolvedValueOnce(true)
 
-      const res = await request(app)
+      const res = await request(legacyRenderApp)
         .delete(`/api/projects/${projectId}/montage/render/job-1`)
         .expect(200)
 
@@ -2240,20 +2339,22 @@ describe('Montage Integration', () => {
 
     it('returns 404 for unknown job', async () => {
       const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(deleteRenderJob).mockReset()
       vi.mocked(deleteRenderJob).mockResolvedValueOnce(false)
 
-      await request(app)
+      await request(legacyRenderApp)
         .delete(`/api/projects/${projectId}/montage/render/unknown`)
         .expect(404)
     })
 
     it('returns 409 when job is currently rendering', async () => {
       const { deleteRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(deleteRenderJob).mockReset()
       vi.mocked(deleteRenderJob).mockRejectedValueOnce(
         new Error('Cannot delete a render job that is currently rendering')
       )
 
-      const res = await request(app)
+      const res = await request(legacyRenderApp)
         .delete(`/api/projects/${projectId}/montage/render/active-job`)
         .expect(409)
 
@@ -2264,6 +2365,7 @@ describe('Montage Integration', () => {
   describe('GET /montage/render/:jobId/download', () => {
     it('streams rendered video file', async () => {
       const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockReset()
       const rendersDir = resolveProjectPath(projectId, 'montage', 'renders')
       await ensureDir(rendersDir)
       const videoContent = Buffer.from('fake-mp4-content')
@@ -2279,7 +2381,7 @@ describe('Montage Integration', () => {
         outputFile: 'montage/renders/job-1.mp4',
       })
 
-      const res = await request(app)
+      const res = await request(legacyRenderApp)
         .get(`/api/projects/${projectId}/montage/render/job-1/download`)
         .expect(200)
 
@@ -2289,6 +2391,7 @@ describe('Montage Integration', () => {
 
     it('returns 400 when render not complete', async () => {
       const { getRenderJob } = await import('../../server/lib/render-worker.js')
+      vi.mocked(getRenderJob).mockReset()
       vi.mocked(getRenderJob).mockResolvedValueOnce({
         id: 'job-1',
         createdAt: new Date().toISOString(),
@@ -2298,7 +2401,7 @@ describe('Montage Integration', () => {
         progress: 50,
       })
 
-      await request(app)
+      await request(legacyRenderApp)
         .get(`/api/projects/${projectId}/montage/render/job-1/download`)
         .expect(400)
     })

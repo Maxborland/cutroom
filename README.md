@@ -68,7 +68,7 @@ Quick start:
 
 ```bash
 cp .env.self-hosted.example .env.self-hosted
-docker compose -f docker-compose.self-hosted.yml up -d --build
+docker compose --env-file .env.self-hosted -f docker-compose.self-hosted.yml up -d --build
 ```
 
 This profile runs:
@@ -76,6 +76,7 @@ This profile runs:
 - one `app` container serving both the frontend and `/api`
 - one `worker` container for background jobs
 - one `postgres` container
+- the public app URL on `http://<server>:<APP_HOST_PORT>` (defaults to `3001`)
 
 ## Database Bootstrap
 

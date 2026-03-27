@@ -60,6 +60,8 @@ type VideoModelOption = {
   name: string
   videoQualityOptions?: string[]
   videoQualitySupport?: 'explicit' | 'none'
+  videoDurationOptions?: string[]
+  videoDurationSupport?: 'explicit' | 'none'
 }
 
 type ImageModelOption = {
@@ -334,6 +336,8 @@ export function SettingsView() {
   const maxModelImageResolution = hasModelImageResolutionOptions
     ? modelImageResolutionOptions[modelImageResolutionOptions.length - 1]
     : null
+  const selectedImageModelHasSchemaSummary =
+    hasModelImageResolutionOptions || hasModelImageAspectRatioOptions
   const noRefImageModelOptions = [
     { id: '', name: 'OpenRouter (по умолчанию)' },
     ...imageGenModels
@@ -368,6 +372,9 @@ export function SettingsView() {
   const modelVideoQualityOptions = selectedVideoModel?.videoQualityOptions || EMPTY_MODEL_OPTIONS
   const hasModelVideoQualityOptions =
     selectedVideoModel?.videoQualitySupport === 'explicit' && modelVideoQualityOptions.length > 0
+  const modelVideoDurationOptions = selectedVideoModel?.videoDurationOptions || EMPTY_MODEL_OPTIONS
+  const hasModelVideoDurationOptions =
+    selectedVideoModel?.videoDurationSupport === 'explicit' && modelVideoDurationOptions.length > 0
   const maxModelVideoQuality = hasModelVideoQualityOptions
     ? modelVideoQualityOptions[modelVideoQualityOptions.length - 1]
     : null
@@ -653,6 +660,17 @@ export function SettingsView() {
                       Для этой модели обязателен референс (из брифа или исходного кадра).
                     </p>
                   )}
+                  {selectedImageModelHasSchemaSummary && (
+                    <div className="mt-2 rounded-[5px] border border-border/70 bg-surface-3 px-3 py-2 text-[10px] text-text-muted space-y-1">
+                      <p>Параметры для этой модели подтянуты прямо из схемы Fal API.</p>
+                      {hasModelImageResolutionOptions && (
+                        <p>Разрешения: {modelImageResolutionOptions.join(', ')}</p>
+                      )}
+                      {hasModelImageAspectRatioOptions && (
+                        <p>Соотношения сторон: {modelImageAspectRatioOptions.join(', ')}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <ModelSelect
@@ -791,6 +809,11 @@ export function SettingsView() {
                   {!hasModelVideoQualityOptions && (
                     <p className="text-[10px] text-text-muted mt-1">
                       У выбранной видео-модели API не вернуло поддерживаемые разрешения.
+                    </p>
+                  )}
+                  {hasModelVideoDurationOptions && (
+                    <p className="text-[10px] text-text-muted mt-1">
+                      Поддерживаемые длительности модели: {modelVideoDurationOptions.join(', ')}. При генерации длительность шота будет автоматически приведена к ближайшему поддерживаемому значению.
                     </p>
                   )}
                 </div>

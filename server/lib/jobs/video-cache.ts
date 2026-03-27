@@ -12,6 +12,7 @@ const VIDEO_DOWNLOAD_ATTEMPTS = 5;
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 60000;
 const VIDEO_DOWNLOAD_RETRY_DELAY_MS = 1500;
 const VIDEO_DOWNLOAD_MAX_REDIRECTS = 5;
+const VIDEO_DOWNLOAD_MAX_BYTES = 128 * 1024 * 1024;
 const IS_VITEST = Boolean(process.env.VITEST);
 const VITEST_FETCH_HOST_SUFFIXES = ['.example'] as const;
 
@@ -31,6 +32,28 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 function sanitizeForLog(value: string): string {
   return value.replace(/[\r\n\t]+/g, ' ').trim();
+}
+
+function getVideoDownloadMaxBytes(): number {
+  const raw = Number(process.env.VIDEO_DOWNLOAD_MAX_BYTES);
+  if (Number.isFinite(raw) && raw > 0) {
+    return raw;
+  }
+  return VIDEO_DOWNLOAD_MAX_BYTES;
+}
+
+function createVideoTooLargeError(limitBytes: number): Error {
+  return new Error(`Remote video is too large to cache locally (limit ${limitBytes} bytes)`);
+}
+
+function parseContentLength(value: string | string[] | null | undefined): number | null {
+  const normalized = Array.isArray(value) ? value[0] : value;
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function errorMessageIncludes(err: unknown, pattern: string): boolean {
@@ -279,6 +302,7 @@ async function resolveAllowedRemoteVideoTarget(videoUrl: string): Promise<Allowe
 async function requestRemoteVideo(
   target: AllowedRemoteVideoTarget,
   timeoutMs: number,
+  maxBytes: number,
 ): Promise<{ status: number; buffer: Buffer; headers: http.IncomingHttpHeaders | https.IncomingHttpHeaders }> {
   const { parsedUrl } = target;
   const requestImpl = parsedUrl.protocol === 'https:' ? https.request : http.request;
@@ -301,6 +325,7 @@ async function requestRemoteVideo(
   return new Promise((resolve, reject) => {
     const req = requestImpl(requestOptions, (response) => {
       const status = response.statusCode ?? 0;
+      const declaredLength = parseContentLength(response.headers['content-length']);
 
       if (status >= 300 && status < 400) {
         response.resume?.();
@@ -314,9 +339,24 @@ async function requestRemoteVideo(
         return;
       }
 
+      if (declaredLength !== null && declaredLength > maxBytes) {
+        response.resume?.();
+        reject(createVideoTooLargeError(maxBytes));
+        return;
+      }
+
       const chunks: Buffer[] = [];
+      let totalBytes = 0;
       response.on('data', (chunk) => {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += buffer.byteLength;
+
+        if (totalBytes > maxBytes) {
+          response.destroy(createVideoTooLargeError(maxBytes));
+          return;
+        }
+
+        chunks.push(buffer);
       });
       response.on('end', () => {
         resolve({ status, buffer: Buffer.concat(chunks), headers: response.headers });
@@ -336,13 +376,14 @@ async function fetchRemoteVideoBufferWithPolicy(
   videoUrl: string,
   redirectsRemaining: number,
   timeoutMs: number,
+  maxBytes: number,
 ): Promise<Buffer> {
   if (redirectsRemaining < 0) {
     throw new InvalidExternalVideoUrlError('External video URL is not allowed for local caching');
   }
 
   const target = await resolveAllowedRemoteVideoTarget(videoUrl);
-  const response = await requestRemoteVideo(target, timeoutMs);
+  const response = await requestRemoteVideo(target, timeoutMs, maxBytes);
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.location;
@@ -351,7 +392,7 @@ async function fetchRemoteVideoBufferWithPolicy(
     }
 
     const redirected = new URL(location, target.parsedUrl);
-    return fetchRemoteVideoBufferWithPolicy(redirected.toString(), redirectsRemaining - 1, timeoutMs);
+    return fetchRemoteVideoBufferWithPolicy(redirected.toString(), redirectsRemaining - 1, timeoutMs, maxBytes);
   }
 
   if (response.status < 200 || response.status >= 300) {
@@ -366,6 +407,7 @@ async function fetchAllowedRemoteVideoBuffer(
   attempts = VIDEO_DOWNLOAD_ATTEMPTS,
   timeoutMs = VIDEO_DOWNLOAD_TIMEOUT_MS,
 ): Promise<Buffer> {
+  const maxBytes = getVideoDownloadMaxBytes();
   let lastErr: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -378,37 +420,49 @@ async function fetchAllowedRemoteVideoBuffer(
         if (!response.ok) {
           throw new Error(`Failed to download media: ${response.status}`);
         }
+
+        const declaredLength = parseContentLength(response.headers?.get?.('content-length'));
+        if (declaredLength !== null && declaredLength > maxBytes) {
+          throw createVideoTooLargeError(maxBytes);
+        }
+
+        if (response.body) {
+          const reader = response.body.getReader();
+          const chunks: Uint8Array[] = [];
+          let totalLength = 0;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+            totalLength += value.byteLength;
+            if (totalLength > maxBytes) {
+              throw createVideoTooLargeError(maxBytes);
+            }
+            chunks.push(value);
+          }
+
+          const buffer = Buffer.allocUnsafe(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            buffer.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          return buffer;
+        }
+
         if (typeof response.arrayBuffer === 'function') {
           const arrayBuffer = await response.arrayBuffer();
+          if (arrayBuffer.byteLength > maxBytes) {
+            throw createVideoTooLargeError(maxBytes);
+          }
           return Buffer.from(arrayBuffer);
         }
 
-        if (!response.body) {
-          throw new Error('Remote response has no body');
-        }
-
-        const reader = response.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let totalLength = 0;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          chunks.push(value);
-          totalLength += value.byteLength;
-        }
-
-        const buffer = Buffer.allocUnsafe(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          buffer.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        return buffer;
+        throw new Error('Remote response has no body');
       }
 
-      return await fetchRemoteVideoBufferWithPolicy(videoUrl, VIDEO_DOWNLOAD_MAX_REDIRECTS, timeoutMs);
+      return await fetchRemoteVideoBufferWithPolicy(videoUrl, VIDEO_DOWNLOAD_MAX_REDIRECTS, timeoutMs, maxBytes);
     } catch (err) {
       lastErr = err;
       const retryable = isRetryableFetchError(err);

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { AnchorMatch, NarrationAnchor, Project, RenderJob, ShotVideoDescriptionMoment } from '../types'
+import type { AnchorMatch, NarrationAnchor, Project, ShotVideoDescriptionMoment } from '../types'
 import {
   Mic,
   Music,
@@ -21,7 +21,6 @@ import {
   Send,
   AlertCircle,
   Trash2,
-  Play,
   Download,
 } from 'lucide-react'
 
@@ -116,7 +115,7 @@ export function MontageView() {
           />
         )}
         {activeStep === 'render' && (
-          <RenderStep project={project} onRefresh={() => refreshProject(project.id)} />
+          <RenderStep project={project} onOpenEditor={() => navigate(`/editor/${project.id}`)} />
         )}
       </div>
     </div>
@@ -169,7 +168,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
         if (provVoices.length > 0) setSelectedVoice(provVoices[0].id)
       }
     }).catch((err: unknown) => { console.error('Failed to load voices:', err) })
-  }, [project.id])
+  }, [project.id, project.voiceoverVoiceId])
 
   const filteredVoices = voices.filter((v) => v.provider === activeProvider)
 
@@ -1035,52 +1034,10 @@ function PlanStep({
 
 // ── Render Step ─────────────────────────────────────────────────────
 
-function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
-  const [loading, setLoading] = useState(false)
-  const [polling, setPolling] = useState<string | null>(null)
-  const [currentJob, setCurrentJob] = useState<RenderJob | null>(null)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Poll render status
-  useEffect(() => {
-    if (!polling) return
-    const poll = async () => {
-      try {
-        const job = await api.montage.getRenderStatus(project.id, polling)
-        setCurrentJob(job)
-        if (job.status === 'done' || job.status === 'failed') {
-          setPolling(null)
-          onRefresh()
-        }
-      } catch {
-        setPolling(null)
-      }
-    }
-    intervalRef.current = setInterval(poll, 3000)
-    poll()
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [polling, project.id])
-
-  const startRender = async (quality: 'preview' | 'final') => {
-    setLoading(true)
-    try {
-      const result = await api.montage.render(project.id, quality)
-      setPolling(result.jobId)
-      setCurrentJob({
-        id: result.jobId,
-        createdAt: new Date().toISOString(),
-        quality: result.quality,
-        resolution: quality === 'final' ? '3840x2160' : '1280x720',
-        status: result.status,
-        progress: 0,
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
+function RenderStep({ project, onOpenEditor }: { project: Project; onOpenEditor: () => void }) {
   const renders = project.renders || []
   const doneRenders = renders.filter((r) => r.status === 'done')
+  const latestExport = project.latestExportArtifact
 
   return (
     <div className="space-y-4">
@@ -1099,47 +1056,39 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
 
         {project.montagePlan && (
           <div className="space-y-4">
-            {/* Start render buttons */}
-            <div className="flex gap-3">
+            <div className="bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-3">
+              <div className="space-y-1">
+                <div className="font-mono text-xs uppercase tracking-wider text-amber">
+                  Финальная сборка через OpenReel Export
+                </div>
+                <p className="text-sm text-text-muted">
+                  Откройте проект в редакторе, соберите финальную версию и выполните экспорт из OpenReel.
+                  Готовый файл вернется в CutRoom как артефакт проекта.
+                </p>
+              </div>
               <button
-                onClick={() => startRender('preview')}
-                disabled={loading || !!polling}
-                className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                onClick={onOpenEditor}
+                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all"
               >
-                <Play size={14} /> Превью (720p)
-              </button>
-              <button
-                onClick={() => startRender('final')}
-                disabled={loading || !!polling}
-                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
-              >
-                <Film size={14} /> Финальный (4K)
+                <Edit3 size={14} /> Открыть в редакторе
               </button>
             </div>
 
-            {/* Current render progress */}
-            {currentJob && (currentJob.status === 'queued' || currentJob.status === 'rendering') && (
-              <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Loader2 size={14} className="animate-spin text-sky" />
-                  <span className="font-mono text-xs uppercase text-sky">
-                    {currentJob.status === 'queued' ? 'В очереди...' : `Рендер ${currentJob.progress ?? 0}%`}
-                  </span>
+            {latestExport && (
+              <div className="bg-surface-1 border-2 border-emerald rounded-[5px] p-4 space-y-2">
+                <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                  Последний экспорт
                 </div>
-                <div className="w-full bg-surface-2 rounded-full h-2">
-                  <div
-                    className="bg-sky h-2 rounded-full transition-all duration-500"
-                    style={{ width: `${currentJob.progress ?? 0}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {currentJob?.status === 'failed' && (
-              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4">
-                <div className="flex items-center gap-2 text-red-400">
-                  <X size={14} />
-                  <span className="font-mono text-xs">Ошибка: {currentJob.errorMessage || 'Unknown'}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-emerald">
+                      <Check size={14} />
+                      <span className="font-mono text-xs">{latestExport.filename}</span>
+                    </div>
+                    <div className="font-mono text-[10px] text-text-muted">
+                      {new Date(latestExport.exportedAt).toLocaleString('ru')}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

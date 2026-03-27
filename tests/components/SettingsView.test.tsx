@@ -47,6 +47,8 @@ vi.mock('../../src/lib/api', () => ({
             name: 'MiniMax Hailuo 02',
             videoQualitySupport: 'explicit',
             videoQualityOptions: ['768P', '1080P'],
+            videoDurationSupport: 'explicit',
+            videoDurationOptions: ['5s', '8s'],
           },
         ],
         audioGenModels: [{ id: 'fal/minimax/speech-02-hd', name: 'MiniMax Speech 02 HD' }],
@@ -223,6 +225,52 @@ describe('SettingsView', () => {
 
     expect(screen.queryByText('High (4K)')).not.toBeInTheDocument()
     expect(screen.getByText(/4K/)).toBeInTheDocument()
+  })
+
+  it('shows schema-driven supported video durations for the selected model', async () => {
+    render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/Поддерживаемые длительности модели:/i)).toBeInTheDocument()
+    })
+
+    expect(screen.getByText(/5s, 8s/i)).toBeInTheDocument()
+    expect(screen.getByText(/длительность шота будет автоматически приведена/i)).toBeInTheDocument()
+  })
+
+  it('shows provider-native image capabilities for the selected Fal model', async () => {
+    vi.mocked(api.models.list).mockResolvedValueOnce({
+      textModels: [{ id: 'openai/gpt-4o', name: 'GPT-4o' }],
+      imageModels: [{ id: 'openai/gpt-image-1', name: 'GPT Image 1' }],
+      imageGenModels: [
+        {
+          id: 'fal-endpoint:fal-ai/nano-banana-pro',
+          name: 'Nano Banana Pro',
+          imageResolutionSupport: 'explicit',
+          imageResolutionOptions: ['1K', '2K', '4K'],
+          imageAspectRatioSupport: 'explicit',
+          imageAspectRatioOptions: ['1:1', '16:9'],
+        },
+      ],
+      videoGenModels: [
+        { id: 'fal/kling-2.1-pro', name: 'Kling 2.1 Pro', videoQualitySupport: 'none' },
+      ],
+      audioGenModels: [{ id: 'fal/minimax/speech-02-hd', name: 'MiniMax Speech 02 HD' }],
+    })
+    vi.mocked(api.settings.get).mockResolvedValueOnce({
+      defaultImageGenModel: 'fal-endpoint:fal-ai/nano-banana-pro',
+      imageQuality: '4K',
+      imageAspectRatio: '16:9',
+    })
+
+    render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/Параметры для этой модели подтянуты прямо из схемы Fal API/i)).toBeInTheDocument()
+    })
+
+    expect(screen.getByText(/Разрешения: 1K, 2K, 4K/i)).toBeInTheDocument()
+    expect(screen.getByText(/Соотношения сторон: 1:1, 16:9/i)).toBeInTheDocument()
   })
 
   it('creates a teammate invite link from settings', async () => {

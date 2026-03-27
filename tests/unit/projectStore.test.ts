@@ -18,6 +18,8 @@ vi.mock('../../src/lib/api', () => ({
     shots: {
       update: vi.fn(),
       setStatus: vi.fn(),
+      deleteImage: vi.fn(),
+      deleteVideo: vi.fn(),
     },
     generate: {
       script: vi.fn(),
@@ -68,6 +70,8 @@ beforeEach(() => {
   mockedApi.assets.delete.mockResolvedValue(undefined as any)
   mockedApi.shots.update.mockResolvedValue({})
   mockedApi.shots.setStatus.mockResolvedValue({})
+  mockedApi.shots.deleteImage.mockResolvedValue({})
+  mockedApi.shots.deleteVideo.mockResolvedValue({})
 })
 
 describe('projectStore', () => {
@@ -287,6 +291,139 @@ describe('projectStore', () => {
         expect(mockedApi.projects.update).toHaveBeenCalledWith('proj-1', {
           stage: 'shots',
         })
+      })
+
+      it('rolls back to server truth when background stage save fails', async () => {
+        const proj = makeProject({ id: 'proj-1', stage: 'brief' })
+        const serverProject = makeProject({ id: 'proj-1', stage: 'review' })
+        useProjectStore.setState({ projects: [proj] })
+        mockedApi.projects.update.mockRejectedValueOnce(new Error('save failed'))
+        mockedApi.projects.get.mockResolvedValueOnce(serverProject)
+
+        act(() => {
+          useProjectStore.getState().updateProjectStage('proj-1', 'script')
+        })
+
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(mockedApi.projects.get).toHaveBeenCalledWith('proj-1')
+        expect(useProjectStore.getState().projects[0].stage).toBe('review')
+      })
+    })
+
+    describe('updateTargetDuration', () => {
+      it('rolls back target duration when background save fails', async () => {
+        const proj = makeProject({ id: 'proj-1', brief: { text: '', assets: [], targetDuration: 30 } })
+        const serverProject = makeProject({ id: 'proj-1', brief: { text: '', assets: [], targetDuration: 45 } })
+        useProjectStore.setState({ projects: [proj] })
+        mockedApi.projects.update.mockRejectedValueOnce(new Error('save failed'))
+        mockedApi.projects.get.mockResolvedValueOnce(serverProject)
+
+        act(() => {
+          useProjectStore.getState().updateTargetDuration('proj-1', 90)
+        })
+
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(mockedApi.projects.get).toHaveBeenCalledWith('proj-1')
+        expect(useProjectStore.getState().projects[0].brief.targetDuration).toBe(45)
+      })
+    })
+
+    describe('deleteShotImage', () => {
+      it('restores server state when image deletion fails', async () => {
+        const proj = makeProject({
+          id: 'proj-1',
+          shots: [{
+            id: 'shot-1',
+            order: 1,
+            scene: 'scene',
+            audioDescription: '',
+            imagePrompt: '',
+            videoPrompt: '',
+            duration: 5,
+            assetRefs: [],
+            status: 'img_review',
+            generatedImages: ['keep.png', 'remove.png'],
+            enhancedImages: ['remove.png'],
+            selectedImage: null,
+            videoFile: null,
+          }],
+        })
+        const serverProject = makeProject({
+          id: 'proj-1',
+          shots: [{
+            ...proj.shots[0],
+            generatedImages: ['keep.png', 'remove.png'],
+            enhancedImages: ['remove.png'],
+          }],
+        })
+        useProjectStore.setState({ projects: [proj] })
+        mockedApi.shots.deleteImage.mockRejectedValueOnce(new Error('delete failed'))
+        mockedApi.projects.get.mockResolvedValueOnce(serverProject)
+
+        act(() => {
+          useProjectStore.getState().deleteShotImage('proj-1', 'shot-1', 'remove.png')
+        })
+
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(mockedApi.projects.get).toHaveBeenCalledWith('proj-1')
+        expect(useProjectStore.getState().projects[0].shots[0].generatedImages).toContain('remove.png')
+      })
+    })
+
+    describe('deleteShotVideo', () => {
+      it('restores server state when video deletion fails', async () => {
+        const proj = makeProject({
+          id: 'proj-1',
+          shots: [{
+            id: 'shot-1',
+            order: 1,
+            scene: 'scene',
+            audioDescription: '',
+            imagePrompt: '',
+            videoPrompt: '',
+            duration: 5,
+            assetRefs: [],
+            status: 'vid_review',
+            generatedImages: ['frame.png'],
+            enhancedImages: [],
+            selectedImage: null,
+            videoFile: 'video.mp4',
+          }],
+        })
+        const serverProject = makeProject({
+          id: 'proj-1',
+          shots: [{
+            ...proj.shots[0],
+            videoFile: 'video.mp4',
+          }],
+        })
+        useProjectStore.setState({ projects: [proj] })
+        mockedApi.shots.deleteVideo.mockRejectedValueOnce(new Error('delete failed'))
+        mockedApi.projects.get.mockResolvedValueOnce(serverProject)
+
+        act(() => {
+          useProjectStore.getState().deleteShotVideo('proj-1', 'shot-1')
+        })
+
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(mockedApi.projects.get).toHaveBeenCalledWith('proj-1')
+        expect(useProjectStore.getState().projects[0].shots[0].videoFile).toBe('video.mp4')
       })
     })
 

@@ -51,11 +51,13 @@ export async function generateVideoFromImage(options: {
   model: VideoModel;
   prompt: string;
   sourceImageUrl: string;
-  duration?: number;
+  duration?: number | string;
   quality?: string;
+  extraInput?: Record<string, string | number | boolean>;
 }, signal?: AbortSignal): Promise<string> {
-  const { model, prompt, sourceImageUrl, duration, quality } = options;
+  const { model, prompt, sourceImageUrl, duration, quality, extraInput } = options;
   const qualityInput = resolveVideoQualityInput(model, quality);
+  const effectiveExtraInput = extraInput ?? qualityInput;
 
   if (model.provider === 'fal') {
     const apiKey = await getFalApiKey();
@@ -66,7 +68,7 @@ export async function generateVideoFromImage(options: {
       prompt,
       sourceImageUrl,
       duration,
-      extraInput: qualityInput,
+      extraInput: effectiveExtraInput,
     }, signal);
   }
 
@@ -80,7 +82,7 @@ export async function generateVideoFromImage(options: {
       duration,
       sourceImageParam: model.sourceImageParam,
       supportsDuration: model.supportsDuration,
-      extraInput: qualityInput,
+      extraInput: effectiveExtraInput,
     }, token, signal);
   }
 

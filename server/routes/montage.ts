@@ -27,6 +27,10 @@ async function loadProject(req: Request, res: Response) {
   return project;
 }
 
+function isLegacyMontageRenderEnabled(req: Request): boolean {
+  return req.app.get('enableLegacyMontageRender') === true;
+}
+
 function isExternalMediaRef(value: string) {
   return /^https?:\/\//i.test(value) || /^data:/i.test(value);
 }
@@ -1169,6 +1173,7 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
     const anchorIds = new Set(project.narrationAnchors.map((anchor) => anchor.id));
     const approvedShotIds = new Set(project.shots.filter((shot) => shot.status === 'approved').map((shot) => shot.id));
     const normalizedMatches = [];
+    const seenAnchorIds = new Set<string>();
 
     for (const rawMatch of rawAnchorMatches) {
       if (!rawMatch || typeof rawMatch !== 'object') {
@@ -1208,6 +1213,12 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         return;
       }
 
+      if (seenAnchorIds.has(anchorId)) {
+        sendApiError(res, 400, 'Каждый смысловой якорь должен встречаться в сопоставлении ровно один раз.');
+        return;
+      }
+      seenAnchorIds.add(anchorId);
+
       if (selectedShotId && !approvedShotIds.has(selectedShotId)) {
         sendApiError(res, 400, 'Для якоря выбран неизвестный или неутвержденный шот.');
         return;
@@ -1244,6 +1255,11 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         status,
         candidates,
       });
+    }
+
+    if (normalizedMatches.length !== anchorIds.size || seenAnchorIds.size !== anchorIds.size) {
+      sendApiError(res, 400, 'Сопоставление должно содержать все смысловые якоря без пропусков.');
+      return;
     }
 
     const coverage = summarizeAnchorCoverage(normalizedMatches);
@@ -1557,6 +1573,15 @@ router.put('/montage/plan/timeline/:clipId', async (req: Request, res: Response)
       return;
     }
 
+    if (
+      trimEndSec !== undefined
+      && Number.isFinite(entry.trimStartSec)
+      && trimEndSec < Number(entry.trimStartSec)
+    ) {
+      sendApiError(res, 400, 'trimEndSec must be greater than or equal to trimStartSec');
+      return;
+    }
+
     if (motionEffect !== undefined && motionEffect !== null) {
       if (!VALID_MOTION_EFFECTS.includes(motionEffect)) {
         sendApiError(res, 400, `Invalid motionEffect. Allowed: ${VALID_MOTION_EFFECTS.join(', ')}`);
@@ -1761,6 +1786,11 @@ router.post('/montage/refine-plan', generationLimiter, async (req: Request, res:
 // POST /api/projects/:id/montage/render
 router.post('/montage/render', generationLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 
@@ -1783,6 +1813,11 @@ router.post('/montage/render', generationLimiter, async (req: Request, res: Resp
 // GET /api/projects/:id/montage/render/:jobId
 router.get('/montage/render/:jobId', readLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 
@@ -1803,6 +1838,11 @@ router.get('/montage/render/:jobId', readLimiter, async (req: Request, res: Resp
 // DELETE /api/projects/:id/montage/render/:jobId
 router.delete('/montage/render/:jobId', mutationLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 
@@ -1828,6 +1868,11 @@ router.delete('/montage/render/:jobId', mutationLimiter, async (req: Request, re
 // GET /api/projects/:id/montage/render/:jobId/download
 router.get('/montage/render/:jobId/download', readLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 

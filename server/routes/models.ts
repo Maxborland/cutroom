@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getApiKey, getFalApiKey, getGlobalSettings, type GlobalSettings } from '../lib/config.js';
+import { fetchFalEndpointCapabilities, resetFalSchemaCache } from '../lib/fal-schema.js';
 import {
   DYNAMIC_FAL_MODEL_PREFIX,
   getVideoModelQualityOptions,
@@ -29,6 +30,8 @@ interface ModelOption {
   requiresImageInput?: boolean;
   videoQualityOptions?: string[];
   videoQualitySupport?: 'explicit' | 'none';
+  videoDurationOptions?: string[];
+  videoDurationSupport?: 'explicit' | 'none';
 }
 
 interface CachedModels {
@@ -284,6 +287,56 @@ function toVideoModelOption(base: ModelOption, explicitVideoQualityOptions: stri
     ...base,
     videoQualitySupport: 'none',
   };
+}
+
+function getFalEndpointIdForModel(modelId: string, kind: 'image' | 'video'): string | null {
+  const resolved = kind === 'image'
+    ? resolveImageModel(modelId)
+    : resolveVideoModel(modelId);
+
+  if (!resolved || resolved.provider !== 'fal') {
+    return null;
+  }
+
+  return resolved.endpoint;
+}
+
+async function hydrateFalModelCapabilities(
+  models: ModelOption[],
+  kind: 'image' | 'video',
+): Promise<ModelOption[]> {
+  const enriched = await Promise.all(models.map(async (model) => {
+    const endpointId = getFalEndpointIdForModel(model.id, kind);
+    if (!endpointId) {
+      return model;
+    }
+
+    try {
+      const capabilities = await fetchFalEndpointCapabilities(endpointId);
+
+      if (kind === 'image') {
+        return {
+          ...model,
+          imageResolutionSupport: capabilities.resolutionOptions.length > 0 ? 'explicit' : (model.imageResolutionSupport ?? 'none'),
+          imageResolutionOptions: capabilities.resolutionOptions.length > 0 ? capabilities.resolutionOptions : model.imageResolutionOptions,
+          imageAspectRatioSupport: capabilities.aspectRatioOptions.length > 0 ? 'explicit' : (model.imageAspectRatioSupport ?? 'none'),
+          imageAspectRatioOptions: capabilities.aspectRatioOptions.length > 0 ? capabilities.aspectRatioOptions : model.imageAspectRatioOptions,
+        };
+      }
+
+      return {
+        ...model,
+        videoQualitySupport: capabilities.resolutionOptions.length > 0 ? 'explicit' : (model.videoQualitySupport ?? 'none'),
+        videoQualityOptions: capabilities.resolutionOptions.length > 0 ? capabilities.resolutionOptions : model.videoQualityOptions,
+        videoDurationSupport: capabilities.durationOptions.length > 0 ? 'explicit' : (model.videoDurationSupport ?? 'none'),
+        videoDurationOptions: capabilities.durationOptions.length > 0 ? capabilities.durationOptions : model.videoDurationOptions,
+      };
+    } catch {
+      return model;
+    }
+  }));
+
+  return dedupeById(enriched);
 }
 
 function getInferredDynamicVideoQualityOptions(modelId: string): string[] {
@@ -670,17 +723,27 @@ async function fetchFalModelGroups(): Promise<{
   const dynamicVideoModels = videoResult.status === 'fulfilled' ? videoResult.value : [];
   const dynamicAudioModels = audioResult.status === 'fulfilled' ? audioResult.value : [];
 
-  const models = {
-    imageGenModels: dedupeById([
+  const imageGenModels = await hydrateFalModelCapabilities(
+    dedupeById([
       ...dynamicImageModels,
       ...FALLBACK_FAL_IMAGE_MODELS,
       ...REPLICATE_IMAGE_MODELS,
     ]),
-    videoGenModels: dedupeById([
+    'image',
+  );
+
+  const videoGenModels = await hydrateFalModelCapabilities(
+    dedupeById([
       ...dynamicVideoModels,
       ...FALLBACK_FAL_VIDEO_MODELS,
       ...REPLICATE_VIDEO_MODELS,
     ]),
+    'video',
+  );
+
+  const models = {
+    imageGenModels,
+    videoGenModels,
     audioGenModels: dynamicAudioModels,
   };
 
@@ -748,6 +811,7 @@ router.get('/', async (_req: Request, res: Response) => {
 export function resetModelCache(): void {
   openRouterCache = null;
   falCache = null;
+  resetFalSchemaCache();
 }
 
 export default router;

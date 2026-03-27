@@ -291,4 +291,63 @@ describe('MontageView semantic planning panel', () => {
       ])
     })
   })
+
+  it('renders editor-first export step without legacy render buttons', async () => {
+    const user = userEvent.setup()
+    renderMontage(makeProject({
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: 'clip-anchor-1',
+            shotId: 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 0,
+            durationSec: 4,
+          },
+        ],
+        transitions: [],
+        motionGraphics: {
+          lowerThirds: [],
+        },
+        audio: {
+          voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 },
+          music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#1a1a2e',
+          secondaryColor: '#e2b44d',
+          textColor: '#ffffff',
+        },
+      },
+      latestExportArtifact: {
+        filename: 'final-cut.mp4',
+        exportedAt: '2026-03-27T10:00:00.000Z',
+      },
+      renders: [
+        {
+          id: 'openreel-render-1',
+          createdAt: '2026-03-27T10:00:00.000Z',
+          quality: 'final',
+          resolution: '3840x2160',
+          status: 'done',
+          progress: 100,
+          outputFile: 'openreel/exports/123-final-cut.mp4',
+        },
+      ],
+    }))
+
+    await user.click(screen.getByRole('button', { name: 'Рендер' }))
+
+    expect(screen.getByText('Финальная сборка через OpenReel Export')).toBeInTheDocument()
+    expect(screen.getByText(/откройте проект в редакторе/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Открыть в редакторе' })).toBeInTheDocument()
+    expect(screen.getByText('Последний экспорт')).toBeInTheDocument()
+    expect(screen.getByText(/final-cut\.mp4/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Превью (720p)' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Финальный (4K)' })).not.toBeInTheDocument()
+  })
 })

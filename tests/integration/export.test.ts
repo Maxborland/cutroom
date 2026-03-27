@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { inflateRawSync } from 'node:zlib'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { describe, it, expect, afterAll, beforeAll } from 'vitest'
@@ -14,59 +15,87 @@ import {
 
 const app = createApp()
 const require = createRequire(import.meta.url)
-const yauzl = require('yauzl') as {
-  fromBuffer: (
-    buffer: Buffer,
-    options: { lazyEntries: boolean },
-    callback: (error: Error | null, zipFile?: {
-      readEntry: () => void
-      on: (event: string, handler: (...args: any[]) => void) => void
-      openReadStream: (
-        entry: { fileName: string },
-        callback: (error: Error | null, stream?: NodeJS.ReadableStream) => void
-      ) => void
-    }) => void,
-  ) => void
-}
+void require
+
+const ZIP_LOCAL_FILE_HEADER = 0x04034b50
+const ZIP_CENTRAL_DIR_HEADER = 0x02014b50
+const ZIP_END_OF_CENTRAL_DIR = 0x06054b50
+const ZIP_STORE = 0
+const ZIP_DEFLATE = 8
 
 async function readZipEntries(buffer: Buffer): Promise<Map<string, Buffer>> {
-  return new Promise((resolve, reject) => {
-    yauzl.fromBuffer(buffer, { lazyEntries: true }, (error, zipFile) => {
-      if (error || !zipFile) {
-        reject(error ?? new Error('Failed to open ZIP archive'))
-        return
-      }
+  const eocdOffset = findEndOfCentralDirectory(buffer)
+  if (eocdOffset < 0) {
+    throw new Error('Failed to locate ZIP central directory')
+  }
 
-      const entries = new Map<string, Buffer>()
+  const centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16)
+  const totalEntries = buffer.readUInt16LE(eocdOffset + 10)
+  const entries = new Map<string, Buffer>()
 
-      zipFile.on('entry', (entry: { fileName: string }) => {
-        if (entry.fileName.endsWith('/')) {
-          entries.set(entry.fileName, Buffer.alloc(0))
-          zipFile.readEntry()
-          return
-        }
+  let offset = centralDirectoryOffset
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (buffer.readUInt32LE(offset) !== ZIP_CENTRAL_DIR_HEADER) {
+      throw new Error('Invalid ZIP central directory header')
+    }
 
-        zipFile.openReadStream(entry, (streamError, stream) => {
-          if (streamError || !stream) {
-            reject(streamError ?? new Error(`Failed to read ZIP entry ${entry.fileName}`))
-            return
-          }
+    const compressionMethod = buffer.readUInt16LE(offset + 10)
+    const compressedSize = buffer.readUInt32LE(offset + 20)
+    const fileNameLength = buffer.readUInt16LE(offset + 28)
+    const extraLength = buffer.readUInt16LE(offset + 30)
+    const commentLength = buffer.readUInt16LE(offset + 32)
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42)
+    const fileName = buffer.toString('utf8', offset + 46, offset + 46 + fileNameLength)
 
-          const chunks: Buffer[] = []
-          stream.on('data', (chunk: Buffer) => chunks.push(chunk))
-          stream.on('end', () => {
-            entries.set(entry.fileName, Buffer.concat(chunks))
-            zipFile.readEntry()
-          })
-          stream.on('error', reject)
-        })
-      })
+    if (fileName.endsWith('/')) {
+      entries.set(fileName, Buffer.alloc(0))
+    } else {
+      entries.set(
+        fileName,
+        readZipFileData(buffer, localHeaderOffset, compressedSize, compressionMethod),
+      )
+    }
 
-      zipFile.on('end', () => resolve(entries))
-      zipFile.on('error', reject)
-      zipFile.readEntry()
-    })
-  })
+    offset += 46 + fileNameLength + extraLength + commentLength
+  }
+
+  return entries
+}
+
+function findEndOfCentralDirectory(buffer: Buffer): number {
+  for (let offset = buffer.length - 22; offset >= 0; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === ZIP_END_OF_CENTRAL_DIR) {
+      return offset
+    }
+  }
+
+  return -1
+}
+
+function readZipFileData(
+  archive: Buffer,
+  localHeaderOffset: number,
+  compressedSize: number,
+  compressionMethod: number,
+): Buffer {
+  if (archive.readUInt32LE(localHeaderOffset) !== ZIP_LOCAL_FILE_HEADER) {
+    throw new Error('Invalid ZIP local file header')
+  }
+
+  const fileNameLength = archive.readUInt16LE(localHeaderOffset + 26)
+  const extraLength = archive.readUInt16LE(localHeaderOffset + 28)
+  const dataOffset = localHeaderOffset + 30 + fileNameLength + extraLength
+  const compressedData = archive.subarray(dataOffset, dataOffset + compressedSize)
+
+  if (compressionMethod === ZIP_STORE) {
+    return Buffer.from(compressedData)
+  }
+
+  if (compressionMethod === ZIP_DEFLATE) {
+    return inflateRawSync(compressedData)
+  }
+
+  throw new Error(`Unsupported ZIP compression method: ${compressionMethod}`)
 }
 
 describe('Export API', () => {

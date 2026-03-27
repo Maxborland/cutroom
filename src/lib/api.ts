@@ -374,6 +374,8 @@ export const api = {
         name: string;
         videoQualityOptions?: string[];
         videoQualitySupport?: 'explicit' | 'none';
+        videoDurationOptions?: string[];
+        videoDurationSupport?: 'explicit' | 'none';
       }[];
       audioGenModels: { id: string; name: string }[];
     }>('/models'),

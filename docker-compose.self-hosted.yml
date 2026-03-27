@@ -23,7 +23,7 @@ services:
         condition: service_healthy
     command: ["sh", "-lc", "npm run db:migrate && npm run start"]
     ports:
-      - "3001:3001"
+      - "${APP_HOST_PORT:-3001}:3001"
     volumes:
       - app_data:/app/data
     healthcheck:
