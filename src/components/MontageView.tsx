@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { AnchorMatch, NarrationAnchor, Project, RenderJob } from '../types'
+import type { AnchorMatch, NarrationAnchor, Project, RenderJob, ShotVideoDescriptionMoment } from '../types'
 import {
   Mic,
   Music,
@@ -607,17 +607,39 @@ function semanticStatusClasses(status: AnchorMatch['status'] | undefined) {
   }
 }
 
+function formatMomentTimecode(seconds?: number): string | null {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+    return null
+  }
+
+  const wholeSeconds = Math.floor(seconds)
+  const minutes = Math.floor(wholeSeconds / 60)
+  const remainingSeconds = wholeSeconds % 60
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`
+}
+
+function formatMomentLabel(moment: ShotVideoDescriptionMoment): string {
+  const timing = formatMomentTimecode(moment.startSec)
+  const endTiming = formatMomentTimecode(moment.endSec)
+  if (timing && endTiming) return `${moment.label} (${timing}–${endTiming})`
+  if (timing) return `${moment.label} (${timing})`
+  return moment.label
+}
+
 function normalizeManualAnchorMatches(
   anchors: NarrationAnchor[],
   existingMatches: AnchorMatch[],
-  overrides: Record<string, string>,
+  shotOverrides: Record<string, string>,
+  momentOverrides: Record<string, string>,
 ): AnchorMatch[] {
   const matchByAnchorId = new Map(existingMatches.map((match) => [match.anchorId, match]))
 
   return anchors.map((anchor) => {
     const existing = matchByAnchorId.get(anchor.id)
-    const overrideShotId = overrides[anchor.id]
+    const overrideShotId = shotOverrides[anchor.id]
+    const overrideMomentId = momentOverrides[anchor.id]
     const selectedShotId = overrideShotId ?? existing?.selectedShotId
+    const hasShotOverride = Boolean(overrideShotId && overrideShotId !== existing?.selectedShotId)
 
     if (!selectedShotId) {
       return {
@@ -635,7 +657,7 @@ function normalizeManualAnchorMatches(
     return {
       anchorId: anchor.id,
       selectedShotId,
-      selectedMomentId: isManualOverride ? undefined : existing?.selectedMomentId,
+      selectedMomentId: hasShotOverride ? (overrideMomentId || undefined) : (overrideMomentId ?? existing?.selectedMomentId),
       confidence: isManualOverride ? 1.0 : (existing?.confidence ?? 0.67),
       status: isManualOverride ? 'matched' : (existing?.status ?? 'matched'),
       candidates: existing?.candidates ?? [],
@@ -658,9 +680,11 @@ function PlanStep({
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
   const [shotOverridesByAnchorId, setShotOverridesByAnchorId] = useState<Record<string, string>>({})
+  const [momentOverridesByAnchorId, setMomentOverridesByAnchorId] = useState<Record<string, string>>({})
 
   useEffect(() => {
     setShotOverridesByAnchorId({})
+    setMomentOverridesByAnchorId({})
     setSemanticError(null)
   }, [project.id, project.anchorMatches, project.narrationAnchors])
 
@@ -674,7 +698,7 @@ function PlanStep({
     const status = existingMatchesByAnchorId.get(anchor.id)?.status
     return status === 'weak_match' || status === 'unmatched'
   })
-  const hasPendingOverrides = Object.keys(shotOverridesByAnchorId).length > 0
+  const hasPendingOverrides = Object.keys(shotOverridesByAnchorId).length > 0 || Object.keys(momentOverridesByAnchorId).length > 0
 
   const generatePlan = async () => {
     setLoading(true)
@@ -716,12 +740,18 @@ function PlanStep({
   }
 
   const saveAnchorOverrides = async () => {
-    const nextMatches = normalizeManualAnchorMatches(narrationAnchors, anchorMatches, shotOverridesByAnchorId)
+    const nextMatches = normalizeManualAnchorMatches(
+      narrationAnchors,
+      anchorMatches,
+      shotOverridesByAnchorId,
+      momentOverridesByAnchorId,
+    )
     setSemanticAction('save')
     setSemanticError(null)
     try {
       await api.montage.updateAnchorMatches(project.id, nextMatches)
       setShotOverridesByAnchorId({})
+      setMomentOverridesByAnchorId({})
       onRefresh()
     } catch (err) {
       setSemanticError(err instanceof Error ? err.message : 'Не удалось сохранить ручные сопоставления')
@@ -738,15 +768,28 @@ function PlanStep({
           План монтажа
         </h3>
 
-        <div className="mb-4">
-          <button
-            onClick={onOpenEditor}
-            className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
-          >
-            <Clapperboard size={14} />
-            Открыть в редакторе
-          </button>
-        </div>
+        {plan && (
+          <div className="mb-4 bg-emerald-dim border-2 border-emerald rounded-[5px] p-4 space-y-3">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
+              Черновик готов для редактора
+            </p>
+            <p className="text-sm text-text-primary">
+              Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.
+            </p>
+            {coverage && (
+              <p className="font-mono text-xs text-text-secondary">
+                {coverage.matchedAnchors} {coverage.matchedAnchors === 1 ? 'сильное совпадение' : 'сильных совпадений'}
+              </p>
+            )}
+            <button
+              onClick={onOpenEditor}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+            >
+              <Clapperboard size={14} />
+              Открыть в редакторе
+            </button>
+          </div>
+        )}
 
         <div className="mb-4 bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-4">
           <div className="flex items-start justify-between gap-4">
@@ -814,7 +857,9 @@ function PlanStep({
               {narrationAnchors.map((anchor) => {
                 const match = existingMatchesByAnchorId.get(anchor.id)
                 const selectedShotId = shotOverridesByAnchorId[anchor.id] ?? match?.selectedShotId ?? ''
+                const selectedMomentId = momentOverridesByAnchorId[anchor.id] ?? match?.selectedMomentId ?? ''
                 const selectedShot = approvedShots.find((shot) => shot.id === selectedShotId)
+                const selectedMoments = selectedShot?.videoDescription?.moments ?? []
                 const needsReview = match?.status === 'weak_match' || match?.status === 'unmatched'
 
                 return (
@@ -849,6 +894,11 @@ function PlanStep({
                                 ...current,
                                 [anchor.id]: value,
                               }))
+                              setMomentOverridesByAnchorId((current) => {
+                                const next = { ...current }
+                                delete next[anchor.id]
+                                return next
+                              })
                             }}
                             className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
                           >
@@ -860,6 +910,37 @@ function PlanStep({
                             ))}
                           </select>
                         </label>
+                        {selectedShot && selectedMoments.length > 0 && (
+                          <label className="block">
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                              Выбор момента для якоря {anchor.label}
+                            </span>
+                            <select
+                              aria-label={`Выбор момента для якоря ${anchor.label}`}
+                              value={selectedMomentId}
+                              onChange={(event) => {
+                                const value = event.target.value
+                                setMomentOverridesByAnchorId((current) => {
+                                  const next = { ...current }
+                                  if (value) {
+                                    next[anchor.id] = value
+                                  } else {
+                                    delete next[anchor.id]
+                                  }
+                                  return next
+                                })
+                              }}
+                              className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                            >
+                              <option value="">Без привязки к моменту</option>
+                              {selectedMoments.map((moment) => (
+                                <option key={moment.id} value={moment.id}>
+                                  {formatMomentLabel(moment)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
                         {typeof match?.confidence === 'number' && match.confidence > 0 && (
                           <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
                             confidence {Math.round(match.confidence * 100)}%

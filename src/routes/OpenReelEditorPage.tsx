@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
-import { ApiRequestError, api } from '../lib/api'
+import {
+  ApiRequestError,
+  api,
+  type OpenReelFinalizeExportPayload,
+  type OpenReelSaveProjectPayload,
+} from '../lib/api'
 import type { OpenReelBundle } from '../lib/openreel-bridge'
 import { OpenReelHost } from '../components/openreel/OpenReelHost'
 import type { OpenReelSyncState } from '../components/openreel/OpenReelSyncStatus'
@@ -15,6 +20,16 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+function formatSemanticSummary(summary: NonNullable<OpenReelBundle['semanticSummary']>): string {
+  const strongPart = `${summary.matched} ${summary.matched === 1 ? 'сильное' : 'сильных'}`
+  const reviewPart = `${summary.weak} ${summary.weak === 1 ? 'требует проверки' : 'требуют проверки'}`
+  const unmatchedPart = summary.unmatched > 0
+    ? `, ${summary.unmatched} ${summary.unmatched === 1 ? 'остается без совпадения' : 'остаются без совпадений'}`
+    : ''
+
+  return `${strongPart}, ${reviewPart}${unmatchedPart}`
+}
+
 export function OpenReelEditorPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
@@ -26,9 +41,10 @@ export function OpenReelEditorPage() {
   const [syncStatus, setSyncStatus] = useState<OpenReelSyncState>('synced')
   const [exportStatus, setExportStatus] = useState<string | null>(null)
 
-  const pendingSaveRef = useRef<{ version: string; project: unknown } | null>(null)
+  const pendingSaveRef = useRef<OpenReelSaveProjectPayload | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isSavingRef = useRef(false)
+  const bundleRef = useRef<OpenReelBundle | null>(null)
 
   const clearSaveTimer = useCallback(() => {
     if (!saveTimerRef.current) return
@@ -66,7 +82,7 @@ export function OpenReelEditorPage() {
     }, SAVE_DEBOUNCE_MS)
   }, [clearSaveTimer, projectId])
 
-  const queueSave = useCallback((payload: { version: string; project: unknown }) => {
+  const queueSave = useCallback((payload: OpenReelSaveProjectPayload) => {
     pendingSaveRef.current = payload
     setSyncStatus('saving')
     setSaveError(null)
@@ -76,6 +92,10 @@ export function OpenReelEditorPage() {
       void flushPendingSave()
     }, SAVE_DEBOUNCE_MS)
   }, [clearSaveTimer, flushPendingSave])
+
+  useEffect(() => {
+    bundleRef.current = bundle
+  }, [bundle])
 
   useEffect(() => {
     let cancelled = false
@@ -143,6 +163,56 @@ export function OpenReelEditorPage() {
     queueSave(payload)
   }, [queueSave])
 
+  const handleExportComplete = useCallback(async ({ filename, artifact }: { filename: string; artifact?: Blob }) => {
+    if (!projectId || !bundleRef.current) {
+      setExportStatus(`Экспорт завершён: ${filename}`)
+      return
+    }
+
+    if (!artifact) {
+      setSyncStatus('error')
+      setSaveError('Редактор не передал файл экспорта')
+      setExportStatus(`Экспорт завершён: ${filename}`)
+      return
+    }
+
+    clearSaveTimer()
+    pendingSaveRef.current = null
+    isSavingRef.current = true
+    setSyncStatus('saving')
+    setSaveError(null)
+
+    try {
+      const payload: OpenReelFinalizeExportPayload = {
+        version: bundleRef.current.version,
+        project: bundleRef.current.project,
+        filename,
+        artifact,
+      }
+
+      const response = await api.openreel.finalizeExport(projectId, payload)
+
+      const nextBundle = {
+        ...bundleRef.current,
+        exportArtifact: response.exportArtifact ?? {
+          filename,
+          exportedAt: response.modifiedAt,
+        },
+      }
+
+      bundleRef.current = nextBundle
+      setBundle(nextBundle)
+      setSyncStatus('synced')
+      setExportStatus(`Экспорт завершён и сохранён в проекте: ${filename}`)
+    } catch (error) {
+      setSyncStatus('error')
+      setSaveError(getErrorMessage(error, 'Ошибка сохранения экспорта'))
+      setExportStatus(`Экспорт завершён: ${filename}`)
+    } finally {
+      isSavingRef.current = false
+    }
+  }, [clearSaveTimer, projectId])
+
   const goBack = () => {
     if (!projectId) {
       navigate('/')
@@ -171,21 +241,49 @@ export function OpenReelEditorPage() {
     }
 
     return (
-      <OpenReelHost
-        bundle={bundle}
-        syncStatus={syncStatus}
-        onProjectChange={handleProjectChange}
-        onExportProgress={({ phase, progress }) => {
-          setExportStatus(`Экспорт: ${phase} (${Math.round(progress)}%)`)
-        }}
-        onExportComplete={({ filename }) => {
-          setExportStatus(`Экспорт завершён: ${filename}`)
-        }}
-        onError={(message) => {
-          setSyncStatus('error')
-          setSaveError(message)
-        }}
-      />
+      <div className="space-y-4">
+        {bundle.semanticSummary && (
+          <div className="bg-surface-2 border-2 border-emerald rounded-[5px] p-4 space-y-2">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
+              Черновик из монтажного плана
+            </p>
+            <p className="text-sm text-text-primary">
+              {formatSemanticSummary(bundle.semanticSummary)}
+            </p>
+            <p className="text-xs text-text-secondary">
+              Откройте монтажный черновик в OpenReel, чтобы доработать клипы и синхронизировать правки с проектом.
+            </p>
+          </div>
+        )}
+
+        {bundle.exportArtifact && (
+          <div className="bg-surface-2 border-2 border-sky rounded-[5px] p-4 space-y-2">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-sky">
+              Последний экспорт из редактора
+            </p>
+            <p className="text-sm text-text-primary">
+              Файл: {bundle.exportArtifact.filename}
+            </p>
+            <p className="text-xs text-text-secondary">
+              Экспорт сохранён в CutRoom и отмечен как последний готовый артефакт проекта.
+            </p>
+          </div>
+        )}
+
+        <OpenReelHost
+          bundle={bundle}
+          syncStatus={syncStatus}
+          onProjectChange={handleProjectChange}
+          onExportProgress={({ phase, progress }) => {
+            setExportStatus(`Экспорт: ${phase} (${Math.round(progress)}%)`)
+          }}
+          onExportComplete={handleExportComplete}
+          onError={(message) => {
+            setSyncStatus('error')
+            setSaveError(message)
+          }}
+        />
+      </div>
     )
   }
 

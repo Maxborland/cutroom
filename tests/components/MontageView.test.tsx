@@ -63,6 +63,22 @@ function makeProject(overrides: Partial<Project> = {}): Project {
         generatedImages: [],
         enhancedImages: [],
         videoFile: 'clip-1.mp4',
+        videoDescription: {
+          version: 1,
+          summary: 'Фасад и панорамные окна',
+          tags: ['фасад'],
+          matchHints: ['фасад'],
+          moments: [
+            {
+              id: 'moment-facade',
+              label: 'Фасад',
+              startSec: 0.5,
+              endSec: 2.5,
+              tags: ['фасад'],
+              summary: 'Кадр фасада с плавным движением камеры',
+            },
+          ],
+        },
       },
       {
         id: 'shot-2',
@@ -77,6 +93,22 @@ function makeProject(overrides: Partial<Project> = {}): Project {
         generatedImages: [],
         enhancedImages: [],
         videoFile: 'clip-2.mp4',
+        videoDescription: {
+          version: 1,
+          summary: 'Терраса с видом',
+          tags: ['терраса'],
+          matchHints: ['терраса'],
+          moments: [
+            {
+              id: 'moment-terrace',
+              label: 'Терраса',
+              startSec: 1.25,
+              endSec: 3.75,
+              tags: ['терраса'],
+              summary: 'Терраса и вид на закат',
+            },
+          ],
+        },
       },
     ],
     settings: {
@@ -104,6 +136,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
       {
         anchorId: 'anchor-1',
         selectedShotId: 'shot-1',
+        selectedMomentId: 'moment-facade',
         confidence: 0.44,
         status: 'weak_match',
         candidates: [],
@@ -150,10 +183,75 @@ describe('MontageView semantic planning panel', () => {
     expect(screen.getByRole('button', { name: 'Извлечь якоря' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Сопоставить' })).toBeInTheDocument()
     expect(screen.getByText(/требуют проверки/i)).toBeInTheDocument()
-    expect(screen.getByDisplayValue('shot-1')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Выбор шота для якоря Терраса' })).toHaveValue('shot-1')
+    expect(screen.getByRole('combobox', { name: 'Выбор момента для якоря Терраса' })).toHaveValue('moment-facade')
+    expect(screen.getByRole('option', { name: 'Фасад (0:00–0:02)' })).toBeInTheDocument()
   })
 
-  it('saves manual shot overrides for weak matches', async () => {
+  it('shows editor-first handoff copy when a semantic draft already exists', async () => {
+    const user = userEvent.setup()
+    renderMontage(makeProject({
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: 'clip-anchor-1',
+            shotId: 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 0,
+            durationSec: 4,
+            trimStartSec: 0.5,
+            trimEndSec: 4.5,
+            anchorId: 'anchor-1',
+            selectedMomentId: 'moment-facade',
+          },
+        ],
+        transitions: [],
+        motionGraphics: {
+          intro: { title: 'Тестовый проект', durationSec: 3, animation: 'fade_in' },
+          lowerThirds: [],
+          outro: { title: 'Тестовый проект', durationSec: 4, animation: 'fade_in' },
+        },
+        audio: {
+          voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 },
+          music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#1a1a2e',
+          secondaryColor: '#e2b44d',
+          textColor: '#ffffff',
+        },
+      },
+      anchorCoverageSummary: {
+        totalAnchors: 1,
+        matchedAnchors: 1,
+        weakMatches: 0,
+        unmatchedAnchors: 0,
+      },
+    }))
+
+    await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+
+    expect(screen.getByText('Черновик готов для редактора')).toBeInTheDocument()
+    expect(screen.getByText('Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Открыть в редакторе' })).toBeInTheDocument()
+    expect(screen.getByText('1 сильное совпадение')).toBeInTheDocument()
+  })
+
+  it('does not show the editor CTA before a semantic draft exists', async () => {
+    const user = userEvent.setup()
+    renderMontage(makeProject({ montagePlan: undefined }))
+
+    await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+
+    expect(screen.queryByRole('button', { name: 'Открыть в редакторе' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Черновик готов для редактора')).not.toBeInTheDocument()
+  })
+
+  it('saves manual shot and moment overrides for weak matches', async () => {
     const user = userEvent.setup()
     const updateAnchorMatchesMock = vi.mocked(api.montage.updateAnchorMatches)
     updateAnchorMatchesMock.mockResolvedValue({
@@ -161,6 +259,7 @@ describe('MontageView semantic planning panel', () => {
         {
           anchorId: 'anchor-1',
           selectedShotId: 'shot-2',
+          selectedMomentId: 'moment-terrace',
           confidence: 0.44,
           status: 'matched',
           candidates: [],
@@ -178,6 +277,7 @@ describe('MontageView semantic planning panel', () => {
 
     await user.click(screen.getByRole('button', { name: 'План монтажа' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Выбор шота для якоря Терраса' }), 'shot-2')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Выбор момента для якоря Терраса' }), 'moment-terrace')
     await user.click(screen.getByRole('button', { name: 'Сохранить выбор' }))
 
     await waitFor(() => {
@@ -185,6 +285,7 @@ describe('MontageView semantic planning panel', () => {
         expect.objectContaining({
           anchorId: 'anchor-1',
           selectedShotId: 'shot-2',
+          selectedMomentId: 'moment-terrace',
           status: 'matched',
         }),
       ])

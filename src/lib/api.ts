@@ -81,6 +81,29 @@ export interface MatchAnchorsResponse {
   anchorCoverageSummary: AnchorCoverageSummary
 }
 
+export interface OpenReelExportArtifact {
+  filename: string
+  exportedAt: number
+}
+
+export interface OpenReelSaveProjectPayload {
+  version: string
+  project: unknown
+}
+
+export interface OpenReelFinalizeExportPayload {
+  version: string
+  project: unknown
+  filename: string
+  artifact: Blob
+}
+
+export interface OpenReelSaveProjectResponse {
+  saved: boolean
+  modifiedAt: number
+  exportArtifact?: OpenReelExportArtifact
+}
+
 export class ApiRequestError extends Error {
   readonly status: number
   readonly code?: string
@@ -385,11 +408,26 @@ export const api = {
   openreel: {
     getProject: (projectId: string) =>
       request<OpenReelBundle>(`/projects/${projectId}/openreel-project`),
-    saveProject: (projectId: string, data: { version: string; project: unknown }) =>
-      request<{ saved: boolean; modifiedAt: number }>(`/projects/${projectId}/openreel-project`, {
+    saveProject: (projectId: string, data: OpenReelSaveProjectPayload) =>
+      request<OpenReelSaveProjectResponse>(`/projects/${projectId}/openreel-project`, {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
+    finalizeExport: async (projectId: string, data: OpenReelFinalizeExportPayload) => {
+      const form = new FormData()
+      form.append('version', data.version)
+      form.append('project', JSON.stringify(data.project))
+      form.append('filename', data.filename)
+      form.append('artifact', data.artifact, data.filename)
+      const path = `/projects/${projectId}/openreel-project/finalize-export`
+      const res = await fetch(`${BASE}${path}`, {
+        method: 'POST',
+        credentials: 'include',
+        body: form,
+      })
+      if (!res.ok) await throwRequestError(res, path)
+      return res.json() as Promise<OpenReelSaveProjectResponse>
+    },
   },
   montage: {
     generateVoScript: (projectId: string) =>
@@ -458,13 +496,13 @@ export const api = {
       }),
     generatePlan: (projectId: string) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/generate-plan`, { method: 'POST' }),
-    reorderTimeline: (projectId: string, timeline: { shotId: string; durationSec: number }[]) =>
+    reorderTimeline: (projectId: string, timeline: { clipId?: string; shotId: string; durationSec: number }[]) =>
       request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline`, {
         method: 'PUT',
         body: JSON.stringify({ timeline }),
       }),
-    updateTimelineEntry: (projectId: string, shotId: string, data: { durationSec?: number; trimEndSec?: number; motionEffect?: string | null }) =>
-      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline/${shotId}`, {
+    updateTimelineEntry: (projectId: string, clipId: string, data: { durationSec?: number; trimEndSec?: number; motionEffect?: string | null }) =>
+      request<{ montagePlan: MontagePlan }>(`/projects/${projectId}/montage/plan/timeline/${clipId}`, {
         method: 'PUT',
         body: JSON.stringify(data),
       }),

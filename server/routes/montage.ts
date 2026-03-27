@@ -11,9 +11,11 @@ import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
 import { matchNarrationAnchors, summarizeAnchorCoverage } from '../lib/montage-anchor-matching.js';
+import { sampleVideoFrames } from '../lib/video-description.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DESCRIPTION_VERSION = 1;
+const VIDEO_DESCRIPTION_SAMPLE_COUNT = 2;
 
 // Helper: load project or 404
 async function loadProject(req: Request, res: Response) {
@@ -149,6 +151,58 @@ function parseVideoDescriptionResponse(
   } catch {
     return buildFallbackVideoDescription(shot);
   }
+}
+
+function buildVideoDescriptionContext(shot: {
+  scene?: string;
+  audioDescription?: string;
+  imagePrompt?: string;
+  videoPrompt?: string;
+  videoFile?: string | null;
+}) {
+  return [
+    `Shot scene: ${shot.scene?.trim() || '—'}`,
+    `Audio description: ${shot.audioDescription?.trim() || '—'}`,
+    `Image prompt: ${shot.imagePrompt?.trim() || '—'}`,
+    `Video prompt: ${shot.videoPrompt?.trim() || '—'}`,
+    `Cached video file: ${shot.videoFile?.trim() || '—'}`,
+  ].join('\n');
+}
+
+function buildVideoDescriptionUserContent(
+  shot: {
+    scene?: string;
+    audioDescription?: string;
+    imagePrompt?: string;
+    videoPrompt?: string;
+    videoFile?: string | null;
+  },
+  sampledFrames: Array<{ timeSec: number; imageDataUrl: string }>,
+) {
+  const contextText = buildVideoDescriptionContext(shot);
+
+  if (sampledFrames.length === 0) {
+    return contextText;
+  }
+
+  const evidenceText = [
+    'These sampled frames are the primary evidence for describing the shot.',
+    `Sampled frame times: ${sampledFrames.map((frame) => `${frame.timeSec.toFixed(2)}s`).join(', ')}`,
+    'Use the sampled images first, then use the text context only as fallback context.',
+    contextText,
+    'Return valid JSON with version, summary, tags, matchHints, and moments.',
+  ].join('\n\n');
+
+  return [
+    ...sampledFrames.map((frame) => ({
+      type: 'image_url' as const,
+      image_url: { url: frame.imageDataUrl },
+    })),
+    {
+      type: 'text' as const,
+      text: evidenceText,
+    },
+  ];
 }
 
 const VALID_ANCHOR_INTENTS: NarrationAnchor['intent'][] = ['hook', 'feature', 'detail', 'lifestyle', 'cta'];
@@ -911,7 +965,24 @@ router.post('/montage/describe-videos', generationLimiter, async (req: Request, 
         continue;
       }
 
+      let sampledFrames: Array<{ timeSec: number; imageDataUrl: string }> = [];
+      try {
+        const sampled = await sampleVideoFrames(localVideoPath, VIDEO_DESCRIPTION_SAMPLE_COUNT);
+        sampledFrames = sampled.filter((frame): frame is { timeSec: number; imageDataUrl: string } => (
+          frame
+          && typeof frame === 'object'
+          && typeof frame.timeSec === 'number'
+          && Number.isFinite(frame.timeSec)
+          && typeof frame.imageDataUrl === 'string'
+          && frame.imageDataUrl.trim().length > 0
+        ));
+      } catch {
+        sampledFrames = [];
+      }
+
       const systemPrompt = `You describe a finished real-estate video shot for AI-assisted montage planning.
+Use sampled video frames as the primary source of truth when they are provided.
+Use the provided shot text as fallback context only.
 Return ONLY valid JSON with this exact shape:
 {
   "summary": "short Russian summary",
@@ -930,20 +1001,18 @@ Return ONLY valid JSON with this exact shape:
 }
 If exact moments are unclear, return an empty moments array.`;
 
-      const userPrompt = [
-        `Shot scene: ${shot.scene || 'n/a'}`,
-        `Audio description: ${shot.audioDescription || 'n/a'}`,
-        `Image prompt: ${shot.imagePrompt || 'n/a'}`,
-        `Video prompt: ${shot.videoPrompt || 'n/a'}`,
-        `Local video file is available: ${path.basename(localVideoPath)}`,
-      ].join('\n');
-
       try {
         const llmResponse = await chatCompletion(
           model,
           [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
+            {
+              role: 'user',
+              content: buildVideoDescriptionUserContent({
+                ...shot,
+                videoFile: path.basename(localVideoPath),
+              }, sampledFrames),
+            },
           ],
           0.2,
         );
@@ -1144,6 +1213,24 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         return;
       }
 
+      if (selectedMomentId) {
+        if (!selectedShotId) {
+          sendApiError(res, 400, 'Для выбора момента сначала укажите шот.');
+          return;
+        }
+
+        const shot = project.shots.find((candidate) => candidate.id === selectedShotId);
+        const availableMomentIds = new Set(
+          (shot?.videoDescription?.moments ?? [])
+            .map((moment) => moment.id)
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+        );
+        if (!shot || availableMomentIds.size === 0 || !availableMomentIds.has(selectedMomentId)) {
+          sendApiError(res, 400, 'Для выбранного шота не найден указанный момент.');
+          return;
+        }
+      }
+
       if (status !== 'matched' && status !== 'weak_match' && status !== 'unmatched') {
         sendApiError(res, 400, 'Недопустимый статус сопоставления якоря.');
         return;
@@ -1212,8 +1299,9 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
       const { probeDuration } = await import('../lib/normalize.js');
       voiceoverDurationSec = await probeDuration(voPath);
     } else {
-      // Estimate from script: ~150 words/min for Russian
-      const wordCount = (planningProject.script || '').split(/\s+/).filter(Boolean).length;
+      // Estimate from approved voiceover text when audio has not been generated yet.
+      const pacingText = planningProject.voiceoverScript?.trim() || planningProject.script || '';
+      const wordCount = pacingText.split(/\s+/).filter(Boolean).length;
       voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
     }
 
@@ -1272,6 +1360,49 @@ router.put('/montage/plan', async (req: Request, res: Response) => {
 const VALID_TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide_right', 'zoom_blur', 'wipe'] as const;
 const VALID_MOTION_EFFECTS = ['ken_burns', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right'] as const;
 
+function getTimelineEntryIdentity(entry: { clipId?: string; shotId: string }): string {
+  return typeof entry.clipId === 'string' && entry.clipId.trim() ? entry.clipId.trim() : entry.shotId;
+}
+
+function findTimelineEntryByIdentity<T extends { clipId?: string; shotId: string }>(timeline: T[], identity: string): T | undefined {
+  return timeline.find((entry) => getTimelineEntryIdentity(entry) === identity);
+}
+
+function getTransitionEndpointIdentity(
+  transition: { fromClipId?: string; fromShotId: string; toClipId?: string; toShotId: string },
+  side: 'from' | 'to',
+): string {
+  if (side === 'from') {
+    return typeof transition.fromClipId === 'string' && transition.fromClipId.trim()
+      ? transition.fromClipId
+      : transition.fromShotId;
+  }
+
+  return typeof transition.toClipId === 'string' && transition.toClipId.trim()
+    ? transition.toClipId
+    : transition.toShotId;
+}
+
+function resolveRequestedTimelineIdentity<T extends { clipId?: string; shotId: string }>(
+  timeline: T[],
+  entry: { clipId?: string; shotId: string },
+): string | null {
+  if (typeof entry.clipId === 'string' && entry.clipId.trim()) {
+    return entry.clipId;
+  }
+
+  const matchingByShot = timeline.filter((timelineEntry) => timelineEntry.shotId === entry.shotId);
+  if (matchingByShot.length === 1) {
+    return getTimelineEntryIdentity(matchingByShot[0]);
+  }
+
+  if (matchingByShot.length === 0) {
+    return entry.shotId;
+  }
+
+  return null;
+}
+
 // PUT /api/projects/:id/montage/plan/timeline
 // Reorder timeline + rebuild transitions
 router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
@@ -1289,9 +1420,9 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       sendApiError(res, 400, 'timeline must be an array');
       return;
     }
-    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; durationSec: number }>;
+    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; clipId?: string; durationSec: number }>;
 
-    // Validate: all entries must have shotId and durationSec
+    // Validate: all entries must have clip identity and duration
     for (const entry of timeline) {
       if (!entry.shotId || typeof entry.durationSec !== 'number' || entry.durationSec <= 0) {
         sendApiError(res, 400, `Invalid timeline entry: shotId and positive durationSec required`);
@@ -1299,18 +1430,24 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       }
     }
 
-    // Validate: incoming shot IDs must match existing plan
-    const existingIds = new Set(project.montagePlan.timeline.map(e => e.shotId));
-    const newIds = new Set(timeline.map((entry) => entry.shotId));
-    for (const id of newIds) {
-      if (!existingIds.has(id)) {
-        sendApiError(res, 400, `Unknown shot ID: ${String(id).slice(0, 50)}`);
+    // Validate: incoming clip identities must match existing plan
+    const existingIds = new Set(project.montagePlan.timeline.map((entry) => getTimelineEntryIdentity(entry)));
+    const newIds = new Set<string>();
+    for (const entry of timeline) {
+      const identity = resolveRequestedTimelineIdentity(project.montagePlan.timeline, entry);
+      if (!identity) {
+        sendApiError(res, 400, `Timeline entry shot ${String(entry.shotId).slice(0, 50)} is ambiguous; provide clipId`);
         return;
       }
+      if (!existingIds.has(identity)) {
+        sendApiError(res, 400, `Unknown timeline entry ID: ${String(identity).slice(0, 50)}`);
+        return;
+      }
+      newIds.add(identity);
     }
 
     if (timeline.length !== project.montagePlan.timeline.length || newIds.size !== existingIds.size) {
-      sendApiError(res, 400, 'Timeline must contain all existing shots exactly once');
+      sendApiError(res, 400, 'Timeline must contain all existing clips exactly once');
       return;
     }
 
@@ -1318,10 +1455,15 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
     let cursor = introSec;
     const reordered = timeline.map((entry) => {
-      const existing = project.montagePlan!.timeline.find(e => e.shotId === entry.shotId);
+      const entryId = resolveRequestedTimelineIdentity(project.montagePlan.timeline, entry);
+      if (!entryId) {
+        throw new Error(`Timeline entry shot ${entry.shotId} is ambiguous`);
+      }
+      const existing = findTimelineEntryByIdentity(project.montagePlan!.timeline, entryId);
       const result = {
         ...existing,
         ...entry,
+        clipId: entryId,
         startSec: cursor,
       };
       cursor += result.durationSec;
@@ -1332,6 +1474,8 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     const transitions = [];
     if (reordered.length > 0 && project.montagePlan.motionGraphics.intro) {
       transitions.push({
+        fromClipId: 'intro',
+        toClipId: reordered[0].clipId,
         fromShotId: 'intro',
         toShotId: reordered[0].shotId,
         type: 'fade' as const,
@@ -1341,9 +1485,13 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     for (let i = 0; i < reordered.length - 1; i++) {
       // Preserve existing transition type if it exists between these shots
       const existing = project.montagePlan.transitions.find(
-        t => t.fromShotId === reordered[i].shotId && t.toShotId === reordered[i + 1].shotId
+        t =>
+          getTransitionEndpointIdentity(t, 'from') === getTimelineEntryIdentity(reordered[i]) &&
+          getTransitionEndpointIdentity(t, 'to') === getTimelineEntryIdentity(reordered[i + 1])
       );
       transitions.push({
+        fromClipId: reordered[i].clipId,
+        toClipId: reordered[i + 1].clipId,
         fromShotId: reordered[i].shotId,
         toShotId: reordered[i + 1].shotId,
         type: existing?.type ?? 'crossfade',
@@ -1352,6 +1500,8 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     }
     if (reordered.length > 0 && project.montagePlan.motionGraphics.outro) {
       transitions.push({
+        fromClipId: reordered[reordered.length - 1].clipId,
+        toClipId: 'outro',
         fromShotId: reordered[reordered.length - 1].shotId,
         toShotId: 'outro',
         type: 'fade' as const,
@@ -1373,9 +1523,9 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/projects/:id/montage/plan/timeline/:shotId
+// PUT /api/projects/:id/montage/plan/timeline/:clipId
 // Update individual clip: durationSec, trimEndSec, motionEffect
-router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response) => {
+router.put('/montage/plan/timeline/:clipId', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -1385,10 +1535,11 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
       return;
     }
 
-    const { shotId } = req.params;
-    const entry = project.montagePlan.timeline.find(e => e.shotId === shotId);
+    const { clipId } = req.params;
+    const entryId = resolveRequestedTimelineIdentity(project.montagePlan.timeline, { shotId: clipId, clipId });
+    const entry = entryId ? findTimelineEntryByIdentity(project.montagePlan.timeline, entryId) : undefined;
     if (!entry) {
-      sendApiError(res, 404, `Shot ${String(shotId).slice(0, 50)} not in timeline`);
+      sendApiError(res, 404, `Clip ${String(clipId).slice(0, 50)} not in timeline`);
       return;
     }
 
@@ -1415,7 +1566,7 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
 
     const updatedPlan = await withProject(project.id, (p) => {
       if (!p.montagePlan) return null;
-      const target = p.montagePlan.timeline.find(e => e.shotId === shotId);
+      const target = entryId ? findTimelineEntryByIdentity(p.montagePlan.timeline, entryId) : undefined;
       if (!target) return null;
 
       if (durationSec !== undefined) target.durationSec = durationSec;

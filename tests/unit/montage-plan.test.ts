@@ -190,9 +190,19 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
       // Timeline: 3 approved shots = 3 timeline entries
       expect(plan.timeline).toHaveLength(3)
+      expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
+        'clip-shot-001',
+        'clip-shot-002',
+        'clip-shot-003',
+      ])
 
       // Transitions: between each pair + intro->first shot = 3 transitions
       expect(plan.transitions).toHaveLength(3)
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-shot-001'],
+        ['clip-shot-001', 'clip-shot-002'],
+        ['clip-shot-002', 'clip-shot-003'],
+      ])
     })
 
     it('should only include approved shots, sorted by order', () => {
@@ -216,6 +226,100 @@ describe('Montage Plan Generation (Phase 4)', () => {
       // Sorted by order: shot-001 first, shot-003 second
       expect(plan.timeline[0].shotId).toBe('shot-001')
       expect(plan.timeline[1].shotId).toBe('shot-003')
+      expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
+        'clip-shot-001',
+        'clip-shot-003',
+      ])
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-shot-001'],
+        ['clip-shot-001', 'clip-shot-003'],
+      ])
+    })
+
+    it('should keep repeated semantic clips when the same shot is matched to multiple anchors', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Test',
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 0,
+            scene: 'Терраса с видом на реку',
+            duration: 6,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Один ролик с двумя выразительными моментами',
+              tags: ['terrace', 'sunset'],
+              matchHints: ['терраса', 'вид на реку', 'закат'],
+              moments: [
+                { id: 'moment-terrace', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['terrace'], summary: 'Терраса и вид' },
+                { id: 'moment-sunset', label: 'Закат', startSec: 2.5, endSec: 5.5, tags: ['sunset'], summary: 'Мягкий вечерний свет' },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-1', sourceText: 'Терраса с видом', label: 'Терраса', order: 1, intent: 'lifestyle' },
+          { id: 'anchor-2', sourceText: 'Вечерний закат', label: 'Закат', order: 2, intent: 'feature' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.94,
+            status: 'matched',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-2',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-sunset',
+            confidence: 0.91,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 20)
+
+      expect(plan.timeline).toHaveLength(2)
+      expect(plan.timeline[0].clipId).toBe('clip-anchor-1')
+      expect(plan.timeline[1].clipId).toBe('clip-anchor-2')
+      expect(plan.timeline[0].anchorId).toBe('anchor-1')
+      expect(plan.timeline[1].anchorId).toBe('anchor-2')
+      expect(plan.timeline[0].selectedMomentId).toBe('moment-terrace')
+      expect(plan.timeline[1].selectedMomentId).toBe('moment-sunset')
+      expect(plan.timeline[0].shotId).toBe('shot-001')
+      expect(plan.timeline[1].shotId).toBe('shot-001')
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-anchor-1'],
+        ['clip-anchor-1', 'clip-anchor-2'],
+      ])
+    })
+
+    it('should assign stable clip ids to fallback approved-shot clips', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Test',
+        shots: [
+          makeShot({ id: 'shot-001', order: 0, scene: 'Exterior', duration: 5, status: 'approved' }),
+          makeShot({ id: 'shot-002', order: 1, scene: 'Interior', duration: 4, status: 'approved' }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 15)
+
+      expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
+        'clip-shot-001',
+        'clip-shot-002',
+      ])
     })
 
     it('should distribute durations proportionally, summing to voiceover + intro + outro', () => {

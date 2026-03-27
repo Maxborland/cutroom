@@ -91,7 +91,13 @@ export interface Project {
   anchorMatches?: AnchorMatch[]
   anchorCoverageSummary?: AnchorCoverageSummary
   montagePlan?: MontagePlan
+  latestExportArtifact?: ProjectExportArtifact
   renders?: RenderJob[]
+}
+
+export interface ProjectExportArtifact {
+  filename: string
+  exportedAt: string
 }
 
 // ── Montage Types ────────────────────────────────────────────────────
@@ -155,7 +161,10 @@ export interface MontageStyle {
 }
 
 export interface TimelineEntry {
+  clipId?: string
   shotId: string
+  anchorId?: string
+  selectedMomentId?: string
   clipFile: string
   startSec: number
   durationSec: number
@@ -165,6 +174,8 @@ export interface TimelineEntry {
 }
 
 export interface TransitionEntry {
+  fromClipId?: string
+  toClipId?: string
   fromShotId: string
   toShotId: string
   type: 'cut' | 'fade' | 'crossfade' | 'slide_left' | 'slide_right' | 'zoom_blur' | 'wipe'

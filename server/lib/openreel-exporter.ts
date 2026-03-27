@@ -1,6 +1,12 @@
 import path from 'node:path';
 import { probeDuration } from './normalize.js';
-import { resolveProjectPath, type Project as CutRoomProject, type ShotMeta, type TransitionEntry } from './storage.js';
+import {
+  resolveProjectPath,
+  type Project as CutRoomProject,
+  type ShotMeta,
+  type TimelineEntry,
+  type TransitionEntry,
+} from './storage.js';
 
 export type OpenReelTransitionType =
   | 'crossfade'
@@ -259,6 +265,24 @@ function createClip(params: {
   };
 }
 
+function resolveClipTiming(entry: TimelineEntry, sourceDuration: number) {
+  const requestedStart = Number.isFinite(entry.trimStartSec) ? Math.max(entry.trimStartSec ?? 0, 0) : 0;
+  const inPoint = Math.min(requestedStart, sourceDuration);
+  const requestedEnd = Number.isFinite(entry.trimEndSec) ? Math.max(entry.trimEndSec ?? 0, inPoint) : null;
+  const boundedEnd = requestedEnd === null ? null : Math.min(requestedEnd, sourceDuration);
+  const duration = boundedEnd === null
+    ? clampPositiveNumber(entry.durationSec, sourceDuration)
+    : Math.max(boundedEnd - inPoint, 0);
+  const outPoint = boundedEnd === null ? Math.min(inPoint + duration, sourceDuration) : boundedEnd;
+
+  return {
+    startTime: Math.max(entry.startSec, 0),
+    duration,
+    inPoint,
+    outPoint,
+  };
+}
+
 function buildSemanticSummary(project: CutRoomProject): OpenReelBundle['semanticSummary'] | undefined {
   if (project.anchorCoverageSummary) {
     return {
@@ -281,61 +305,62 @@ function buildSemanticSummary(project: CutRoomProject): OpenReelBundle['semantic
   };
 }
 
-function createSemanticMatchQueue(project: CutRoomProject): Map<string, Array<{
-  anchorId: string;
-  anchorLabel: string;
-  anchorSourceText: string;
-  matchStatus: 'matched' | 'weak_match' | 'unmatched';
-  matchConfidence: number;
-  selectedMomentId?: string;
-  reason?: string;
-}>> {
-  const queue = new Map<string, Array<{
-    anchorId: string;
-    anchorLabel: string;
-    anchorSourceText: string;
-    matchStatus: 'matched' | 'weak_match' | 'unmatched';
-    matchConfidence: number;
-    selectedMomentId?: string;
-    reason?: string;
-  }>>();
+function getTimelineEntryIdentity(entry: Pick<TimelineEntry, 'clipId' | 'shotId'>, index: number): string {
+  return entry.clipId?.trim() || `clip-${entry.shotId}-${index + 1}`;
+}
 
-  if (!project.anchorMatches || project.anchorMatches.length === 0) {
-    return queue;
+function getExportTimelineEntries(project: CutRoomProject): Array<TimelineEntry & { clipId: string }> {
+  if (!project.montagePlan?.timeline?.length) {
+    return [];
+  }
+
+  return [...project.montagePlan.timeline]
+    .sort((left, right) => {
+      const leftStart = Number.isFinite(left.startSec) ? left.startSec : 0;
+      const rightStart = Number.isFinite(right.startSec) ? right.startSec : 0;
+      if (leftStart !== rightStart) return leftStart - rightStart;
+      const leftId = left.clipId?.trim() || left.shotId;
+      const rightId = right.clipId?.trim() || right.shotId;
+      return leftId.localeCompare(rightId);
+    })
+    .map((entry, index) => ({
+      ...entry,
+      clipId: getTimelineEntryIdentity(entry, index),
+    }));
+}
+
+function buildSemanticClipMetadata(
+  project: CutRoomProject,
+  entry: TimelineEntry & { clipId: string },
+): Record<string, unknown> | undefined {
+  if (!entry.anchorId) {
+    return undefined;
   }
 
   const anchorById = new Map((project.narrationAnchors ?? []).map((anchor) => [anchor.id, anchor]));
-  const orderedMatches = [...project.anchorMatches].sort((left, right) => {
-    const leftOrder = anchorById.get(left.anchorId)?.order ?? Number.MAX_SAFE_INTEGER;
-    const rightOrder = anchorById.get(right.anchorId)?.order ?? Number.MAX_SAFE_INTEGER;
-    return leftOrder - rightOrder;
-  });
+  const matchByAnchorId = new Map((project.anchorMatches ?? []).map((match) => [match.anchorId, match]));
+  const anchor = anchorById.get(entry.anchorId);
+  const match = matchByAnchorId.get(entry.anchorId);
 
-  for (const match of orderedMatches) {
-    if (!match.selectedShotId) continue;
+  const matchedCandidate = match?.candidates.find((candidate) => (
+    candidate.shotId === entry.shotId
+    && (candidate.momentId ?? undefined) === (entry.selectedMomentId ?? undefined)
+  )) ?? match?.candidates.find((candidate) => candidate.shotId === entry.shotId);
 
-    const anchor = anchorById.get(match.anchorId);
-    if (!anchor) continue;
-
-    const reason = match.candidates.find((candidate) => (
-      candidate.shotId === match.selectedShotId
-      && (candidate.momentId ?? undefined) === (match.selectedMomentId ?? undefined)
-    ))?.reason ?? match.candidates.find((candidate) => candidate.shotId === match.selectedShotId)?.reason;
-
-    const next = queue.get(match.selectedShotId) ?? [];
-    next.push({
-      anchorId: anchor.id,
-      anchorLabel: anchor.label,
-      anchorSourceText: anchor.sourceText,
-      matchStatus: match.status,
-      matchConfidence: match.confidence,
-      selectedMomentId: match.selectedMomentId,
-      reason,
-    });
-    queue.set(match.selectedShotId, next);
-  }
-
-  return queue;
+  return {
+    cutroomSemantic: {
+      clipId: entry.clipId,
+      anchorId: anchor?.id ?? entry.anchorId,
+      anchorLabel: anchor?.label,
+      anchorSourceText: anchor?.sourceText,
+      matchStatus: match?.status ?? (entry.selectedMomentId ? 'matched' : undefined),
+      matchConfidence: match?.confidence,
+      selectedMomentId: entry.selectedMomentId,
+      reason: matchedCandidate?.reason,
+      trimStartSec: entry.trimStartSec,
+      trimEndSec: entry.trimEndSec,
+    },
+  };
 }
 
 function createMediaItem(params: {
@@ -434,7 +459,7 @@ export function mapCutRoomTransition(type: TransitionEntry['type']): MappedTrans
   }
 }
 
-function getOrderedApprovedShots(project: CutRoomProject): ShotMeta[] {
+function getShotsByTimelineOrder(project: CutRoomProject): ShotMeta[] {
   const approvedWithVideo = project.shots
     .filter((shot) => shot.status === 'approved' && Boolean(shot.videoFile));
 
@@ -443,27 +468,42 @@ function getOrderedApprovedShots(project: CutRoomProject): ShotMeta[] {
   }
 
   const byId = new Map(approvedWithVideo.map((shot) => [shot.id, shot]));
-  const used = new Set<string>();
+  const seen = new Set<string>();
   const ordered: ShotMeta[] = [];
 
-  const timelineOrdered = [...project.montagePlan.timeline].sort((a, b) => {
-    const aStart = Number.isFinite(a.startSec) ? a.startSec : 0;
-    const bStart = Number.isFinite(b.startSec) ? b.startSec : 0;
-    return aStart - bStart;
-  });
-
-  for (const entry of timelineOrdered) {
+  const timelineEntries = getExportTimelineEntries(project);
+  for (const entry of timelineEntries) {
     const shot = byId.get(entry.shotId);
-    if (!shot || used.has(shot.id)) continue;
+    if (!shot || seen.has(shot.id)) continue;
     ordered.push(shot);
-    used.add(shot.id);
+    seen.add(shot.id);
   }
 
   const remaining = approvedWithVideo
-    .filter((shot) => !used.has(shot.id))
+    .filter((shot) => !seen.has(shot.id))
     .sort((a, b) => a.order - b.order);
 
   return [...ordered, ...remaining];
+}
+
+function getClipSources(project: CutRoomProject): Array<{ shot: ShotMeta; entry?: TimelineEntry & { clipId: string } }> {
+  const approvedById = new Map(
+    project.shots
+      .filter((shot) => shot.status === 'approved' && Boolean(shot.videoFile))
+      .map((shot) => [shot.id, shot]),
+  );
+
+  const timelineEntries = getExportTimelineEntries(project);
+  if (timelineEntries.length > 0) {
+    return timelineEntries.flatMap((entry) => {
+      const shot = approvedById.get(entry.shotId);
+      return shot ? [{ shot, entry }] : [];
+    });
+  }
+
+  return [...approvedById.values()]
+    .sort((left, right) => left.order - right.order)
+    .map((shot) => ({ shot }));
 }
 
 function resolveShotVideoPath(projectId: string, shot: ShotMeta): string | null {
@@ -498,41 +538,27 @@ export async function buildOpenReelBundle(
   const mediaItems: OpenReelMediaItem[] = [];
   const tracks: OpenReelTrack[] = [];
   const semanticSummary = buildSemanticSummary(project);
-  const semanticMatchQueue = createSemanticMatchQueue(project);
 
   const videoTrack = createTrack('track-video', 'video', 'Video');
-  const orderedShots = getOrderedApprovedShots(project);
+  const timelineEntries = getExportTimelineEntries(project);
+  const exportShots = getShotsByTimelineOrder(project);
+  const clipSources = getClipSources(project);
   const shotClipIds = new Map<string, string>();
-
-  // Build timeline entry lookup for user-edited durations/trims
-  const timelineEntryByShotId = new Map<string, { durationSec: number; trimStartSec?: number; trimEndSec?: number }>();
-  if (project.montagePlan?.timeline?.length) {
-    for (const entry of project.montagePlan.timeline) {
-      timelineEntryByShotId.set(entry.shotId, {
-        durationSec: entry.durationSec,
-        trimStartSec: entry.trimStartSec,
-        trimEndSec: entry.trimEndSec,
-      });
+  const timelineClipIdsByIdentity = new Map<string, string>();
+  const sourceDurationByShotId = new Map<string, number>();
+  for (const entry of timelineEntries) {
+    timelineClipIdsByIdentity.set(entry.clipId, entry.clipId);
+    if (!timelineClipIdsByIdentity.has(entry.shotId)) {
+      timelineClipIdsByIdentity.set(entry.shotId, entry.clipId);
     }
   }
 
-  let videoCursor = 0;
-  for (const shot of orderedShots) {
+  for (const shot of exportShots) {
     const mediaId = `media-shot-${shot.id}`;
-    const clipId = `clip-shot-${shot.id}`;
     const fallbackDuration = clampPositiveNumber(shot.duration, DEFAULT_VIDEO_DURATION_SEC);
     const shotPath = resolveShotVideoPath(project.id, shot);
     const sourceDuration = await readDurationOrFallback(shotPath, fallbackDuration);
-
-    // Prefer user-edited timeline entry duration over raw source duration
-    const tlEntry = timelineEntryByShotId.get(shot.id);
-    const clipDuration = tlEntry?.durationSec && Number.isFinite(tlEntry.durationSec) && tlEntry.durationSec > 0
-      ? tlEntry.durationSec
-      : sourceDuration;
-    const inPoint = tlEntry?.trimStartSec && Number.isFinite(tlEntry.trimStartSec) ? tlEntry.trimStartSec : 0;
-    const outPoint = inPoint + clipDuration;
-    const queuedSemantic = semanticMatchQueue.get(shot.id);
-    const semanticMatch = queuedSemantic?.shift();
+    sourceDurationByShotId.set(shot.id, sourceDuration);
 
     mediaItems.push(createMediaItem({
       id: mediaId,
@@ -551,27 +577,38 @@ export async function buildOpenReelBundle(
       kind: 'shot',
       shotId: shot.id,
     };
+  }
+
+  for (const { shot, entry } of clipSources) {
+    const mediaId = `media-shot-${shot.id}`;
+    const clipId = entry?.clipId ?? `clip-shot-${shot.id}`;
+    const sourceDuration = sourceDurationByShotId.get(shot.id)
+      ?? clampPositiveNumber(shot.duration, DEFAULT_VIDEO_DURATION_SEC);
+
+    const clipTiming = entry
+      ? resolveClipTiming(entry, sourceDuration)
+      : {
+          startTime: videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0),
+          duration: sourceDuration,
+          inPoint: 0,
+          outPoint: sourceDuration,
+        };
 
     videoTrack.clips.push(createClip({
       id: clipId,
       mediaId,
       trackId: videoTrack.id,
-      startTime: videoCursor,
-      duration: clipDuration,
-      inPoint,
-      outPoint,
+      startTime: clipTiming.startTime,
+      duration: clipTiming.duration,
+      inPoint: clipTiming.inPoint,
+      outPoint: clipTiming.outPoint,
       volume: 1,
-      metadata: semanticMatch ? {
-        cutroomSemantic: {
-          ...semanticMatch,
-          trimStartSec: tlEntry?.trimStartSec,
-          trimEndSec: tlEntry?.trimEndSec,
-        },
-      } : undefined,
+      metadata: entry ? buildSemanticClipMetadata(project, entry) : undefined,
     }));
 
-    shotClipIds.set(shot.id, clipId);
-    videoCursor += clipDuration;
+    if (!shotClipIds.has(shot.id)) {
+      shotClipIds.set(shot.id, clipId);
+    }
   }
 
   if (project.montagePlan?.transitions?.length) {
@@ -579,12 +616,15 @@ export async function buildOpenReelBundle(
       const mapped = mapCutRoomTransition(transition.type);
       if (!mapped) continue;
 
-      const clipAId = shotClipIds.get(transition.fromShotId);
-      const clipBId = shotClipIds.get(transition.toShotId);
+      const fromIdentity = transition.fromClipId?.trim() || transition.fromShotId;
+      const toIdentity = transition.toClipId?.trim() || transition.toShotId;
+      const clipAId = timelineClipIdsByIdentity.get(fromIdentity) ?? shotClipIds.get(transition.fromShotId);
+      const clipBId = timelineClipIdsByIdentity.get(toIdentity) ?? shotClipIds.get(transition.toShotId);
       if (!clipAId || !clipBId) continue;
+      if (clipAId === clipBId) continue;
 
       videoTrack.transitions.push({
-        id: `transition-${transition.fromShotId}-${transition.toShotId}`,
+        id: `transition-${fromIdentity}-${toIdentity}`,
         clipAId,
         clipBId,
         type: mapped.type,
@@ -598,7 +638,11 @@ export async function buildOpenReelBundle(
     tracks.push(videoTrack);
   }
 
-  let timelineDuration = videoCursor;
+  const videoTimelineDuration = videoTrack.clips.reduce(
+    (maxDuration, clip) => Math.max(maxDuration, clip.startTime + clip.duration),
+    0,
+  );
+  let timelineDuration = videoTimelineDuration;
 
   let voiceoverDuration = 0;
   if (project.voiceoverFile) {
@@ -608,7 +652,7 @@ export async function buildOpenReelBundle(
 
     voiceoverDuration = await readDurationOrFallback(
       voiceoverPath,
-      Math.max(videoCursor, DEFAULT_VIDEO_DURATION_SEC),
+      Math.max(timelineDuration, DEFAULT_VIDEO_DURATION_SEC),
     );
 
     const mediaId = 'media-voiceover';

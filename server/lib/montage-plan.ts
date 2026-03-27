@@ -50,9 +50,15 @@ function extractAreaLabel(scene: string): string {
 
 type PlannedShot = {
   shot: ShotMeta;
+  clipId: string;
+  anchorId?: string;
   selectedMoment?: NonNullable<ShotMeta['videoDescription']>['moments'][number];
   anchorStatus?: 'matched' | 'weak_match';
 };
+
+function makeFallbackClipId(shot: ShotMeta): string {
+  return `clip-${shot.id}`;
+}
 
 function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): PlannedShot[] {
   const shotById = new Map(approvedShots.map((shot) => [shot.id, shot]));
@@ -64,7 +70,7 @@ function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): Planned
     .sort((left, right) => (anchorOrder.get(left.anchorId) ?? Number.MAX_SAFE_INTEGER) - (anchorOrder.get(right.anchorId) ?? Number.MAX_SAFE_INTEGER));
 
   for (const match of orderedMatches) {
-    if (match.status === 'unmatched' || !match.selectedShotId || usedShotIds.has(match.selectedShotId)) {
+    if (match.status === 'unmatched' || !match.selectedShotId) {
       continue;
     }
 
@@ -79,6 +85,8 @@ function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): Planned
 
     plannedShots.push({
       shot,
+      clipId: match.anchorId ? `clip-${match.anchorId}` : `clip-${shot.id}`,
+      anchorId: match.anchorId,
       selectedMoment,
       anchorStatus: match.status,
     });
@@ -87,11 +95,13 @@ function buildPlannedShots(project: Project, approvedShots: ShotMeta[]): Planned
 
   for (const shot of approvedShots) {
     if (!usedShotIds.has(shot.id)) {
-      plannedShots.push({ shot });
+      plannedShots.push({ shot, clipId: makeFallbackClipId(shot) });
     }
   }
 
-  return plannedShots.length > 0 ? plannedShots : approvedShots.map((shot) => ({ shot }));
+  return plannedShots.length > 0
+    ? plannedShots
+    : approvedShots.map((shot) => ({ shot, clipId: makeFallbackClipId(shot) }));
 }
 
 // ── Transition heuristics ────────────────────────────────────────────
@@ -192,7 +202,10 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
     const duration = allocatedDurations[i];
 
     const entry: TimelineEntry = {
+      clipId: plannedShot.clipId,
       shotId: shot.id,
+      anchorId: plannedShot.anchorId,
+      selectedMomentId: plannedShot.selectedMoment?.id,
       clipFile: `montage/normalized/${shot.id}.mp4`,
       startSec: currentSec,
       durationSec: duration,
@@ -225,13 +238,17 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   const transitions: TransitionEntry[] = [];
 
   for (let i = 0; i < plannedShots.length; i++) {
-    const prevShot = i === 0 ? null : plannedShots[i - 1].shot;
-    const currentShot = plannedShots[i].shot;
+    const prevPlannedShot = i === 0 ? null : plannedShots[i - 1];
+    const prevShot = prevPlannedShot?.shot ?? null;
+    const currentPlannedShot = plannedShots[i];
+    const currentShot = currentPlannedShot.shot;
     const isFirstAfterIntro = i === 0;
 
     const { type, durationSec } = selectTransition(prevShot, currentShot, isFirstAfterIntro);
 
     transitions.push({
+      fromClipId: i === 0 ? 'intro' : prevPlannedShot!.clipId,
+      toClipId: currentPlannedShot.clipId,
       fromShotId: i === 0 ? 'intro' : prevShot!.id,
       toShotId: currentShot.id,
       type,
