@@ -1293,6 +1293,63 @@ describe('Montage Integration', () => {
       expect(res.body.error).toContain('момент')
     })
 
+    it('returns 400 when stored shot descriptions contain only malformed moment ids', async () => {
+      await withProject(projectId, (proj) => {
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ]
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'terrace',
+            videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса и фасад',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [
+                {
+                  id: '',
+                  label: 'Пустой момент',
+                  startSec: 1,
+                  endSec: 3,
+                  tags: ['терраса'],
+                  summary: 'Некорректный момент',
+                },
+              ],
+            },
+          },
+        ]
+      })
+
+      const res = await request(app)
+        .put(`/api/projects/${projectId}/montage/anchor-matches`)
+        .send({
+          anchorMatches: [
+            {
+              anchorId: 'anchor-1',
+              selectedShotId: 'shot-1',
+              selectedMomentId: 'moment-terrace',
+              confidence: 0.5,
+              status: 'matched',
+              candidates: [],
+            },
+          ],
+        })
+        .expect(400)
+
+      expect(res.body.error).toContain('момент')
+    })
+
     it('returns 400 when override references an unknown approved shot', async () => {
       await withProject(projectId, (proj) => {
         proj.narrationAnchors = [

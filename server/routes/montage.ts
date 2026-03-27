@@ -1220,7 +1220,11 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         }
 
         const shot = project.shots.find((candidate) => candidate.id === selectedShotId);
-        const availableMomentIds = new Set((shot?.videoDescription?.moments ?? []).map((moment) => moment.id));
+        const availableMomentIds = new Set(
+          (shot?.videoDescription?.moments ?? [])
+            .map((moment) => moment.id)
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+        );
         if (!shot || availableMomentIds.size === 0 || !availableMomentIds.has(selectedMomentId)) {
           sendApiError(res, 400, 'Для выбранного шота не найден указанный момент.');
           return;

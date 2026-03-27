@@ -266,19 +266,14 @@ function createClip(params: {
 }
 
 function resolveClipTiming(entry: TimelineEntry, sourceDuration: number) {
-  const requestedDuration = clampPositiveNumber(entry.durationSec, sourceDuration);
   const requestedStart = Number.isFinite(entry.trimStartSec) ? Math.max(entry.trimStartSec ?? 0, 0) : 0;
   const inPoint = Math.min(requestedStart, sourceDuration);
   const requestedEnd = Number.isFinite(entry.trimEndSec) ? Math.max(entry.trimEndSec ?? 0, inPoint) : null;
   const boundedEnd = requestedEnd === null ? null : Math.min(requestedEnd, sourceDuration);
-  const boundedDuration = boundedEnd === null
-    ? requestedDuration
+  const duration = boundedEnd === null
+    ? clampPositiveNumber(entry.durationSec, sourceDuration)
     : Math.max(boundedEnd - inPoint, 0);
-  const duration = clampPositiveNumber(
-    boundedEnd === null ? requestedDuration : boundedDuration,
-    DEFAULT_VIDEO_DURATION_SEC,
-  );
-  const outPoint = boundedEnd === null ? inPoint + duration : boundedEnd;
+  const outPoint = boundedEnd === null ? Math.min(inPoint + duration, sourceDuration) : boundedEnd;
 
   return {
     startTime: Math.max(entry.startSec, 0),
@@ -593,7 +588,7 @@ export async function buildOpenReelBundle(
     const clipTiming = entry
       ? resolveClipTiming(entry, sourceDuration)
       : {
-          startTime: 0,
+          startTime: videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0),
           duration: sourceDuration,
           inPoint: 0,
           outPoint: sourceDuration,
@@ -603,7 +598,7 @@ export async function buildOpenReelBundle(
       id: clipId,
       mediaId,
       trackId: videoTrack.id,
-      startTime: entry ? clipTiming.startTime : videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0),
+      startTime: clipTiming.startTime,
       duration: clipTiming.duration,
       inPoint: clipTiming.inPoint,
       outPoint: clipTiming.outPoint,
