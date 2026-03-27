@@ -6,7 +6,7 @@ export interface SampledVideoFrame {
   imageDataUrl: string;
 }
 
-const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+const FFMPEG = process.env.FFMPEG_PATH?.trim() || 'ffmpeg';
 const MAX_STDOUT_SIZE = 2 * 1024 * 1024;
 const FFMPEG_TIMEOUT_MS = 8_000;
 const MAX_SAMPLED_FRAMES = 2;

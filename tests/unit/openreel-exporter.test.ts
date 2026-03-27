@@ -251,6 +251,76 @@ describe('buildOpenReelBundle()', () => {
         selectedMomentId: 'moment-terrace-repeat',
       }),
     });
+    expect(mockedProbeDuration).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips self-referential fallback transitions when legacy endpoints collapse to the same clip', async () => {
+    mockedProbeDuration.mockResolvedValue(8);
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-terrace',
+          order: 1,
+          scene: 'Терраса',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'terrace.mp4',
+        },
+      ],
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: 'clip-anchor-1',
+            shotId: 'shot-terrace',
+            clipFile: 'montage/normalized/shot-terrace.mp4',
+            startSec: 0,
+            durationSec: 3,
+          },
+          {
+            clipId: 'clip-anchor-2',
+            shotId: 'shot-terrace',
+            clipFile: 'montage/normalized/shot-terrace.mp4',
+            startSec: 3,
+            durationSec: 3,
+          },
+        ],
+        transitions: [
+          {
+            fromShotId: 'shot-terrace',
+            toShotId: 'shot-terrace',
+            type: 'fade',
+            durationSec: 0.5,
+          },
+        ],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: '', gainDb: 0 },
+          music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      },
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+
+    expect(videoTrack?.transitions).toEqual([]);
   });
 
   it('maps voiceover to an audio track with a clip starting at zero', async () => {

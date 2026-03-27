@@ -550,6 +550,7 @@ export async function buildOpenReelBundle(
   const clipSources = getClipSources(project);
   const shotClipIds = new Map<string, string>();
   const timelineClipIdsByIdentity = new Map<string, string>();
+  const sourceDurationByShotId = new Map<string, number>();
   for (const entry of timelineEntries) {
     timelineClipIdsByIdentity.set(entry.clipId, entry.clipId);
     if (!timelineClipIdsByIdentity.has(entry.shotId)) {
@@ -562,6 +563,7 @@ export async function buildOpenReelBundle(
     const fallbackDuration = clampPositiveNumber(shot.duration, DEFAULT_VIDEO_DURATION_SEC);
     const shotPath = resolveShotVideoPath(project.id, shot);
     const sourceDuration = await readDurationOrFallback(shotPath, fallbackDuration);
+    sourceDurationByShotId.set(shot.id, sourceDuration);
 
     mediaItems.push(createMediaItem({
       id: mediaId,
@@ -585,9 +587,8 @@ export async function buildOpenReelBundle(
   for (const { shot, entry } of clipSources) {
     const mediaId = `media-shot-${shot.id}`;
     const clipId = entry?.clipId ?? `clip-shot-${shot.id}`;
-    const fallbackDuration = clampPositiveNumber(shot.duration, DEFAULT_VIDEO_DURATION_SEC);
-    const shotPath = resolveShotVideoPath(project.id, shot);
-    const sourceDuration = await readDurationOrFallback(shotPath, fallbackDuration);
+    const sourceDuration = sourceDurationByShotId.get(shot.id)
+      ?? clampPositiveNumber(shot.duration, DEFAULT_VIDEO_DURATION_SEC);
 
     const clipTiming = entry
       ? resolveClipTiming(entry, sourceDuration)
@@ -625,6 +626,7 @@ export async function buildOpenReelBundle(
       const clipAId = timelineClipIdsByIdentity.get(fromIdentity) ?? shotClipIds.get(transition.fromShotId);
       const clipBId = timelineClipIdsByIdentity.get(toIdentity) ?? shotClipIds.get(transition.toShotId);
       if (!clipAId || !clipBId) continue;
+      if (clipAId === clipBId) continue;
 
       videoTrack.transitions.push({
         id: `transition-${fromIdentity}-${toIdentity}`,
@@ -641,10 +643,11 @@ export async function buildOpenReelBundle(
     tracks.push(videoTrack);
   }
 
-  let timelineDuration = videoTrack.clips.reduce(
+  const videoTimelineDuration = videoTrack.clips.reduce(
     (maxDuration, clip) => Math.max(maxDuration, clip.startTime + clip.duration),
     0,
   );
+  let timelineDuration = videoTimelineDuration;
 
   let voiceoverDuration = 0;
   if (project.voiceoverFile) {

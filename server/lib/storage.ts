@@ -537,10 +537,14 @@ function normalizeProject(data: any): Project {
     project.script = '';
   }
   if (project.latestExportArtifact) {
-    if (typeof project.latestExportArtifact.filename !== 'string' || !project.latestExportArtifact.filename.trim()) {
+    const { filename, exportedAt } = project.latestExportArtifact;
+    if (typeof filename !== 'string' || !filename.trim()) {
       delete project.latestExportArtifact;
-    } else if (typeof project.latestExportArtifact.exportedAt !== 'string' || !project.latestExportArtifact.exportedAt.trim()) {
-      project.latestExportArtifact.exportedAt = project.updated;
+    } else {
+      project.latestExportArtifact.filename = filename.trim();
+      if (typeof exportedAt !== 'string' || !exportedAt.trim()) {
+        project.latestExportArtifact.exportedAt = project.updated;
+      }
     }
   }
   if (!(project as any).directorState) {

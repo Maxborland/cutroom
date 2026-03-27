@@ -968,18 +968,15 @@ router.post('/montage/describe-videos', generationLimiter, async (req: Request, 
       let sampledFrames: Array<{ timeSec: number; imageDataUrl: string }> = [];
       try {
         const sampled = await sampleVideoFrames(localVideoPath, VIDEO_DESCRIPTION_SAMPLE_COUNT);
-        if (Array.isArray(sampled)) {
-          sampledFrames = sampled.filter((frame): frame is { timeSec: number; imageDataUrl: string } => (
-            frame
-            && typeof frame === 'object'
-            && typeof frame.timeSec === 'number'
-            && Number.isFinite(frame.timeSec)
-            && typeof frame.imageDataUrl === 'string'
-            && frame.imageDataUrl.trim().length > 0
-          ));
-        }
-      } catch (err) {
-        console.warn(`Failed to sample frames for shot ${shot.id}; falling back to text context:`, err);
+        sampledFrames = sampled.filter((frame): frame is { timeSec: number; imageDataUrl: string } => (
+          frame
+          && typeof frame === 'object'
+          && typeof frame.timeSec === 'number'
+          && Number.isFinite(frame.timeSec)
+          && typeof frame.imageDataUrl === 'string'
+          && frame.imageDataUrl.trim().length > 0
+        ));
+      } catch {
         sampledFrames = [];
       }
 
@@ -1360,7 +1357,7 @@ const VALID_TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide
 const VALID_MOTION_EFFECTS = ['ken_burns', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right'] as const;
 
 function getTimelineEntryIdentity(entry: { clipId?: string; shotId: string }): string {
-  return typeof entry.clipId === 'string' && entry.clipId.trim() ? entry.clipId : entry.shotId;
+  return typeof entry.clipId === 'string' && entry.clipId.trim() ? entry.clipId.trim() : entry.shotId;
 }
 
 function findTimelineEntryByIdentity<T extends { clipId?: string; shotId: string }>(timeline: T[], identity: string): T | undefined {
