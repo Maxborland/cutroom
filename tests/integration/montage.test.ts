@@ -1559,6 +1559,37 @@ describe('Montage Integration', () => {
       expect(res.body.montagePlan.timeline.every((entry: { clipId?: string }) => typeof entry.clipId === 'string' && entry.clipId.trim())).toBe(true)
     })
 
+    it('estimates draft pacing from voiceoverScript when no audio file exists yet', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverFile = undefined
+        proj.script = 'короткий'
+        proj.voiceoverScript = new Array(150).fill('слово').join(' ')
+      })
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockImplementationOnce(() => ({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 },
+          music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      }))
+
+      await request(app)
+        .post(`/api/projects/${projectId}/montage/generate-plan`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.anything(),
+        60,
+      )
+    })
+
     it('returns 400 with no approved shots', async () => {
       await withProject(projectId, (proj) => {
         proj.shots = proj.shots.map(s => ({ ...s, status: 'draft' }))

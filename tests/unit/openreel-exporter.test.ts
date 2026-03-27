@@ -557,5 +557,69 @@ describe('buildOpenReelBundle()', () => {
       weak: 0,
       unmatched: 0,
     });
+    expect(clip?.inPoint).toBe(1.2);
+    expect(clip?.outPoint).toBe(4.7);
+  });
+
+  it('respects selected moment end bounds when exporting semantic clips', async () => {
+    mockedProbeDuration.mockResolvedValue(12);
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-1',
+          order: 1,
+          scene: 'Гостиная',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 12,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'living-room.mp4',
+        },
+      ],
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: 'clip-anchor-1',
+            shotId: 'shot-1',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 0,
+            durationSec: 6,
+            trimStartSec: 2,
+            trimEndSec: 5,
+            anchorId: 'anchor-1',
+            selectedMomentId: 'moment-living-room',
+          },
+        ],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: '', gainDb: 0 },
+          music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      },
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+    const clip = videoTrack?.clips[0];
+
+    expect(clip?.duration).toBe(3);
+    expect(clip?.inPoint).toBe(2);
+    expect(clip?.outPoint).toBe(5);
   });
 });

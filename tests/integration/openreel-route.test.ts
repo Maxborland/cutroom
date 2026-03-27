@@ -313,6 +313,16 @@ describe('OpenReel route integration', () => {
       filename: 'openreel-final.mp4',
       exportedAt: expect.any(String),
     });
+    expect(savedProject?.renders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: 'done',
+          quality: 'final',
+          resolution: '3840x2160',
+          outputFile: `openreel/exports/${exportedAt}-openreel-final.mp4`,
+        }),
+      ]),
+    );
 
     const reopened = await request(app)
       .get(`/api/projects/${projectId}/openreel-project`)
@@ -322,6 +332,36 @@ describe('OpenReel route integration', () => {
       filename: 'openreel-final.mp4',
       exportedAt: response.body.exportArtifact.exportedAt,
     });
+  });
+
+  it('POST /openreel-project/finalize-export rejects oversized uploads', async () => {
+    const projectSnapshot = {
+      id: projectId,
+      timeline: {
+        tracks: [],
+      },
+    };
+
+    const previousLimit = process.env.OPENREEL_EXPORT_MAX_BYTES;
+    process.env.OPENREEL_EXPORT_MAX_BYTES = String(2 * 1024 * 1024);
+
+    try {
+      const response = await request(app)
+        .post(`/api/projects/${projectId}/openreel-project/finalize-export`)
+        .field('version', '1.0.0')
+        .field('project', JSON.stringify(projectSnapshot))
+        .field('filename', 'too-large.mp4')
+        .attach('artifact', Buffer.alloc((2 * 1024 * 1024) + 1, 1), 'too-large.mp4')
+        .expect(413);
+
+      expect(response.body.error).toContain('слишком');
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.OPENREEL_EXPORT_MAX_BYTES;
+      } else {
+        process.env.OPENREEL_EXPORT_MAX_BYTES = previousLimit;
+      }
+    }
   });
 
   it('GET /openreel-project keeps the saved snapshot semantically consistent', async () => {

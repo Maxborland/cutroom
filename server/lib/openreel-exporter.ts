@@ -265,6 +265,29 @@ function createClip(params: {
   };
 }
 
+function resolveClipTiming(entry: TimelineEntry, sourceDuration: number) {
+  const requestedDuration = clampPositiveNumber(entry.durationSec, sourceDuration);
+  const requestedStart = Number.isFinite(entry.trimStartSec) ? Math.max(entry.trimStartSec ?? 0, 0) : 0;
+  const inPoint = Math.min(requestedStart, sourceDuration);
+  const requestedEnd = Number.isFinite(entry.trimEndSec) ? Math.max(entry.trimEndSec ?? 0, inPoint) : null;
+  const boundedEnd = requestedEnd === null ? null : Math.min(requestedEnd, sourceDuration);
+  const boundedDuration = boundedEnd === null
+    ? requestedDuration
+    : Math.max(boundedEnd - inPoint, 0);
+  const duration = clampPositiveNumber(
+    boundedEnd === null ? requestedDuration : boundedDuration,
+    DEFAULT_VIDEO_DURATION_SEC,
+  );
+  const outPoint = boundedEnd === null ? inPoint + duration : boundedEnd;
+
+  return {
+    startTime: Math.max(entry.startSec, 0),
+    duration,
+    inPoint,
+    outPoint,
+  };
+}
+
 function buildSemanticSummary(project: CutRoomProject): OpenReelBundle['semanticSummary'] | undefined {
   if (project.anchorCoverageSummary) {
     return {
@@ -559,7 +582,6 @@ export async function buildOpenReelBundle(
     };
   }
 
-  let videoCursor = 0;
   for (const { shot, entry } of clipSources) {
     const mediaId = `media-shot-${shot.id}`;
     const clipId = entry?.clipId ?? `clip-shot-${shot.id}`;
@@ -567,20 +589,23 @@ export async function buildOpenReelBundle(
     const shotPath = resolveShotVideoPath(project.id, shot);
     const sourceDuration = await readDurationOrFallback(shotPath, fallbackDuration);
 
-    const clipDuration = entry?.durationSec && Number.isFinite(entry.durationSec) && entry.durationSec > 0
-      ? entry.durationSec
-      : sourceDuration;
-    const inPoint = entry?.trimStartSec && Number.isFinite(entry.trimStartSec) ? entry.trimStartSec : 0;
-    const outPoint = inPoint + clipDuration;
+    const clipTiming = entry
+      ? resolveClipTiming(entry, sourceDuration)
+      : {
+          startTime: 0,
+          duration: sourceDuration,
+          inPoint: 0,
+          outPoint: sourceDuration,
+        };
 
     videoTrack.clips.push(createClip({
       id: clipId,
       mediaId,
       trackId: videoTrack.id,
-      startTime: videoCursor,
-      duration: clipDuration,
-      inPoint,
-      outPoint,
+      startTime: entry ? clipTiming.startTime : videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0),
+      duration: clipTiming.duration,
+      inPoint: clipTiming.inPoint,
+      outPoint: clipTiming.outPoint,
       volume: 1,
       metadata: entry ? buildSemanticClipMetadata(project, entry) : undefined,
     }));
@@ -588,7 +613,6 @@ export async function buildOpenReelBundle(
     if (!shotClipIds.has(shot.id)) {
       shotClipIds.set(shot.id, clipId);
     }
-    videoCursor += clipDuration;
   }
 
   if (project.montagePlan?.transitions?.length) {
@@ -617,7 +641,10 @@ export async function buildOpenReelBundle(
     tracks.push(videoTrack);
   }
 
-  let timelineDuration = videoCursor;
+  let timelineDuration = videoTrack.clips.reduce(
+    (maxDuration, clip) => Math.max(maxDuration, clip.startTime + clip.duration),
+    0,
+  );
 
   let voiceoverDuration = 0;
   if (project.voiceoverFile) {
@@ -627,7 +654,7 @@ export async function buildOpenReelBundle(
 
     voiceoverDuration = await readDurationOrFallback(
       voiceoverPath,
-      Math.max(videoCursor, DEFAULT_VIDEO_DURATION_SEC),
+      Math.max(timelineDuration, DEFAULT_VIDEO_DURATION_SEC),
     );
 
     const mediaId = 'media-voiceover';

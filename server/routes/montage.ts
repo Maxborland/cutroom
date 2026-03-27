@@ -1298,8 +1298,9 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
       const { probeDuration } = await import('../lib/normalize.js');
       voiceoverDurationSec = await probeDuration(voPath);
     } else {
-      // Estimate from script: ~150 words/min for Russian
-      const wordCount = (planningProject.script || '').split(/\s+/).filter(Boolean).length;
+      // Estimate from approved voiceover text when audio has not been generated yet.
+      const pacingText = planningProject.voiceoverScript?.trim() || planningProject.script || '';
+      const wordCount = pacingText.split(/\s+/).filter(Boolean).length;
       voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
     }
 
