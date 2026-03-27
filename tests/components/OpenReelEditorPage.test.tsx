@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { OpenReelEditorPage } from '../../src/routes/OpenReelEditorPage'
@@ -21,6 +21,7 @@ vi.mock('../../src/lib/api', () => {
       openreel: {
         getProject: vi.fn(),
         saveProject: vi.fn(),
+        finalizeExport: vi.fn(),
       },
     },
   }
@@ -28,15 +29,29 @@ vi.mock('../../src/lib/api', () => {
 
 vi.mock('../../src/components/openreel/OpenReelHost', () => ({
   OpenReelHost: ({
+    onProjectChange,
     onExportComplete,
   }: {
-    onExportComplete?: (payload: { filename: string }) => void
+    onProjectChange?: (payload: { version: string; project: unknown }) => void
+    onExportComplete?: (payload: { filename: string; artifact?: Blob }) => void
   }) => (
     <div data-testid="openreel-host">
       HOST
       <button
         type="button"
-        onClick={() => onExportComplete?.({ filename: 'final-cut.mp4' })}
+        onClick={() => onProjectChange?.({
+          version: '1.0.0',
+          project: { id: 'project-1', timeline: { tracks: [{ id: 'track-1' }] } },
+        })}
+      >
+        Изменить проект
+      </button>
+      <button
+        type="button"
+        onClick={() => onExportComplete?.({
+          filename: 'final-cut.mp4',
+          artifact: new File(['video-bytes'], 'final-cut.mp4', { type: 'video/mp4' }),
+        })}
       >
         Завершить экспорт
       </button>
@@ -46,6 +61,7 @@ vi.mock('../../src/components/openreel/OpenReelHost', () => ({
 
 const getProjectMock = api.openreel.getProject as unknown as ReturnType<typeof vi.fn>
 const saveProjectMock = api.openreel.saveProject as unknown as ReturnType<typeof vi.fn>
+const finalizeExportMock = api.openreel.finalizeExport as unknown as ReturnType<typeof vi.fn>
 
 const mockBundle = {
   version: '1.0.0',
@@ -74,6 +90,14 @@ describe('OpenReelEditorPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     saveProjectMock.mockResolvedValue({ saved: true, modifiedAt: Date.now() })
+    finalizeExportMock.mockResolvedValue({
+      saved: true,
+      modifiedAt: Date.now(),
+      exportArtifact: {
+        filename: 'final-cut.mp4',
+        exportedAt: Date.now(),
+      },
+    })
   })
 
   it('renders loading state while bundle is being fetched', () => {
@@ -135,7 +159,7 @@ describe('OpenReelEditorPage', () => {
 
   it('persists export completion back to CutRoom and keeps the artifact visible', async () => {
     getProjectMock.mockResolvedValue(mockBundle)
-    saveProjectMock.mockResolvedValue({
+    finalizeExportMock.mockResolvedValue({
       saved: true,
       modifiedAt: Date.now(),
       exportArtifact: {
@@ -152,19 +176,58 @@ describe('OpenReelEditorPage', () => {
     await user.click(exportButton)
 
     await waitFor(() => {
-      expect(saveProjectMock).toHaveBeenCalledWith(
+      expect(finalizeExportMock).toHaveBeenCalledWith(
         'project-1',
         expect.objectContaining({
           version: '1.0.0',
           project: mockBundle.project,
-          exportArtifact: expect.objectContaining({
-            filename: 'final-cut.mp4',
-          }),
+          filename: 'final-cut.mp4',
+          artifact: expect.any(File),
         }),
       )
     })
 
     expect(await screen.findByText('Экспорт завершён и сохранён в проекте: final-cut.mp4')).toBeInTheDocument()
     expect(screen.getByText('Последний экспорт из редактора')).toBeInTheDocument()
+  })
+
+  it('autosaves editor changes without replaying the previous export artifact', async () => {
+    getProjectMock.mockResolvedValue({
+      ...mockBundle,
+      exportArtifact: {
+        filename: 'previous-export.mp4',
+        exportedAt: Date.now(),
+      },
+    })
+
+    renderEditorPage()
+
+    const changeButton = await screen.findByRole('button', { name: 'Изменить проект' })
+    vi.useFakeTimers()
+
+    try {
+      await act(async () => {
+        fireEvent.click(changeButton)
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+
+      expect(saveProjectMock).toHaveBeenCalledWith(
+        'project-1',
+        expect.objectContaining({
+          version: '1.0.0',
+          project: expect.objectContaining({
+            id: 'project-1',
+            timeline: {
+              tracks: [{ id: 'track-1' }],
+            },
+          }),
+        }),
+      )
+
+      const [, savedPayload] = saveProjectMock.mock.calls.at(-1) ?? []
+      expect(savedPayload).not.toHaveProperty('exportArtifact')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

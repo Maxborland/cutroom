@@ -241,23 +241,43 @@ describe('OpenReel route integration', () => {
     expect(saved.modifiedAt).toBe(response.body.modifiedAt);
   });
 
-  it('PUT /openreel-project records the latest export artifact when present', async () => {
-    const payload = {
-      version: '1.0.0',
-      project: {
-        id: projectId,
-        timeline: {
-          tracks: [],
+  it('PUT /openreel-project rejects export metadata during ordinary autosave', async () => {
+    await request(app)
+      .put(`/api/projects/${projectId}/openreel-project`)
+      .send({
+        version: '1.0.0',
+        project: {
+          id: projectId,
+          timeline: {
+            tracks: [],
+          },
         },
-      },
-      exportArtifact: {
-        filename: 'openreel-final.mp4',
+        exportArtifact: {
+          filename: 'openreel-final.mp4',
+        },
+      })
+      .expect(400);
+
+    const savedProject = await getProject(projectId);
+    expect(savedProject?.stage).not.toBe('rendered');
+    expect(savedProject?.latestExportArtifact).toBeUndefined();
+  });
+
+  it('POST /openreel-project/finalize-export stores the exported artifact and marks the project rendered', async () => {
+    const artifactBytes = Buffer.from('openreel-export-bytes');
+    const projectSnapshot = {
+      id: projectId,
+      timeline: {
+        tracks: [],
       },
     };
 
     const response = await request(app)
-      .put(`/api/projects/${projectId}/openreel-project`)
-      .send(payload)
+      .post(`/api/projects/${projectId}/openreel-project/finalize-export`)
+      .field('version', '1.0.0')
+      .field('project', JSON.stringify(projectSnapshot))
+      .field('filename', 'openreel-final.mp4')
+      .attach('artifact', artifactBytes, 'openreel-final.mp4')
       .expect(200);
 
     expect(response.body.saved).toBe(true);
@@ -276,6 +296,16 @@ describe('OpenReel route integration', () => {
       filename: 'openreel-final.mp4',
       exportedAt: response.body.exportArtifact.exportedAt,
     });
+
+    const exportedAt = response.body.exportArtifact.exportedAt as number;
+    const exportFilePath = resolveProjectPath(
+      projectId,
+      'openreel',
+      'exports',
+      `${exportedAt}-openreel-final.mp4`,
+    );
+    const persistedArtifact = await fs.readFile(exportFilePath);
+    expect(persistedArtifact.toString()).toBe('openreel-export-bytes');
 
     const savedProject = await getProject(projectId);
     expect(savedProject?.stage).toBe('rendered');

@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
-import { ApiRequestError, api, type OpenReelSaveProjectPayload } from '../lib/api'
+import {
+  ApiRequestError,
+  api,
+  type OpenReelFinalizeExportPayload,
+  type OpenReelSaveProjectPayload,
+} from '../lib/api'
 import type { OpenReelBundle } from '../lib/openreel-bridge'
 import { OpenReelHost } from '../components/openreel/OpenReelHost'
 import type { OpenReelSyncState } from '../components/openreel/OpenReelSyncStatus'
@@ -155,16 +160,18 @@ export function OpenReelEditorPage() {
       }
     })
 
-    queueSave({
-      ...payload,
-      ...(bundleRef.current?.exportArtifact
-        ? { exportArtifact: { filename: bundleRef.current.exportArtifact.filename } }
-        : {}),
-    })
+    queueSave(payload)
   }, [queueSave])
 
-  const handleExportComplete = useCallback(async ({ filename }: { filename: string }) => {
+  const handleExportComplete = useCallback(async ({ filename, artifact }: { filename: string; artifact?: Blob }) => {
     if (!projectId || !bundleRef.current) {
+      setExportStatus(`Экспорт завершён: ${filename}`)
+      return
+    }
+
+    if (!artifact) {
+      setSyncStatus('error')
+      setSaveError('Редактор не передал файл экспорта')
       setExportStatus(`Экспорт завершён: ${filename}`)
       return
     }
@@ -176,13 +183,14 @@ export function OpenReelEditorPage() {
     setSaveError(null)
 
     try {
-      const response = await api.openreel.saveProject(projectId, {
+      const payload: OpenReelFinalizeExportPayload = {
         version: bundleRef.current.version,
         project: bundleRef.current.project,
-        exportArtifact: {
-          filename,
-        },
-      })
+        filename,
+        artifact,
+      }
+
+      const response = await api.openreel.finalizeExport(projectId, payload)
 
       const nextBundle = {
         ...bundleRef.current,

@@ -89,9 +89,13 @@ export interface OpenReelExportArtifact {
 export interface OpenReelSaveProjectPayload {
   version: string
   project: unknown
-  exportArtifact?: {
-    filename: string
-  }
+}
+
+export interface OpenReelFinalizeExportPayload {
+  version: string
+  project: unknown
+  filename: string
+  artifact: Blob
 }
 
 export interface OpenReelSaveProjectResponse {
@@ -409,6 +413,21 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
+    finalizeExport: async (projectId: string, data: OpenReelFinalizeExportPayload) => {
+      const form = new FormData()
+      form.append('version', data.version)
+      form.append('project', JSON.stringify(data.project))
+      form.append('filename', data.filename)
+      form.append('artifact', data.artifact, data.filename)
+      const path = `/projects/${projectId}/openreel-project/finalize-export`
+      const res = await fetch(`${BASE}${path}`, {
+        method: 'POST',
+        credentials: 'include',
+        body: form,
+      })
+      if (!res.ok) await throwRequestError(res, path)
+      return res.json() as Promise<OpenReelSaveProjectResponse>
+    },
   },
   montage: {
     generateVoScript: (projectId: string) =>
