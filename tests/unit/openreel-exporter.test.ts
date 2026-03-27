@@ -692,4 +692,59 @@ describe('buildOpenReelBundle()', () => {
     expect(clip?.inPoint).toBe(2);
     expect(clip?.outPoint).toBe(5);
   });
+
+  it('generates stable fallback identities for malformed timeline clip metadata', async () => {
+    mockedProbeDuration.mockResolvedValue(6);
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-broken',
+          order: 1,
+          scene: 'Неисправный шот',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 6,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'broken.mp4',
+        },
+      ],
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: '   ',
+            shotId: 'shot-broken',
+            clipFile: 'montage/normalized/broken.mp4',
+            startSec: 0,
+            durationSec: 6,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: '', gainDb: 0 },
+          music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      },
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+
+    expect(videoTrack?.clips[0]?.id).toBe('clip-shot-broken-1');
+  });
 });

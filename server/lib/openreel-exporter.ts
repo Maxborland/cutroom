@@ -306,7 +306,11 @@ function buildSemanticSummary(project: CutRoomProject): OpenReelBundle['semantic
 }
 
 function getTimelineEntryIdentity(entry: Pick<TimelineEntry, 'clipId' | 'shotId'>, index: number): string {
-  return entry.clipId?.trim() || `clip-${entry.shotId}-${index + 1}`;
+  const clipId = entry.clipId?.trim();
+  if (clipId) return clipId;
+
+  const shotId = entry.shotId?.trim();
+  return shotId ? `clip-${shotId}-${index + 1}` : `clip-unknown-${index + 1}`;
 }
 
 function getExportTimelineEntries(project: CutRoomProject): Array<TimelineEntry & { clipId: string }> {
@@ -547,9 +551,11 @@ export async function buildOpenReelBundle(
   const timelineClipIdsByIdentity = new Map<string, string>();
   const sourceDurationByShotId = new Map<string, number>();
   for (const entry of timelineEntries) {
-    timelineClipIdsByIdentity.set(entry.clipId, entry.clipId);
-    if (!timelineClipIdsByIdentity.has(entry.shotId)) {
-      timelineClipIdsByIdentity.set(entry.shotId, entry.clipId);
+    const clipId = entry.clipId?.trim();
+    const shotId = entry.shotId?.trim();
+    if (clipId) timelineClipIdsByIdentity.set(clipId, clipId);
+    if (shotId && !timelineClipIdsByIdentity.has(shotId)) {
+      timelineClipIdsByIdentity.set(shotId, clipId ?? `clip-${shotId}`);
     }
   }
 
