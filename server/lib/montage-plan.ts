@@ -1,4 +1,13 @@
-import type { Project, MontagePlan, TimelineEntry, TransitionEntry, LowerThird, ShotMeta } from './storage.js';
+import type {
+  Project,
+  MontagePlan,
+  TimelineEntry,
+  TransitionEntry,
+  LowerThird,
+  ShotMeta,
+  SemanticBlock,
+} from './storage.js';
+import { buildSemanticBlockClips, buildSemanticBlocks } from './semantic-block-planner.js';
 
 // ── Area detection keywords ──────────────────────────────────────────
 
@@ -52,8 +61,11 @@ type PlannedShot = {
   shot: ShotMeta;
   clipId: string;
   anchorId?: string;
+  semanticBlockId?: string;
   selectedMoment?: NonNullable<ShotMeta['videoDescription']>['moments'][number];
   anchorStatus?: 'matched' | 'weak_match';
+  semanticBlock?: SemanticBlock;
+  pacingDurationSec?: number;
 };
 
 function makeFallbackClipId(shot: ShotMeta): string {
@@ -159,21 +171,47 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
   const INTRO_DURATION = 3;
   const OUTRO_DURATION = 4;
   const MIN_CLIP_DURATION = 2;
-  const plannedShots = buildPlannedShots(project, approvedShots);
+  const semanticBlocks = buildSemanticBlocks(project, approvedShots);
+  const semanticBlockClips = buildSemanticBlockClips(project, approvedShots);
+  const plannedShots = semanticBlockClips.length > 0
+    ? (() => {
+      const usedShotIds = new Set(semanticBlockClips.map((clip) => clip.shot.id));
+      const fallbackShots = approvedShots
+        .filter((shot) => !usedShotIds.has(shot.id))
+        .map((shot) => ({
+          shot,
+          clipId: `clip-${shot.id}`,
+        }));
+
+      return [
+        ...semanticBlockClips.map((clip) => ({
+          shot: clip.shot,
+          clipId: clip.clipId,
+          anchorId: clip.anchorId,
+          semanticBlockId: clip.semanticBlockId,
+          selectedMoment: clip.selectedMoment,
+          semanticBlock: clip.semanticBlock,
+          pacingDurationSec: clip.pacingDurationSec,
+        })),
+        ...fallbackShots,
+      ];
+    })()
+    : buildPlannedShots(project, approvedShots);
 
   // Step 2: Total available time for shots = voiceover duration
   const availableTime = voiceoverDurationSec;
 
   // Step 3: Calculate total source shot durations
-  const totalShotDuration = plannedShots.reduce((sum, entry) => sum + entry.shot.duration, 0);
+  const totalShotDuration = plannedShots.reduce((sum, entry) => sum + (entry.pacingDurationSec ?? entry.shot.duration), 0);
 
   // Step 4: Distribute durations proportionally with minimum floor
   // Guard: if total minimum exceeds available time, expand available time
   const minTotal = plannedShots.length * MIN_CLIP_DURATION;
   const effectiveAvailable = Math.max(availableTime, minTotal);
 
-  let allocatedDurations = plannedShots.map(({ shot }) => {
-    const proportional = (shot.duration / totalShotDuration) * effectiveAvailable;
+  let allocatedDurations = plannedShots.map(({ shot, pacingDurationSec }) => {
+    const sourceDuration = pacingDurationSec ?? shot.duration;
+    const proportional = (sourceDuration / totalShotDuration) * effectiveAvailable;
     return Math.max(proportional, MIN_CLIP_DURATION);
   });
 
@@ -205,6 +243,7 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
       clipId: plannedShot.clipId,
       shotId: shot.id,
       anchorId: plannedShot.anchorId,
+      semanticBlockId: plannedShot.semanticBlockId,
       selectedMomentId: plannedShot.selectedMoment?.id,
       clipFile: `montage/normalized/${shot.id}.mp4`,
       startSec: currentSec,
@@ -225,9 +264,9 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
       entry.motionEffect = 'ken_burns';
     }
 
-    // If source is longer, trim end
+    // If source is longer, store the absolute media out-point in seconds.
     if (!plannedShot.selectedMoment && shot.duration > duration) {
-      entry.trimEndSec = shot.duration - duration;
+      entry.trimEndSec = duration;
     }
 
     timeline.push(entry);
@@ -311,6 +350,7 @@ export function generateMontagePlan(project: Project, voiceoverDurationSec: numb
         duckFadeMs: 500,
       },
     },
+    semanticBlocks: semanticBlocks.length > 0 ? semanticBlocks : undefined,
     style: {
       preset: 'premium',
       fontFamily: 'Montserrat',

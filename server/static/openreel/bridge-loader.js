@@ -14,7 +14,12 @@
 (function bridgeLoader() {
   'use strict';
 
-  var BRIDGE_VERSION = '1.0.1';
+  if (window.__CUTROOM_OPENREEL_BRIDGE_LOADED__) {
+    return;
+  }
+  window.__CUTROOM_OPENREEL_BRIDGE_LOADED__ = true;
+
+  var BRIDGE_VERSION = '1.0.2';
 
   // Derive the expected parent origin for secure postMessage communication.
   // ancestorOrigins[0] is the embedding page's origin (CutRoom host).
@@ -25,6 +30,7 @@
   // Store init payload until OpenReel store is ready
   var pendingInitPayload = null;
   var storeCheckInterval = null;
+  var embeddedPersistenceResetPromise = null;
   var blobUrlMap = Object.create(null);
   var exportArtifactsByFilename = Object.create(null);
   var nativeCreateObjectURL = window.URL && window.URL.createObjectURL
@@ -146,11 +152,156 @@
     return false;
   }
 
-  /** Start polling for store readiness with a stored payload */
-  function waitForStoreAndInject(payload) {
-    if (tryInjectProject(payload)) return;
+  function cloneBlobWithMimeType(blob, mimeType) {
+    if (!blob || !mimeType || blob.type === mimeType) {
+      return blob;
+    }
 
-    pendingInitPayload = payload;
+    return blob.slice(0, blob.size, mimeType);
+  }
+
+  function clearOpenReelServiceWorkers() {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistrations) {
+      return Promise.resolve();
+    }
+
+    return navigator.serviceWorker.getRegistrations()
+      .then(function (registrations) {
+        return Promise.all(registrations.map(function (registration) {
+          try {
+            return registration.unregister();
+          } catch (err) {
+            return false;
+          }
+        }));
+      })
+      .catch(function () {
+        return [];
+      });
+  }
+
+  function clearOpenReelCaches() {
+    if (!window.caches || !window.caches.keys || !window.caches.delete) {
+      return Promise.resolve();
+    }
+
+    return window.caches.keys()
+      .then(function (cacheNames) {
+        return Promise.all(cacheNames.map(function (cacheName) {
+          if (typeof cacheName !== 'string' || cacheName.indexOf('openreel-') !== 0) {
+            return false;
+          }
+          return window.caches.delete(cacheName);
+        }));
+      })
+      .catch(function () {
+        return [];
+      });
+  }
+
+  function deleteIndexedDb(name) {
+    if (!window.indexedDB || !window.indexedDB.deleteDatabase) {
+      return Promise.resolve();
+    }
+
+    return new Promise(function (resolve) {
+      try {
+        var request = window.indexedDB.deleteDatabase(name);
+        if (!request) {
+          resolve();
+          return;
+        }
+        request.onsuccess = function () { resolve(); };
+        request.onerror = function () { resolve(); };
+        request.onblocked = function () { resolve(); };
+      } catch (err) {
+        resolve();
+      }
+    });
+  }
+
+  function clearOpenReelIndexedDb() {
+    return Promise.all([
+      deleteIndexedDb('openreel-projects'),
+      deleteIndexedDb('openreel-autosave'),
+      deleteIndexedDb('openreel-db'),
+    ]).catch(function () {
+      return [];
+    });
+  }
+
+  function clearEmbeddedPersistence() {
+    if (embeddedPersistenceResetPromise) {
+      return embeddedPersistenceResetPromise;
+    }
+
+    embeddedPersistenceResetPromise = Promise.all([
+      clearOpenReelServiceWorkers(),
+      clearOpenReelCaches(),
+      clearOpenReelIndexedDb(),
+    ])
+      .catch(function () {
+        return [];
+      })
+      .then(function () {
+        return undefined;
+      });
+
+    return embeddedPersistenceResetPromise;
+  }
+
+  async function hydrateProjectMedia(payload) {
+    if (!payload || !payload.project || !payload.project.mediaLibrary || !Array.isArray(payload.project.mediaLibrary.items)) {
+      return payload;
+    }
+
+    var mediaManifest = payload.mediaManifest || {};
+    var items = payload.project.mediaLibrary.items;
+
+    var hydratedItems = await Promise.all(items.map(async function (item) {
+      if (!item || !item.id) return item;
+
+      var manifestEntry = mediaManifest[item.id];
+      if (!manifestEntry || !manifestEntry.url) {
+        return item;
+      }
+
+      var nextItem = Object.assign({}, item, {
+        originalUrl: manifestEntry.url,
+      });
+
+      try {
+        var response = await fetch(manifestEntry.url, { credentials: 'same-origin' });
+        if (!response.ok) {
+          throw new Error('Failed to fetch media: ' + response.status);
+        }
+
+        var blob = await response.blob();
+        nextItem.blob = cloneBlobWithMimeType(blob, manifestEntry.mimeType);
+      } catch (err) {
+        signalError('Failed to hydrate media "' + item.id + '": ' + (err && err.message ? err.message : err));
+      }
+
+      return nextItem;
+    }));
+
+    return Object.assign({}, payload, {
+      project: Object.assign({}, payload.project, {
+        mediaLibrary: Object.assign({}, payload.project.mediaLibrary, {
+          items: hydratedItems,
+        }),
+      }),
+    });
+  }
+
+  /** Start polling for store readiness with a stored payload */
+  async function waitForStoreAndInject(payload) {
+    await clearEmbeddedPersistence();
+    var hydratedPayload = await hydrateProjectMedia(payload);
+
+    if (tryInjectProject(hydratedPayload)) return;
+
+    pendingInitPayload = hydratedPayload;
     if (storeCheckInterval) clearInterval(storeCheckInterval);
 
     var attempts = 0;

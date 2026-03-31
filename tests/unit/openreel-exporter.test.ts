@@ -724,6 +724,65 @@ describe('buildOpenReelBundle()', () => {
     expect(clip?.outPoint).toBe(5);
   });
 
+  it('keeps legacy tail-trim timeline entries at their intended visible duration', async () => {
+    mockedProbeDuration.mockResolvedValue(6.102);
+
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-legacy',
+          order: 1,
+          scene: 'Вечерний фасад',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 5,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: 'legacy.mp4',
+        },
+      ],
+      montagePlan: {
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        timeline: [
+          {
+            clipId: 'clip-legacy',
+            shotId: 'shot-legacy',
+            clipFile: 'montage/normalized/shot-legacy.mp4',
+            startSec: 49.289171876739026,
+            durationSec: 4.702010018675903,
+            trimEndSec: 0.29798998132409693,
+          },
+        ],
+        transitions: [],
+        motionGraphics: { lowerThirds: [] },
+        audio: {
+          voiceover: { file: '', gainDb: 0 },
+          music: { file: '', gainDb: -12, duckingDb: -18, duckFadeMs: 300 },
+        },
+        style: {
+          preset: 'premium',
+          fontFamily: 'Montserrat',
+          primaryColor: '#111111',
+          secondaryColor: '#222222',
+          textColor: '#ffffff',
+        },
+      },
+    });
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');
+    const videoTrack = bundle.project.timeline.tracks.find((track) => track.name === 'Video');
+    const clip = videoTrack?.clips[0];
+
+    expect(clip?.duration).toBeCloseTo(4.702010018675903, 6);
+    expect(clip?.inPoint).toBe(0);
+    expect(clip?.outPoint).toBeCloseTo(4.702010018675903, 6);
+  });
+
   it('generates stable fallback identities for malformed timeline clip metadata', async () => {
     mockedProbeDuration.mockResolvedValue(6);
 
