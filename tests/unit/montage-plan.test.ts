@@ -15,8 +15,10 @@ import {
   type SemanticBlock,
   type ShotMeta,
   type MontagePlan,
+  type MontageReview,
 } from '../../server/lib/storage.js'
 import { buildSemanticBlocks } from '../../server/lib/semantic-block-planner.js'
+import { applyMontageReviewAutoFixes } from '../../server/lib/montage-plan.js'
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -75,6 +77,52 @@ function makeSemanticBlock(overrides: Partial<SemanticBlock> & {
   }
 }
 
+function makePlan(
+  entries: Array<{
+    shotId: string
+    startSec: number
+    durationSec: number
+    clipId?: string
+    selectedMomentId?: string
+    semanticBlockId?: string
+  }>,
+  semanticBlocks: SemanticBlock[] = [],
+): MontagePlan {
+  return {
+    version: 1,
+    format: {
+      width: 1920,
+      height: 1080,
+      fps: 30,
+    },
+    timeline: entries.map((entry) => ({
+      clipId: entry.clipId,
+      shotId: entry.shotId,
+      clipFile: `montage/normalized/${entry.shotId}.mp4`,
+      startSec: entry.startSec,
+      durationSec: entry.durationSec,
+      selectedMomentId: entry.selectedMomentId,
+      semanticBlockId: entry.semanticBlockId,
+    })),
+    transitions: [],
+    semanticBlocks,
+    motionGraphics: {
+      lowerThirds: [],
+    },
+    audio: {
+      voiceover: { file: '', gainDb: 0 },
+      music: { file: '', gainDb: 0, duckingDb: 0, duckFadeMs: 0 },
+    },
+    style: {
+      preset: 'premium',
+      fontFamily: 'Montserrat',
+      primaryColor: '#111111',
+      secondaryColor: '#222222',
+      textColor: '#ffffff',
+    },
+  }
+}
+
 async function setupProject(
   shots: ShotMeta[],
   extras?: Partial<Project>,
@@ -90,6 +138,249 @@ async function setupProject(
   })
   return project.id
 }
+
+describe('applyMontageReviewAutoFixes()', () => {
+  it('moves a repeated clip farther away without reordering the story block', () => {
+    const project = {
+      shots: [
+        makeShot({ id: 'shot-a', order: 0, scene: 'Фасад', duration: 6 }),
+        makeShot({ id: 'shot-b', order: 1, scene: 'Терраса', duration: 6 }),
+        makeShot({ id: 'shot-d', order: 3, scene: 'Лобби', duration: 6 }),
+      ],
+    } as Project
+    const plan = makePlan([
+      { shotId: 'shot-a', startSec: 3, durationSec: 4, clipId: 'clip-a', semanticBlockId: 'block-1' },
+      { shotId: 'shot-b', startSec: 7, durationSec: 4, clipId: 'clip-b', semanticBlockId: 'block-1' },
+      { shotId: 'shot-a', startSec: 11, durationSec: 4, clipId: 'clip-a-repeat', semanticBlockId: 'block-1' },
+      { shotId: 'shot-d', startSec: 15, durationSec: 4, clipId: 'clip-d', semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Story block',
+        anchorLabel: 'Story block',
+        strategy: 'pair',
+        confidence: 0.88,
+        segments: [
+          { shotId: 'shot-a', durationSec: 4, weight: 0.9, reason: 'primary' },
+          { shotId: 'shot-b', durationSec: 4, weight: 0.8, reason: 'secondary' },
+        ],
+      },
+    ])
+
+    const review: MontageReview = {
+      score: 0.6,
+      summary: { issues: 1, autoFixes: 1, blockingRequests: 0 },
+      issues: [],
+      autoFixes: [
+        {
+          id: 'fix-move',
+          type: 'move_repeat',
+          applied: false,
+          affectedClipIds: ['clip-a-repeat'],
+          explanation: 'Move the repeated clip later to reduce close reuse.',
+        },
+      ],
+      suggestedShotRequests: [],
+    }
+
+    const fixedPlan = applyMontageReviewAutoFixes(project, plan, review)
+
+    expect(fixedPlan.timeline.map((entry) => entry.shotId)).toEqual(['shot-a', 'shot-b', 'shot-d', 'shot-a'])
+    expect(fixedPlan.timeline[3].startSec).toBeGreaterThan(fixedPlan.timeline[2].startSec)
+    expect(fixedPlan.timeline[3].clipId).toBe('clip-a-repeat')
+  })
+
+  it('swaps a repeated clip for a fresher candidate', () => {
+    const project = {
+      shots: [
+        makeShot({ id: 'shot-a', order: 0, scene: 'Фасад', duration: 6 }),
+        makeShot({ id: 'shot-b', order: 1, scene: 'Терраса', duration: 6 }),
+        makeShot({ id: 'shot-c', order: 2, scene: 'Интерьер', duration: 6 }),
+      ],
+    } as Project
+    const plan = makePlan([
+      { shotId: 'shot-a', startSec: 3, durationSec: 4, clipId: 'clip-a', semanticBlockId: 'block-1' },
+      { shotId: 'shot-b', startSec: 7, durationSec: 4, clipId: 'clip-b', semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Story block',
+        anchorLabel: 'Story block',
+        strategy: 'pair',
+        confidence: 0.88,
+        segments: [
+          { shotId: 'shot-a', durationSec: 4, weight: 0.9, reason: 'primary' },
+          { shotId: 'shot-b', durationSec: 4, weight: 0.8, reason: 'secondary' },
+        ],
+        alternatives: [
+          { shotId: 'shot-c', confidence: 0.74, reason: 'fresher candidate', rejectedBecause: 'duplicate' },
+        ],
+      },
+    ])
+
+    const review: MontageReview = {
+      score: 0.6,
+      summary: { issues: 1, autoFixes: 1, blockingRequests: 0 },
+      issues: [],
+      autoFixes: [
+        {
+          id: 'fix-swap',
+          type: 'swap_candidate',
+          applied: false,
+          affectedClipIds: ['clip-b'],
+          explanation: 'Swap the repeated clip for a fresher candidate.',
+        },
+      ],
+      suggestedShotRequests: [],
+    }
+
+    const fixedPlan = applyMontageReviewAutoFixes(project, plan, review)
+
+    expect(fixedPlan.timeline.map((entry) => entry.shotId)).toEqual(['shot-a', 'shot-c'])
+    expect(fixedPlan.timeline[1].semanticBlockId).toBe('block-1')
+  })
+
+  it('splits an overlong clip into separated uses', () => {
+    const project = {
+      shots: [
+        makeShot({ id: 'shot-long', order: 0, scene: 'Гостиная', duration: 14 }),
+        makeShot({ id: 'shot-support', order: 1, scene: 'Терраса', duration: 6 }),
+      ],
+    } as Project
+    const plan = makePlan([
+      { shotId: 'shot-long', startSec: 3, durationSec: 10, clipId: 'clip-long', semanticBlockId: 'block-1' },
+      { shotId: 'shot-support', startSec: 13, durationSec: 4, clipId: 'clip-support', semanticBlockId: 'block-1' },
+    ])
+
+    const review: MontageReview = {
+      score: 0.4,
+      summary: { issues: 1, autoFixes: 1, blockingRequests: 0 },
+      issues: [],
+      autoFixes: [
+        {
+          id: 'fix-split',
+          type: 'split_clip',
+          applied: false,
+          affectedClipIds: ['clip-long'],
+          explanation: 'Split the overlong clip into two separated uses.',
+        },
+      ],
+      suggestedShotRequests: [],
+    }
+
+    const fixedPlan = applyMontageReviewAutoFixes(project, plan, review)
+
+    expect(fixedPlan.timeline.map((entry) => entry.shotId)).toEqual(['shot-long', 'shot-support', 'shot-long'])
+    expect(fixedPlan.timeline[0].durationSec).toBeLessThan(plan.timeline[0].durationSec)
+    expect(fixedPlan.timeline[2].durationSec).toBeLessThan(plan.timeline[0].durationSec)
+    expect(fixedPlan.timeline[2].semanticBlockId).toBe('block-1')
+  })
+
+  it('switches a block strategy when variety improves', () => {
+    const plan = makePlan([
+      { shotId: 'shot-1', startSec: 3, durationSec: 4, clipId: 'clip-1', semanticBlockId: 'block-1' },
+      { shotId: 'shot-2', startSec: 7, durationSec: 4, clipId: 'clip-2', semanticBlockId: 'block-1' },
+      { shotId: 'shot-3', startSec: 11, durationSec: 4, clipId: 'clip-3', semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Block with variety',
+        anchorLabel: 'Block',
+        strategy: 'cascade',
+        confidence: 0.77,
+        segments: [
+          { shotId: 'shot-1', durationSec: 4, weight: 0.9, reason: 'first' },
+          { shotId: 'shot-2', durationSec: 4, weight: 0.8, reason: 'second' },
+          { shotId: 'shot-3', durationSec: 4, weight: 0.6, reason: 'third' },
+        ],
+      },
+    ])
+
+    const review: MontageReview = {
+      score: 0.5,
+      summary: { issues: 1, autoFixes: 1, blockingRequests: 0 },
+      issues: [],
+      autoFixes: [
+        {
+          id: 'fix-strategy',
+          type: 'change_block_strategy',
+          applied: false,
+          affectedClipIds: ['clip-1', 'clip-2', 'clip-3'],
+          explanation: 'Switch the block strategy to improve visual variety.',
+        },
+      ],
+      suggestedShotRequests: [],
+    }
+
+    const fixedPlan = applyMontageReviewAutoFixes({} as Project, plan, review)
+
+    expect(fixedPlan.semanticBlocks?.[0].strategy).toBe('pair')
+    expect(fixedPlan.timeline.map((entry) => entry.shotId)).toEqual(['shot-1', 'shot-2', 'shot-3'])
+    expect(fixedPlan.timeline[2].semanticBlockId).toBeUndefined()
+  })
+
+  it('detaches split clones from the semantic block when strategy is compressed to pair', () => {
+    const project = {
+      shots: [
+        makeShot({ id: 'shot-1', order: 0, scene: 'Фасад', duration: 12 }),
+        makeShot({ id: 'shot-2', order: 1, scene: 'Терраса', duration: 6 }),
+        makeShot({ id: 'shot-3', order: 2, scene: 'Лобби', duration: 6 }),
+      ],
+    } as Project
+    const plan = makePlan([
+      { shotId: 'shot-1', startSec: 3, durationSec: 10, clipId: 'clip-1', semanticBlockId: 'block-1' },
+      { shotId: 'shot-2', startSec: 13, durationSec: 4, clipId: 'clip-2', semanticBlockId: 'block-1' },
+      { shotId: 'shot-3', startSec: 17, durationSec: 4, clipId: 'clip-3', semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Block with variety',
+        anchorLabel: 'Block',
+        strategy: 'cascade',
+        confidence: 0.77,
+        segments: [
+          { shotId: 'shot-1', durationSec: 10, weight: 0.9, reason: 'first' },
+          { shotId: 'shot-2', durationSec: 4, weight: 0.8, reason: 'second' },
+          { shotId: 'shot-3', durationSec: 4, weight: 0.6, reason: 'third' },
+        ],
+      },
+    ])
+
+    const review: MontageReview = {
+      score: 0.5,
+      summary: { issues: 2, autoFixes: 2, blockingRequests: 0 },
+      issues: [],
+      autoFixes: [
+        {
+          id: 'fix-split',
+          type: 'split_clip',
+          applied: false,
+          affectedClipIds: ['clip-1'],
+          explanation: 'Split the overlong clip into two separated uses.',
+        },
+        {
+          id: 'fix-strategy',
+          type: 'change_block_strategy',
+          applied: false,
+          affectedClipIds: ['clip-1', 'clip-2', 'clip-3'],
+          explanation: 'Switch the block strategy to improve visual variety.',
+        },
+      ],
+      suggestedShotRequests: [],
+    }
+
+    const fixedPlan = applyMontageReviewAutoFixes(project, plan, review)
+    const blockTimelineEntries = fixedPlan.timeline.filter((entry) => entry.semanticBlockId === 'block-1')
+
+    expect(fixedPlan.semanticBlocks?.[0].strategy).toBe('pair')
+    expect(blockTimelineEntries).toHaveLength(2)
+    expect(fixedPlan.timeline.some((entry) => entry.clipId === 'clip-1-split' && entry.semanticBlockId === 'block-1')).toBe(false)
+  })
+})
 
 // Setup ffprobe mock to return a known duration
 function mockFfprobe(durationSec: number) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { MontagePlan, Project, ShotMeta } from '../../server/lib/storage.js'
+import type { MontagePlan, Project, SemanticBlock, ShotMeta } from '../../server/lib/storage.js'
 import { reviewMontageDraft } from '../../server/lib/montage-review.js'
 
 function makeShot(overrides: Partial<ShotMeta>): ShotMeta {
@@ -44,7 +44,10 @@ function makeProject(shots: ShotMeta[]): Project {
   }
 }
 
-function makePlan(entries: Array<{ shotId: string; startSec: number; durationSec: number; clipFile?: string; selectedMomentId?: string }>): MontagePlan {
+function makePlan(
+  entries: Array<{ shotId: string; startSec: number; durationSec: number; clipFile?: string; selectedMomentId?: string; semanticBlockId?: string }>,
+  semanticBlocks: SemanticBlock[] = [],
+): MontagePlan {
   return {
     version: 1,
     format: {
@@ -58,8 +61,10 @@ function makePlan(entries: Array<{ shotId: string; startSec: number; durationSec
       startSec: entry.startSec,
       durationSec: entry.durationSec,
       selectedMomentId: entry.selectedMomentId,
+      semanticBlockId: entry.semanticBlockId,
     })),
     transitions: [],
+    semanticBlocks,
     motionGraphics: {
       lowerThirds: [],
     },
@@ -93,6 +98,149 @@ describe('reviewMontageDraft', () => {
 
     expect(review.issues.some((issue) => issue.type === 'asset_overuse')).toBe(true)
     expect(review.summary.issues).toBeGreaterThan(0)
+  })
+
+  it('suggests moving a repeated clip farther away', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-a', order: 0, scene: 'Фасад', duration: 6 }),
+      makeShot({ id: 'shot-b', order: 1, scene: 'Терраса', duration: 6 }),
+      makeShot({ id: 'shot-c', order: 2, scene: 'Интерьер', duration: 6 }),
+      makeShot({ id: 'shot-d', order: 3, scene: 'Лобби', duration: 6 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-a', startSec: 0, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-b', startSec: 4, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-a', startSec: 8, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-d', startSec: 12, durationSec: 4, semanticBlockId: 'block-1' },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.autoFixes.some((fix) => fix.type === 'move_repeat')).toBe(true)
+  })
+
+  it('suggests swapping a repeated clip for a fresher candidate', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-a', order: 0, scene: 'Фасад', duration: 6 }),
+      makeShot({ id: 'shot-b', order: 1, scene: 'Терраса', duration: 6 }),
+      makeShot({ id: 'shot-c', order: 2, scene: 'Интерьер', duration: 6 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-a', startSec: 0, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-b', startSec: 4, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-c', startSec: 8, durationSec: 4, semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Терраса с видом',
+        anchorLabel: 'Терраса',
+        strategy: 'pair',
+        confidence: 0.91,
+        segments: [
+          { shotId: 'shot-b', durationSec: 4, weight: 0.9, reason: 'primary visual grounding' },
+        ],
+        alternatives: [
+          { shotId: 'shot-c', confidence: 0.83, reason: 'fresh interior angle', rejectedBecause: 'fallback' },
+        ],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.autoFixes.some((fix) => fix.type === 'swap_candidate')).toBe(true)
+  })
+
+  it('suggests splitting an overlong clip', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-long', order: 0, scene: 'Гостиная', duration: 14 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-long', startSec: 0, durationSec: 14, semanticBlockId: 'block-1' },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.autoFixes.some((fix) => fix.type === 'split_clip')).toBe(true)
+  })
+
+  it('suggests switching a block strategy when variety improves', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-1', order: 0, scene: 'Фасад', duration: 6 }),
+      makeShot({ id: 'shot-2', order: 1, scene: 'Фасад с другого ракурса', duration: 6 }),
+      makeShot({ id: 'shot-3', order: 2, scene: 'Фасад и терраса', duration: 6 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-1', startSec: 0, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-2', startSec: 4, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-3', startSec: 8, durationSec: 4, semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Фасад с разными ракурсами',
+        anchorLabel: 'Фасад',
+        strategy: 'cascade',
+        confidence: 0.77,
+        segments: [
+          { shotId: 'shot-1', durationSec: 4, weight: 0.9, reason: 'role 1' },
+          { shotId: 'shot-2', durationSec: 4, weight: 0.78, reason: 'role 2' },
+          { shotId: 'shot-3', durationSec: 4, weight: 0.65, reason: 'role 3' },
+        ],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.autoFixes.some((fix) => fix.type === 'change_block_strategy')).toBe(true)
+  })
+
+  it('keeps a clean draft free of auto-fixes', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-a', order: 0, scene: 'Фасад', duration: 6 }),
+      makeShot({ id: 'shot-b', order: 1, scene: 'Интерьер', duration: 6 }),
+      makeShot({ id: 'shot-c', order: 2, scene: 'Терраса', duration: 6 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-a', startSec: 0, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-b', startSec: 4, durationSec: 4, semanticBlockId: 'block-2' },
+      { shotId: 'shot-c', startSec: 8, durationSec: 4, semanticBlockId: 'block-3' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Фасад',
+        anchorLabel: 'Фасад',
+        strategy: 'solo',
+        confidence: 0.9,
+        segments: [{ shotId: 'shot-a', durationSec: 4, weight: 0.9, reason: 'primary' }],
+        alternatives: [{ shotId: 'shot-c', confidence: 0.75, reason: 'alternate', rejectedBecause: 'unused' }],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.issues).toHaveLength(0)
+    expect(review.autoFixes).toHaveLength(0)
+  })
+
+  it('reports pacing drag for each overlong clip', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-long-1', order: 0, scene: 'Гостиная', duration: 14 }),
+      makeShot({ id: 'shot-long-2', order: 1, scene: 'Лобби', duration: 13 }),
+      makeShot({ id: 'shot-short', order: 2, scene: 'Терраса', duration: 6 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-long-1', startSec: 0, durationSec: 10 },
+      { shotId: 'shot-long-2', startSec: 10, durationSec: 9 },
+      { shotId: 'shot-short', startSec: 19, durationSec: 4 },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+    const pacingIssues = review.issues.filter((issue) => issue.type === 'pacing_drag')
+
+    expect(pacingIssues).toHaveLength(2)
+    expect(review.autoFixes.filter((fix) => fix.type === 'split_clip')).toHaveLength(2)
   })
 
   it('classifies view roles from scene and summary in visual_repetition', () => {

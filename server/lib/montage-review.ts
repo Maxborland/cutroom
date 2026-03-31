@@ -233,6 +233,16 @@ function detectPacingDrag(clips: TimelineClipContext[]): MontageReviewIssue[] {
     return []
   }
 
+  const overlongClips = clips.filter((clip) => clip.durationSec >= PACE_DRAG_MIN_SINGLE_SHOT_SEC)
+  if (overlongClips.length > 0) {
+    return overlongClips.map((clip) => createIssue(
+      'pacing_drag',
+      [clip.clipId],
+      'Клип держится слишком долго без достаточной смены визуального ритма.',
+      'Разрезать клип на два использования или вставить между ними более свежий ракурс.',
+    ))
+  }
+
   const totalDuration = clips.reduce((sum, clip) => sum + clip.durationSec, 0)
   const uniqueShotIds = new Set(clips.map((clip) => clip.shotId))
   const isSingleShotBlock = uniqueShotIds.size === 1 || clips.length === 1
@@ -251,6 +261,133 @@ function detectPacingDrag(clips: TimelineClipContext[]): MontageReviewIssue[] {
     'Один визуальный блок держится слишком долго без достаточной смены ритма.',
     'Разрезать блок на две части, добавить bridge-кадр или переключить стратегию на pair/split.',
   )]
+}
+
+function buildAutoFixes(
+  _project: Project,
+  montagePlan: MontagePlan,
+  clips: TimelineClipContext[],
+  issues: MontageReviewIssue[],
+): MontageAutoFix[] {
+  const autoFixes: MontageAutoFix[] = []
+  const blockById = new Map((montagePlan.semanticBlocks ?? []).map((block) => [block.id, block]))
+  const clipById = new Map(clips.map((clip) => [clip.clipId, clip]))
+  const clipIndexById = new Map(clips.map((clip, index) => [clip.clipId, index]))
+  const seen = new Set<string>()
+
+  const addFix = (fix: MontageAutoFix) => {
+    if (seen.has(fix.id)) {
+      return
+    }
+    seen.add(fix.id)
+    autoFixes.push(fix)
+  }
+
+  for (const issue of issues) {
+    if (issue.type === 'asset_overuse') {
+      const repeatClipId = issue.clipIds[issue.clipIds.length - 1]
+      const repeatIndex = repeatClipId ? clipIndexById.get(repeatClipId) : undefined
+      if (repeatClipId && clipById.has(repeatClipId) && repeatIndex !== undefined && repeatIndex < clips.length - 1) {
+        addFix({
+          id: `move-repeat-${repeatClipId}`,
+          type: 'move_repeat',
+          applied: false,
+          affectedClipIds: [repeatClipId],
+          explanation: 'Разнести повторный клип дальше от его предыдущего использования.',
+        })
+      }
+    }
+
+    if (issue.type === 'visual_repetition') {
+      const repeatClipId = issue.clipIds[issue.clipIds.length - 1]
+      const clip = repeatClipId ? clipById.get(repeatClipId) : undefined
+      const block = clip?.semanticBlockId ? blockById.get(clip.semanticBlockId) : undefined
+      if (repeatClipId && block?.alternatives?.length) {
+        const fresherAlternative = block.alternatives.find((alternative) => alternative.shotId !== clip?.shotId)
+        if (fresherAlternative) {
+          addFix({
+            id: `swap-candidate-${repeatClipId}`,
+            type: 'swap_candidate',
+            applied: false,
+            affectedClipIds: [repeatClipId],
+            explanation: 'Заменить повторяющийся клип на более свежий кандидат из того же смыслового блока.',
+          })
+          continue
+        }
+      }
+
+      const repeatIndex = repeatClipId ? clipIndexById.get(repeatClipId) : undefined
+      if (repeatClipId && clip && repeatIndex !== undefined && repeatIndex < clips.length - 1) {
+        addFix({
+          id: `move-repeat-${repeatClipId}`,
+          type: 'move_repeat',
+          applied: false,
+          affectedClipIds: [repeatClipId],
+          explanation: 'Разнести повторный клип дальше, чтобы снизить визуальное повторение.',
+        })
+      }
+    }
+
+    if (issue.type === 'pacing_drag') {
+      const clipId = issue.clipIds[0]
+      if (clipId && clipById.has(clipId)) {
+        addFix({
+          id: `split-clip-${clipId}`,
+          type: 'split_clip',
+          applied: false,
+          affectedClipIds: [clipId],
+          explanation: 'Разрезать слишком длинный клип на два более коротких использования.',
+        })
+      }
+    }
+  }
+
+  const hasSplitFix = autoFixes.some((fix) => fix.type === 'split_clip')
+  if (!hasSplitFix) {
+    const pacingIssues = issues.filter((issue) => issue.type === 'pacing_drag' && issue.clipIds.length > 0)
+    for (const pacingIssue of pacingIssues) {
+      addFix({
+        id: `split-clip-${pacingIssue.clipIds[0]}`,
+        type: 'split_clip',
+        applied: false,
+        affectedClipIds: [pacingIssue.clipIds[0]],
+        explanation: 'Разрезать слишком длинный клип, чтобы убрать визуальную затяжку.',
+      })
+    }
+  }
+
+  const repetitionBlockIds = new Set(
+    issues
+      .filter((issue) => issue.type === 'visual_repetition')
+      .flatMap((issue) => issue.clipIds)
+      .map((clipId) => clipById.get(clipId)?.semanticBlockId)
+      .filter((blockId): blockId is string => typeof blockId === 'string' && blockId.length > 0),
+  )
+  const hasStrategyFix = autoFixes.some((fix) => fix.type === 'change_block_strategy')
+  if (!hasStrategyFix && repetitionBlockIds.size > 0) {
+    for (const block of montagePlan.semanticBlocks ?? []) {
+      if (!repetitionBlockIds.has(block.id)) {
+        continue
+      }
+      if (block.strategy === 'cascade' && block.segments.length >= 3) {
+        const affectedClipIds = clips
+          .filter((clip) => clip.semanticBlockId === block.id)
+          .map((clip) => clip.clipId)
+        if (affectedClipIds.length >= 3) {
+          addFix({
+            id: `change-block-strategy-${block.id}`,
+            type: 'change_block_strategy',
+            applied: false,
+            affectedClipIds,
+            explanation: 'Сжать каскадный блок до более компактной пары, чтобы улучшить визуальное разнообразие.',
+          })
+          break
+        }
+      }
+    }
+  }
+
+  return autoFixes
 }
 
 function scoreReview(issues: MontageReviewIssue[]): number {
@@ -273,10 +410,10 @@ function scoreReview(issues: MontageReviewIssue[]): number {
   return Math.max(0, Math.min(1, 1 - penalty))
 }
 
-function buildSummary(issues: MontageReviewIssue[]): MontageReview['summary'] {
+function buildSummary(issues: MontageReviewIssue[], autoFixes: MontageAutoFix[]): MontageReview['summary'] {
   return {
     issues: issues.length,
-    autoFixes: 0,
+    autoFixes: autoFixes.length,
     blockingRequests: issues.filter((issue) => issue.type === 'coverage_gap').length,
   }
 }
@@ -288,12 +425,13 @@ export function reviewMontageDraft(project: Project, montagePlan: MontagePlan): 
     ...detectVisualRepetition(clips),
     ...detectPacingDrag(clips),
   ]
+  const autoFixes = buildAutoFixes(project, montagePlan, clips, issues)
 
   return {
     score: scoreReview(issues),
-    summary: buildSummary(issues),
+    summary: buildSummary(issues, autoFixes),
     issues,
-    autoFixes: [],
+    autoFixes,
     suggestedShotRequests: [],
   }
 }

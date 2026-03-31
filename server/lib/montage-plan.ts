@@ -1,6 +1,7 @@
 import type {
-  Project,
   MontagePlan,
+  MontageReview,
+  Project,
   TimelineEntry,
   TransitionEntry,
   LowerThird,
@@ -154,6 +155,261 @@ function selectTransition(
 
   // Rule 5: default -> crossfade 0.5s
   return { type: 'crossfade', durationSec: 0.5 };
+}
+
+function cloneTimelineEntry(entry: TimelineEntry): TimelineEntry {
+  return {
+    ...entry,
+  }
+}
+
+function cloneSemanticBlocks(blocks?: SemanticBlock[]): SemanticBlock[] | undefined {
+  if (!blocks) {
+    return undefined
+  }
+
+  return blocks.map((block) => ({
+    ...block,
+    segments: block.segments.map((segment) => ({ ...segment })),
+    explanation: block.explanation ? [...block.explanation] : undefined,
+    alternatives: block.alternatives ? block.alternatives.map((alternative) => ({ ...alternative })) : undefined,
+  }))
+}
+
+function selectFresherAlternative(block: SemanticBlock | undefined, currentShotId: string) {
+  return block?.alternatives?.find((alternative) => alternative.shotId !== currentShotId)
+}
+
+function rebuildTimeline(plan: MontagePlan, timeline: TimelineEntry[], shotById: Map<string, ShotMeta>): MontagePlan {
+  const clonedTimeline = timeline.map((entry) => cloneTimelineEntry(entry))
+  const startSec = clonedTimeline[0]?.startSec ?? 0
+  let currentSec = startSec
+
+  const normalizedTimeline = clonedTimeline.map((entry) => {
+    const normalized = {
+      ...entry,
+      startSec: currentSec,
+    }
+    currentSec += entry.durationSec
+    return normalized
+  })
+
+  const transitions: TransitionEntry[] = normalizedTimeline.map((entry, index) => {
+    const currentShot = shotById.get(entry.shotId) ?? ({
+      id: entry.shotId,
+      order: index,
+      scene: '',
+      audioDescription: '',
+      imagePrompt: '',
+      videoPrompt: '',
+      duration: entry.durationSec,
+      assetRefs: [],
+      status: 'approved',
+      generatedImages: [],
+      enhancedImages: [],
+      selectedImage: null,
+      videoFile: null,
+    } as ShotMeta)
+    const prevEntry = index > 0 ? normalizedTimeline[index - 1] : undefined
+    const prevShot = prevEntry ? (shotById.get(prevEntry.shotId) ?? ({
+      id: prevEntry.shotId,
+      order: index - 1,
+      scene: '',
+      audioDescription: '',
+      imagePrompt: '',
+      videoPrompt: '',
+      duration: prevEntry.durationSec,
+      assetRefs: [],
+      status: 'approved',
+      generatedImages: [],
+      enhancedImages: [],
+      selectedImage: null,
+      videoFile: null,
+    } as ShotMeta)) : null
+    const { type, durationSec } = selectTransition(prevShot, currentShot, index === 0)
+
+    return {
+      fromClipId: index === 0 ? 'intro' : prevEntry?.clipId,
+      toClipId: entry.clipId,
+      fromShotId: index === 0 ? 'intro' : prevShot?.id ?? prevEntry?.shotId ?? 'intro',
+      toShotId: currentShot.id,
+      type,
+      durationSec,
+    }
+  })
+
+  return {
+    ...plan,
+    timeline: normalizedTimeline,
+    transitions,
+  }
+}
+
+function updateSemanticBlockForSwap(
+  blocks: SemanticBlock[] | undefined,
+  blockId: string | undefined,
+  previousShotId: string,
+  nextShotId: string,
+  nextMomentId?: string,
+): SemanticBlock[] | undefined {
+  if (!blocks || !blockId) {
+    return blocks
+  }
+
+  return blocks.map((block) => {
+    if (block.id !== blockId) {
+      return block
+    }
+
+    const segments = block.segments.map((segment) => {
+      if (segment.shotId !== previousShotId) {
+        return segment
+      }
+
+      return {
+        ...segment,
+        shotId: nextShotId,
+        momentId: nextMomentId ?? segment.momentId,
+      }
+    })
+
+    return {
+      ...block,
+      segments,
+    }
+  })
+}
+
+export function applyMontageReviewAutoFixes(project: Project, montagePlan: MontagePlan, review: MontageReview): MontagePlan {
+  if (!review.autoFixes.length) {
+    return montagePlan
+  }
+
+  const shotById = new Map((project.shots ?? []).map((shot) => [shot.id, shot]))
+  let timeline = montagePlan.timeline.map((entry) => cloneTimelineEntry(entry))
+  let semanticBlocks = cloneSemanticBlocks(montagePlan.semanticBlocks)
+
+  for (const autoFix of review.autoFixes) {
+    if (autoFix.applied) {
+      continue
+    }
+
+    const affectedClipId = autoFix.affectedClipIds[0]
+    if (!affectedClipId) {
+      continue
+    }
+
+    const index = timeline.findIndex((entry) => entry.clipId === affectedClipId)
+    if (index < 0) {
+      continue
+    }
+
+    if (autoFix.type === 'move_repeat') {
+      const nextIndex = index + 1
+      if (nextIndex < timeline.length) {
+        ;[timeline[index], timeline[nextIndex]] = [timeline[nextIndex], timeline[index]]
+      }
+      continue
+    }
+
+    if (autoFix.type === 'swap_candidate') {
+      const entry = timeline[index]
+      const block = semanticBlocks?.find((candidate) => candidate.id === entry.semanticBlockId)
+      const fresherAlternative = selectFresherAlternative(block, entry.shotId)
+      if (!fresherAlternative) {
+        continue
+      }
+
+      timeline[index] = {
+        ...entry,
+        shotId: fresherAlternative.shotId,
+        clipFile: `montage/normalized/${fresherAlternative.shotId}.mp4`,
+        selectedMomentId: fresherAlternative.momentId ?? entry.selectedMomentId,
+      }
+      semanticBlocks = updateSemanticBlockForSwap(
+        semanticBlocks,
+        entry.semanticBlockId,
+        entry.shotId,
+        fresherAlternative.shotId,
+        fresherAlternative.momentId,
+      )
+      continue
+    }
+
+    if (autoFix.type === 'split_clip') {
+      const entry = timeline[index]
+      if (entry.durationSec <= 0) {
+        continue
+      }
+
+      const firstDuration = Math.max(Math.round(entry.durationSec / 2), 1)
+      const secondDuration = Math.max(entry.durationSec - firstDuration, 1)
+      const duplicate: TimelineEntry = {
+        ...entry,
+        clipId: entry.clipId ? `${entry.clipId}-split` : `clip-${entry.shotId}-split`,
+        durationSec: secondDuration,
+      }
+
+      timeline[index] = {
+        ...entry,
+        durationSec: firstDuration,
+      }
+
+      const insertAt = Math.min(index + 2, timeline.length)
+      timeline.splice(insertAt, 0, duplicate)
+      continue
+    }
+
+    if (autoFix.type === 'change_block_strategy') {
+      const affectedClipIds = new Set(autoFix.affectedClipIds)
+      const targetBlockId = timeline.find((entry) => {
+        const clipId = entry.clipId ?? `clip-${entry.shotId}`
+        return affectedClipIds.has(clipId)
+      })?.semanticBlockId
+
+      if (!targetBlockId) {
+        continue
+      }
+
+      let retainedCount = 0
+      timeline = timeline.map((entry) => {
+        if (entry.semanticBlockId !== targetBlockId) {
+          return entry
+        }
+
+        retainedCount += 1
+        if (retainedCount <= 2) {
+          return entry
+        }
+
+        return {
+          ...entry,
+          semanticBlockId: undefined,
+        }
+      })
+
+      semanticBlocks = semanticBlocks?.map((block) => {
+        if (block.id !== targetBlockId) {
+          return block
+        }
+
+        return {
+          ...block,
+          strategy: 'pair',
+          segments: block.segments.slice(0, 2).map((segment) => ({ ...segment })),
+        }
+      })
+    }
+  }
+
+  return rebuildTimeline(
+    {
+      ...montagePlan,
+      semanticBlocks,
+    },
+    timeline,
+    shotById,
+  )
 }
 
 // ── Main generation function ─────────────────────────────────────────
