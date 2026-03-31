@@ -24,7 +24,7 @@ interface OpenReelHostProps {
   syncStatus: OpenReelSyncState
   onProjectChange: (payload: { version: string; project: unknown }) => void
   onExportProgress?: (payload: { phase: string; progress: number }) => void
-  onExportComplete?: (payload: { filename: string }) => void
+  onExportComplete?: (payload: { filename: string; artifact?: Blob }) => void
   onError?: (message: string) => void
 }
 

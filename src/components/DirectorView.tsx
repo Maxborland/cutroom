@@ -23,6 +23,9 @@ import {
 
 type TabId = 'script' | 'shots' | 'images'
 
+const EMPTY_REVIEWS: DirectorReview[] = []
+const EMPTY_LATEST_BY_STAGE: Record<string, string> = {}
+
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'script', label: '\u0420\u0435\u0432\u044c\u044e \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u044f', icon: <FileText size={14} /> },
   { id: 'shots', label: '\u0420\u0435\u0432\u044c\u044e \u0448\u043e\u0442\u043e\u0432', icon: <LayoutGrid size={14} /> },
@@ -141,6 +144,11 @@ function getBestImage(shot: Shot): string | null {
   return null
 }
 
+function hasOpenRevisionIssues(review: DirectorReview | null): boolean {
+  if (!review) return false
+  return review.notes.some((note) => !note.resolvedAt && note.verdict !== 'approve')
+}
+
 // Main Component
 
 export function DirectorView() {
@@ -156,8 +164,8 @@ export function DirectorView() {
   const [activeTab, setActiveTab] = useState<TabId>('script')
 
   const directorState = project?.directorState
-  const reviews = directorState?.reviews || []
-  const latestByStage = directorState?.latestByStage || {}
+  const reviews = directorState?.reviews ?? EMPTY_REVIEWS
+  const latestByStage = directorState?.latestByStage ?? EMPTY_LATEST_BY_STAGE
 
   const latestScriptReview = useMemo(
     () => reviews.find((r) => r.id === latestByStage['script']) || null,
@@ -197,6 +205,9 @@ export function DirectorView() {
 
   const renderScriptTab = () => {
     const paragraphs = project.script ? project.script.split('\n\n').filter(Boolean) : []
+    const canSendScriptToRework = latestScriptReview
+      ? latestScriptReview.overallVerdict !== 'approve' || hasOpenRevisionIssues(latestScriptReview)
+      : false
 
     return (
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -243,14 +254,14 @@ export function DirectorView() {
                 ))}
               </div>
               <div className="flex gap-2 mt-2">
-                {latestScriptReview.overallVerdict !== 'approve' && (
+                {canSendScriptToRework && (
                   <button
                     onClick={() => directorApplyFeedback(latestScriptReview.id, 'regenerate-script')}
                     disabled={directorLoading}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-amber text-black text-xs font-bold brutal-btn disabled:opacity-50"
                   >
                     {directorLoading ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
-                    {'\u041f\u0435\u0440\u0435\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u0439'}
+                    {'\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u043d\u0430 \u0434\u043e\u0440\u0430\u0431\u043e\u0442\u043a\u0443'}
                   </button>
                 )}
                 <button

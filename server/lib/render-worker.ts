@@ -1,16 +1,16 @@
 /**
  * render-worker.ts — Remotion render orchestration.
- * Spawns @remotion/renderer to produce video from a MontagePlan.
+ * Loads Remotion lazily so non-render routes/tests do not fail when the
+ * renderer isn't needed during module evaluation.
  */
 
-import { bundle } from '@remotion/bundler';
-import { renderMedia, selectComposition } from '@remotion/renderer';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { resolveProjectPath, withProject, getProject, type RenderJob } from './storage.js';
 import { getProjectStorageAdapter } from './storage-adapters/index.js';
 import { getDefaultJobsRepository as getSharedJobsRepository } from './jobs/default-repository.js';
 import type { JobsRepository } from './jobs/types.js';
+import { loadRemotionModules } from './remotion-runtime.js';
 import { resolvePlan } from '../remotion/src/lib/plan-reader.js';
 import type { MontagePlan } from './storage.js';
 
@@ -30,6 +30,8 @@ interface RenderConfig {
   codec: 'h264' | 'h265';
   concurrency: number;
 }
+
+type RemotionComposition = Record<string, unknown>;
 
 const PRESETS: Record<RenderQuality, RenderConfig> = {
   preview: {
@@ -173,6 +175,7 @@ async function doRender(
 
   const projectDir = resolveProjectPath(projectId);
   const resolvedPlan = resolvePlan(plan, projectDir);
+  const { bundle, selectComposition, renderMedia } = await loadRemotionModules();
 
   // Bundle Remotion project
   let bundled: string;
@@ -199,7 +202,7 @@ async function doRender(
   }
 
   // Override dimensions and duration based on quality + plan
-  const compositionWithOverrides = {
+  const compositionWithOverrides: RemotionComposition = {
     ...composition,
     width: config.width,
     height: config.height,

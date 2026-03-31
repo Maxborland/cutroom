@@ -1,7 +1,9 @@
+import dns from 'node:dns'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { subscribeMock, uploadMock, configMock } = vi.hoisted(() => ({
+const { subscribeMock, runMock, uploadMock, configMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
+  runMock: vi.fn(),
   uploadMock: vi.fn(),
   configMock: vi.fn(),
 }))
@@ -10,18 +12,39 @@ vi.mock('@fal-ai/client', () => ({
   fal: {
     config: configMock,
     subscribe: subscribeMock,
+    run: runMock,
     storage: {
       upload: uploadMock,
     },
   },
 }))
 
-import { falGenerateImage, falGenerateVideo } from '../../server/lib/fal-client'
+import { falGenerateImage, falGenerateVideo, resolveFalHostname } from '../../server/lib/fal-client'
+
+describe('fal-client DNS fallback', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('falls back to resolve4 for fal.run hostnames when lookup returns ENOTFOUND', async () => {
+    const lookupSpy = vi.spyOn(dns.promises, 'lookup').mockRejectedValueOnce(Object.assign(new Error('lookup failed'), {
+      code: 'ENOTFOUND',
+      hostname: 'fal.run',
+    }))
+    const resolve4Spy = vi.spyOn(dns.promises, 'resolve4').mockResolvedValueOnce(['35.224.27.103'])
+
+    await expect(resolveFalHostname('fal.run')).resolves.toEqual({ address: '35.224.27.103', family: 4 })
+
+    expect(lookupSpy).toHaveBeenCalledWith('fal.run')
+    expect(resolve4Spy).toHaveBeenCalledWith('fal.run')
+  })
+})
 
 describe('fal-client image generation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    subscribeMock.mockResolvedValue({ data: { images: [{ url: 'https://example.com/image.png' }] } })
+    runMock.mockResolvedValue({ data: { images: [{ url: 'https://example.com/image.png' }] } })
+    subscribeMock.mockResolvedValue({ data: { video: { url: 'https://example.com/video.mp4' } } })
   })
 
   it('does not upload image-to-image references to fal.storage for nano-banana/edit endpoints', async () => {
@@ -39,8 +62,9 @@ describe('fal-client image generation', () => {
 
     expect(result).toBe('https://example.com/image.png')
     expect(uploadMock).not.toHaveBeenCalled()
-    expect(subscribeMock).toHaveBeenCalledOnce()
-    expect(subscribeMock).toHaveBeenCalledWith(
+    expect(runMock).toHaveBeenCalledOnce()
+    expect(subscribeMock).not.toHaveBeenCalled()
+    expect(runMock).toHaveBeenCalledWith(
       'fal-ai/nano-banana-pro/edit',
       expect.objectContaining({
         input: expect.objectContaining({
@@ -62,7 +86,7 @@ describe('fal-client image generation', () => {
     })
 
     expect(uploadMock).not.toHaveBeenCalled()
-    expect(subscribeMock).toHaveBeenCalledWith(
+    expect(runMock).toHaveBeenCalledWith(
       'fal-ai/flux-pro/kontext/text-to-image',
       expect.objectContaining({
         input: expect.objectContaining({
@@ -70,26 +94,27 @@ describe('fal-client image generation', () => {
         }),
       }),
     )
+    expect(subscribeMock).not.toHaveBeenCalled()
   })
 
-  it('retries when fal.subscribe fails with terminated/ECONNRESET', async () => {
+  it('uses fal.run for image generation without retrying through subscribe', async () => {
     const resetError = new TypeError('terminated') as any
     resetError.cause = { code: 'ECONNRESET' }
 
-    subscribeMock
+    runMock
       .mockRejectedValueOnce(resetError)
       .mockResolvedValueOnce({ data: { images: [{ url: 'https://example.com/retry-success.png' }] } })
 
-    const result = await falGenerateImage({
+    await expect(falGenerateImage({
       endpoint: 'fal-ai/nano-banana-pro/edit',
       prompt: 'retry test',
       referenceImageUrl: 'data:image/png;base64,aGVsbG8=',
       imageInputParam: 'image_urls',
       imageIsArray: true,
-    })
+    })).rejects.toThrow('terminated')
 
-    expect(result).toBe('https://example.com/retry-success.png')
-    expect(subscribeMock).toHaveBeenCalledTimes(2)
+    expect(runMock).toHaveBeenCalledTimes(1)
+    expect(subscribeMock).not.toHaveBeenCalled()
   })
 
   it('normalizes duration for veo3 image-to-video endpoints before subscribe', async () => {

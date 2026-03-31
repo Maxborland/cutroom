@@ -6,13 +6,12 @@ const bundleMock = vi.fn()
 const selectCompositionMock = vi.fn()
 const renderMediaMock = vi.fn()
 
-vi.mock('@remotion/bundler', () => ({
-  bundle: bundleMock,
-}))
-
-vi.mock('@remotion/renderer', () => ({
-  renderMedia: renderMediaMock,
-  selectComposition: selectCompositionMock,
+vi.mock('../../server/lib/remotion-runtime.js', () => ({
+  loadRemotionModules: vi.fn(async () => ({
+    bundle: bundleMock,
+    renderMedia: renderMediaMock,
+    selectComposition: selectCompositionMock,
+  })),
 }))
 
 function createFakeCompositeDb() {

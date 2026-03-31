@@ -146,6 +146,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.doUnmock('../../server/db/index.js')
   global.fetch = originalFetch
+  delete process.env.VIDEO_DOWNLOAD_MAX_BYTES
 })
 
 describe('video-cache durable jobs', () => {
@@ -246,5 +247,61 @@ describe('video-cache durable jobs', () => {
     })
 
     expect(String(warnSpy.mock.calls[0]?.[0] ?? '')).not.toContain('\n')
+  })
+
+  it('rejects oversized external videos before buffering the full response body', async () => {
+    process.env.VIDEO_DOWNLOAD_MAX_BYTES = String(1024)
+
+    const arrayBufferSpy = vi.fn(async () => Buffer.from('should-not-be-read'))
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-length' ? '4096' : null),
+      },
+      arrayBuffer: arrayBufferSpy,
+      body: null,
+    } as unknown as Response)
+
+    const storage = await import('../../server/lib/storage.js')
+    const videoCache = await import('../../server/lib/jobs/video-cache.js')
+    const project = await storage.createProject('Video cache size limit project')
+
+    await expect(
+      videoCache.cacheVideoLocally(project.id, 'shot-001', 'https://replicate.example/too-large.mp4'),
+    ).rejects.toThrow(/too large/i)
+
+    expect(arrayBufferSpy).not.toHaveBeenCalled()
+
+    await storage.deleteProject(project.id)
+  })
+
+  it('aborts streamed downloads that exceed the configured byte limit', async () => {
+    process.env.VIDEO_DOWNLOAD_MAX_BYTES = String(5)
+
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]))
+        controller.enqueue(new Uint8Array([4, 5, 6]))
+        controller.close()
+      },
+    })
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: () => null,
+      },
+      body: oversizedBody,
+    } as unknown as Response)
+
+    const storage = await import('../../server/lib/storage.js')
+    const videoCache = await import('../../server/lib/jobs/video-cache.js')
+    const project = await storage.createProject('Video cache streamed size limit project')
+
+    await expect(
+      videoCache.cacheVideoLocally(project.id, 'shot-001', 'https://replicate.example/streamed-too-large.mp4'),
+    ).rejects.toThrow(/too large/i)
+
+    await storage.deleteProject(project.id)
   })
 })

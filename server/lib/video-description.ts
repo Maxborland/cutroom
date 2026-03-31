@@ -1,0 +1,103 @@
+import * as childProcess from 'node:child_process';
+import { probeDuration } from './normalize.js';
+
+export interface SampledVideoFrame {
+  timeSec: number;
+  imageDataUrl: string;
+}
+
+const FFMPEG = process.env.FFMPEG_PATH?.trim() || 'ffmpeg';
+const MAX_STDOUT_SIZE = 2 * 1024 * 1024;
+const FFMPEG_TIMEOUT_MS = 8_000;
+const MAX_SAMPLED_FRAMES = 2;
+const FRAME_SCALE_WIDTH = 960;
+const FRAME_JPEG_QUALITY = '8';
+
+function execFileBuffer(cmd: string, args: string[]): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(
+      cmd,
+      args,
+      {
+        encoding: 'buffer',
+        maxBuffer: MAX_STDOUT_SIZE,
+        timeout: FFMPEG_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+            reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS}ms`));
+            return;
+          }
+
+          const message = stderr && stderr.length > 0
+            ? `${error.message}: ${stderr.toString()}`
+            : error.message;
+          reject(new Error(message));
+          return;
+        }
+
+        resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+      },
+    );
+  });
+}
+
+function buildSampleTimes(durationSec: number, sampleCount: number): number[] {
+  const safeDuration = Number.isFinite(durationSec) ? Math.max(durationSec, 0) : 0;
+  if (safeDuration <= 0) {
+    return [];
+  }
+
+  if (sampleCount <= 1 || safeDuration <= 1) {
+    return [Number((safeDuration / 2).toFixed(3))];
+  }
+
+  const startSec = Math.min(0.25, safeDuration * 0.1);
+  const endSec = Math.max(startSec, safeDuration - Math.min(0.25, safeDuration * 0.1));
+  const times = new Set<number>();
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    const fraction = (index + 1) / (sampleCount + 1);
+    const timeSec = startSec + (endSec - startSec) * fraction;
+    times.add(Number(Math.min(Math.max(timeSec, 0), Math.max(safeDuration - 0.05, 0)).toFixed(3)));
+  }
+
+  return Array.from(times).sort((left, right) => left - right);
+}
+
+async function captureVideoFrame(filePath: string, timeSec: number): Promise<Buffer> {
+  return execFileBuffer(FFMPEG, [
+    '-v', 'error',
+    '-ss', String(Math.max(timeSec, 0)),
+    '-i', filePath,
+    '-frames:v', '1',
+    '-vf', `scale='min(${FRAME_SCALE_WIDTH},iw)':-2`,
+    '-q:v', FRAME_JPEG_QUALITY,
+    '-f', 'image2pipe',
+    '-vcodec', 'mjpeg',
+    'pipe:1',
+  ]);
+}
+
+export async function sampleVideoFrames(filePath: string, sampleCount = 3): Promise<SampledVideoFrame[]> {
+  const boundedSampleCount = Math.max(1, Math.min(Math.floor(sampleCount), MAX_SAMPLED_FRAMES));
+  const durationSec = await probeDuration(filePath);
+  const times = buildSampleTimes(durationSec, boundedSampleCount);
+
+  if (times.length === 0) {
+    return [];
+  }
+
+  const frames: SampledVideoFrame[] = [];
+  for (const timeSec of times) {
+    const frameBytes = await captureVideoFrame(filePath, timeSec);
+    frames.push({
+      timeSec,
+      imageDataUrl: `data:image/jpeg;base64,${frameBytes.toString('base64')}`,
+    });
+  }
+
+  return frames;
+}

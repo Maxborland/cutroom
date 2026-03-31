@@ -90,8 +90,15 @@ export interface Project {
   narrationAnchors?: NarrationAnchor[]
   anchorMatches?: AnchorMatch[]
   anchorCoverageSummary?: AnchorCoverageSummary
+  semanticBlocks?: SemanticBlock[]
   montagePlan?: MontagePlan
+  latestExportArtifact?: ProjectExportArtifact
   renders?: RenderJob[]
+}
+
+export interface ProjectExportArtifact {
+  filename: string
+  exportedAt: string
 }
 
 // ── Montage Types ────────────────────────────────────────────────────
@@ -146,6 +153,56 @@ export interface AnchorCoverageSummary {
   unmatchedAnchors: number
 }
 
+export type GroundedMatchClass = 'direct' | 'visual' | 'atmospheric' | 'fallback' | 'unresolved'
+
+export interface ScriptBlock {
+  id: string
+  order: number
+  sourceText: string
+  intent: string
+}
+
+export interface GroundingPacket {
+  literalQuery: string
+  visualQueries: string[]
+  moodQueries: string[]
+  fallbackMode: 'direct_only' | 'visual_ok' | 'atmospheric_broll'
+}
+
+export interface GroundedScriptBlock extends ScriptBlock {
+  grounding: GroundingPacket
+  summary: string
+  matchClass?: GroundedMatchClass
+}
+
+export interface SemanticBlockSegment {
+  shotId: string
+  momentId?: string
+  durationSec: number
+  weight: number
+  reason: string
+}
+
+export interface SemanticBlockAlternative {
+  shotId: string
+  momentId?: string
+  confidence: number
+  reason: string
+  rejectedBecause: string
+}
+
+export interface SemanticBlock {
+  id: string
+  anchorId: string
+  anchorText: string
+  anchorLabel: string
+  strategy: 'solo' | 'pair' | 'split' | 'cascade'
+  confidence: number
+  segments: SemanticBlockSegment[]
+  explanation?: string[]
+  alternatives?: SemanticBlockAlternative[]
+}
+
 export interface MontageStyle {
   preset: 'premium' | 'calm' | 'dynamic' | 'custom'
   fontFamily: string
@@ -155,7 +212,11 @@ export interface MontageStyle {
 }
 
 export interface TimelineEntry {
+  clipId?: string
   shotId: string
+  anchorId?: string
+  semanticBlockId?: string
+  selectedMomentId?: string
   clipFile: string
   startSec: number
   durationSec: number
@@ -165,6 +226,8 @@ export interface TimelineEntry {
 }
 
 export interface TransitionEntry {
+  fromClipId?: string
+  toClipId?: string
   fromShotId: string
   toShotId: string
   type: 'cut' | 'fade' | 'crossfade' | 'slide_left' | 'slide_right' | 'zoom_blur' | 'wipe'
@@ -203,6 +266,7 @@ export interface MontagePlan {
     height: number
     fps: number
   }
+  semanticBlocks?: SemanticBlock[]
   timeline: TimelineEntry[]
   transitions: TransitionEntry[]
   motionGraphics: {
@@ -220,6 +284,24 @@ export interface MontagePlan {
     }
   }
   style: MontageStyle
+}
+
+export interface MontageAssemblySummary {
+  blocks: number
+  clips: number
+  issues: string[]
+  steps: MontageAssemblyStep[]
+  directBlocks: number
+  visualBlocks: number
+  atmosphericBlocks: number
+  unresolvedBlocks: number
+  groundedBlocks?: GroundedScriptBlock[]
+}
+
+export interface MontageAssemblyStep {
+  key: 'describe-videos' | 'extract-anchors' | 'match-anchors' | 'generate-plan'
+  status: 'done' | 'skipped' | 'blocked' | 'failed'
+  detail?: string
 }
 
 export interface RenderJob {
@@ -292,9 +374,13 @@ export interface AppSettings {
   defaultAudioGenModel: string
   imageSize: string
   imageQuality: string
+  imageNoRefSize: string
+  imageNoRefQuality: string
+  imageNoRefAspectRatio: string
   videoQuality: string
   enhanceSize: string
   enhanceQuality: string
+  enhanceAspectRatio: string
   imageAspectRatio: string
   defaultDirectorModel: string
   masterPromptDirector: string

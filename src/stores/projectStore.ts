@@ -554,35 +554,77 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   updateProjectStage: (projectId, stage) => {
+    const previousProject = get().projects.find((p) => p.id === projectId) ?? null
     set((state) => ({
       projects: state.projects.map((p) => (p.id === projectId ? { ...p, stage } : p)),
     }))
     // Background save
-    api.projects.update(projectId, { stage }).catch((e) => {
+    api.projects.update(projectId, { stage }).catch(async (e) => {
       console.error('Failed to update project stage:', e)
+      if (previousProject) {
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? previousProject : p)),
+        }))
+      }
+      try {
+        const project = await api.projects.get(projectId)
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }))
+      } catch {
+        // ignore reload error
+      }
     })
   },
 
   updateBriefText: (projectId, text) => {
+    const previousProject = get().projects.find((p) => p.id === projectId) ?? null
     set((state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId ? { ...p, brief: { ...p.brief, text } } : p
       ),
     }))
     // Background save - debounced by the caller (BriefEditor)
-    api.projects.update(projectId, { brief: { text } }).catch((e) => {
+    api.projects.update(projectId, { brief: { text } }).catch(async (e) => {
       console.error('Failed to save brief text:', e)
+      if (previousProject) {
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? previousProject : p)),
+        }))
+      }
+      try {
+        const project = await api.projects.get(projectId)
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }))
+      } catch {
+        // ignore reload error
+      }
     })
   },
 
   updateTargetDuration: (projectId, duration) => {
+    const previousProject = get().projects.find((p) => p.id === projectId) ?? null
     set((state) => ({
       projects: state.projects.map((p) =>
         p.id === projectId ? { ...p, brief: { ...p.brief, targetDuration: duration } } : p
       ),
     }))
-    api.projects.update(projectId, { brief: { targetDuration: duration } }).catch((e) => {
+    api.projects.update(projectId, { brief: { targetDuration: duration } }).catch(async (e) => {
       console.error('Failed to save target duration:', e)
+      if (previousProject) {
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? previousProject : p)),
+        }))
+      }
+      try {
+        const project = await api.projects.get(projectId)
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }))
+      } catch {
+        // ignore reload error
+      }
     })
   },
 
@@ -630,6 +672,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   deleteShotImage: (projectId, shotId, filename) => {
+    const previousProject = get().projects.find((p) => p.id === projectId) ?? null
     // Optimistic: remove from generatedImages and enhancedImages
     set((state) => ({
       projects: state.projects.map((p) =>
@@ -650,12 +693,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ),
     }))
     // Background delete
-    api.shots.deleteImage(projectId, shotId, filename).catch((e) => {
+    api.shots.deleteImage(projectId, shotId, filename).catch(async (e) => {
       console.error('Failed to delete shot image:', e)
+      if (previousProject) {
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? previousProject : p)),
+        }))
+      }
+      try {
+        const project = await api.projects.get(projectId)
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }))
+      } catch {
+        // ignore reload error
+      }
     })
   },
 
   deleteShotVideo: (projectId, shotId) => {
+    const previousProject = get().projects.find((p) => p.id === projectId) ?? null
     // Optimistic: set videoFile to null
     set((state) => ({
       projects: state.projects.map((p) =>
@@ -670,8 +727,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ),
     }))
     // Background delete
-    api.shots.deleteVideo(projectId, shotId).catch((e) => {
+    api.shots.deleteVideo(projectId, shotId).catch(async (e) => {
       console.error('Failed to delete shot video:', e)
+      if (previousProject) {
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? previousProject : p)),
+        }))
+      }
+      try {
+        const project = await api.projects.get(projectId)
+        set((state) => ({
+          projects: state.projects.map((p) => (p.id === projectId ? project : p)),
+        }))
+      } catch {
+        // ignore reload error
+      }
     })
   },
 

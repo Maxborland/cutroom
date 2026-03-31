@@ -64,7 +64,7 @@ export function ShotDetail({ onClose }: ShotDetailProps) {
     if (!shot) return
     setVideoEditHint('')
     setDurationDraft(shot.duration)
-  }, [shot?.id])
+  }, [shot])
 
   if (!project || !shot) return null
 

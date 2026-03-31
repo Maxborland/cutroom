@@ -25,6 +25,7 @@ import { createUsersRoutes } from './routes/users.js';
 interface CreateAppOptions {
   apiAccessKey?: string;
   allowMissingApiKey?: boolean;
+  enableLegacyMontageRender?: boolean;
   rateLimitWindowMs?: number;
   rateLimitMax?: number;
   authRateLimitWindowMs?: number;
@@ -90,6 +91,7 @@ function resolveRequestOrigin(req: Request): string | null {
 
 export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
+  app.set('enableLegacyMontageRender', options.enableLegacyMontageRender === true);
   const isDev = process.env.NODE_ENV !== 'production';
   const clientDistDir = options.clientDistDir ?? (isDev ? null : path.resolve(process.cwd(), 'dist'));
   const hasClientBundle = typeof clientDistDir === 'string' && clientDistDir.length > 0 && existsSync(clientDistDir);
@@ -218,29 +220,6 @@ export function createApp(options: CreateAppOptions = {}): Express {
     next();
   });
 
-  app.use('/api', (req, res, next) => {
-    if (req.path === '/health') {
-      next();
-      return;
-    }
-
-    if (!apiAccessKey) {
-      if (allowMissingApiKey) {
-        next();
-      } else {
-        sendApiError(res, 503, 'API access key is not configured', 'API_KEY_NOT_CONFIGURED');
-      }
-      return;
-    }
-
-    if (req.header('x-api-key') === apiAccessKey) {
-      next();
-      return;
-    }
-
-    sendApiError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
-  });
-
   if (authRepository) {
     app.use('/api', createAuthSessionMiddleware(authRepository));
     app.use('/api/auth', createAuthRoutes(authRepository, {
@@ -259,6 +238,29 @@ export function createApp(options: CreateAppOptions = {}): Express {
       }
 
       requireAuthenticatedUser(req, res, next);
+    });
+  } else {
+    app.use('/api', (req, res, next) => {
+      if (req.path === '/health') {
+        next();
+        return;
+      }
+
+      if (!apiAccessKey) {
+        if (allowMissingApiKey) {
+          next();
+        } else {
+          sendApiError(res, 503, 'API access key is not configured', 'API_KEY_NOT_CONFIGURED');
+        }
+        return;
+      }
+
+      if (req.header('x-api-key') === apiAccessKey) {
+        next();
+        return;
+      }
+
+      sendApiError(res, 401, 'Unauthorized', 'UNAUTHORIZED');
     });
   }
   // Serve OpenReel editor: wrapper + bridge at /openreel/, built app at /openreel/app/

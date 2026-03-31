@@ -133,4 +133,27 @@ describe('generateVideoFromImage quality params', () => {
     const [opts] = falGenerateVideoMock.mock.calls[0]
     expect(opts.extraInput).toEqual({ resolution: '4k' })
   })
+
+  it('passes schema-backed aspect ratio and explicit duration values through extra input', async () => {
+    const model = findVideoModel('fal/kling-2.1-pro')
+    expect(model).toBeTruthy()
+
+    await generateVideoFromImage({
+      model: model!,
+      prompt: 'test prompt',
+      sourceImageUrl: 'https://example.com/image.png',
+      duration: '8s',
+      extraInput: {
+        aspect_ratio: '16:9',
+        resolution: '1080p',
+      },
+    })
+
+    const [opts] = falGenerateVideoMock.mock.calls[0]
+    expect(opts.duration).toBe('8s')
+    expect(opts.extraInput).toEqual({
+      aspect_ratio: '16:9',
+      resolution: '1080p',
+    })
+  })
 })

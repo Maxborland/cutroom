@@ -1,11 +1,72 @@
+import dns from 'node:dns';
 import { fal } from '@fal-ai/client';
+import { Agent } from 'undici';
 
 let _configured = false;
 let _lastKey = '';
 
+function isFalRunHostname(hostname: string): boolean {
+  return hostname === 'fal.run' || hostname.endsWith('.fal.run');
+}
+
+export async function resolveFalHostname(hostname: string): Promise<{ address: string; family: 4 | 6 }> {
+  try {
+    const resolved = await dns.promises.lookup(hostname);
+    return {
+      address: resolved.address,
+      family: resolved.family as 4 | 6,
+    };
+  } catch (err: any) {
+    if (!isFalRunHostname(hostname) || String(err?.code || '').toUpperCase() !== 'ENOTFOUND') {
+      throw err;
+    }
+
+    const resolved = await dns.promises.resolve4(hostname);
+    if (resolved.length === 0) {
+      throw err;
+    }
+
+    return {
+      address: resolved[0],
+      family: 4,
+    };
+  }
+}
+
+const falDnsFallbackAgent = new Agent({
+  connect: {
+    lookup(hostname, options, callback) {
+      resolveFalHostname(hostname)
+        .then(({ address, family }) => {
+          if (typeof options === 'object' && options?.all) {
+            callback(null, [{ address, family }]);
+            return;
+          }
+
+          callback(null, address, family);
+        })
+        .catch((err) => callback(err as Error, undefined as never, undefined as never));
+    },
+  },
+});
+
+const falFetchWithDnsFallback: typeof fetch = (input, init) => {
+  const target = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+  const hostname = new URL(target).hostname;
+
+  if (!isFalRunHostname(hostname)) {
+    return fetch(input, init);
+  }
+
+  return fetch(input, {
+    ...(init || {}),
+    dispatcher: falDnsFallbackAgent,
+  } as RequestInit & { dispatcher: Agent });
+};
+
 export function configureFal(apiKey: string): void {
   if (_configured && apiKey === _lastKey) return;
-  fal.config({ credentials: apiKey });
+  fal.config({ credentials: apiKey, fetch: falFetchWithDnsFallback });
   _configured = true;
   _lastKey = apiKey;
 }
@@ -301,7 +362,12 @@ export async function falGenerateImage(opts: {
 
   console.log('[fal] image request');
 
-  const result = await falSubscribeWithRetry(opts.endpoint, input, signal);
+  const runOptions: Record<string, unknown> = { input };
+  if (signal) {
+    runOptions.signal = signal;
+  }
+
+  const result = await fal.run(opts.endpoint, runOptions);
 
   if (signal?.aborted) throw new Error('Generation cancelled');
 
@@ -315,7 +381,7 @@ export async function falGenerateVideo(opts: {
   endpoint: string;
   prompt: string;
   sourceImageUrl: string;
-  duration?: number;
+  duration?: number | string;
   /**
    * Optional provider-specific input fields.
    * Example: { resolution: "1080P" } for models that support explicit quality control.
@@ -329,7 +395,7 @@ export async function falGenerateVideo(opts: {
     prompt: opts.prompt,
     image_url: imageUrl,
   };
-  if (opts.duration) {
+  if (opts.duration !== undefined) {
     const normalized = normalizeVideoDurationForEndpoint(opts.endpoint, opts.duration);
     baseInput.duration = normalized ?? opts.duration;
   }

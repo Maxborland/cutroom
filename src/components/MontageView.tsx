@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProjectStore } from '../stores/projectStore'
 import { api } from '../lib/api'
-import type { AnchorMatch, NarrationAnchor, Project, RenderJob } from '../types'
+import type { AnchorMatch, MontageAssemblySummary, MontagePlan, NarrationAnchor, Project, SemanticBlock, ShotVideoDescriptionMoment } from '../types'
 import {
   Mic,
   Music,
@@ -21,7 +21,6 @@ import {
   Send,
   AlertCircle,
   Trash2,
-  Play,
   Download,
 } from 'lucide-react'
 
@@ -116,7 +115,7 @@ export function MontageView() {
           />
         )}
         {activeStep === 'render' && (
-          <RenderStep project={project} onRefresh={() => refreshProject(project.id)} />
+          <RenderStep project={project} onOpenEditor={() => navigate(`/editor/${project.id}`)} />
         )}
       </div>
     </div>
@@ -147,11 +146,16 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
   const [voices, setVoices] = useState<VoiceInfo[]>([])
   const [activeProvider, setActiveProvider] = useState('')
   const [selectedVoice, setSelectedVoice] = useState(project.voiceoverVoiceId || '')
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const voFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setScript(project.voiceoverScript || '')
   }, [project.voiceoverScript])
+
+  useEffect(() => {
+    setPreviewUrl(null)
+  }, [activeProvider, selectedVoice])
 
   // Load voices on mount — provider comes from backend (Settings)
   useEffect(() => {
@@ -169,7 +173,7 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
         if (provVoices.length > 0) setSelectedVoice(provVoices[0].id)
       }
     }).catch((err: unknown) => { console.error('Failed to load voices:', err) })
-  }, [project.id])
+  }, [project.id, project.voiceoverVoiceId])
 
   const filteredVoices = voices.filter((v) => v.provider === activeProvider)
 
@@ -224,11 +228,31 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
     setError(null)
     try {
       await api.montage.generateVoiceover(project.id, {
+        provider: activeProvider || undefined,
         voiceId: selectedVoice,
       })
       onRefresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Не удалось сгенерировать озвучку'
+      setError(msg)
+    } finally {
+      setLoading(false)
+      setLoadingAction(null)
+    }
+  }
+
+  const previewVoice = async () => {
+    setLoading(true)
+    setLoadingAction('Предпрослушивание голоса...')
+    setError(null)
+    try {
+      const result = await api.montage.previewVoice(project.id, {
+        provider: activeProvider || undefined,
+        voiceId: selectedVoice,
+      })
+      setPreviewUrl(result.previewUrl)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось создать предпрослушивание'
       setError(msg)
     } finally {
       setLoading(false)
@@ -366,6 +390,28 @@ function VoiceoverStep({ project, onRefresh }: { project: Project; onRefresh: ()
                     <p className="text-xs text-amber/80 mt-1">
                       Настройте TTS провайдер в разделе Настройки.
                     </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={previewVoice}
+                      disabled={loading || !selectedVoice || filteredVoices.length === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                    >
+                      {loadingAction === 'Предпрослушивание голоса...' ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
+                      Прослушать голос
+                    </button>
+                  </div>
+
+                  {previewUrl && (
+                    <div className="bg-surface-1 border-2 border-border rounded-[5px] p-3">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted mb-2">
+                        Предпрослушивание
+                      </p>
+                      <audio controls src={previewUrl} className="w-full" />
+                    </div>
                   )}
                 </div>
 
@@ -594,6 +640,25 @@ function semanticStatusLabel(status: AnchorMatch['status'] | undefined) {
   }
 }
 
+function formatMontageCount(count: number, singular: string, few: string, many: string) {
+  const mod100 = count % 100
+  const mod10 = count % 10
+
+  if (mod100 >= 11 && mod100 <= 14) {
+    return `${count} ${many}`
+  }
+
+  if (mod10 === 1) {
+    return `${count} ${singular}`
+  }
+
+  if (mod10 >= 2 && mod10 <= 4) {
+    return `${count} ${few}`
+  }
+
+  return `${count} ${many}`
+}
+
 function semanticStatusClasses(status: AnchorMatch['status'] | undefined) {
   switch (status) {
     case 'matched':
@@ -607,17 +672,39 @@ function semanticStatusClasses(status: AnchorMatch['status'] | undefined) {
   }
 }
 
+function formatMomentTimecode(seconds?: number): string | null {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+    return null
+  }
+
+  const wholeSeconds = Math.floor(seconds)
+  const minutes = Math.floor(wholeSeconds / 60)
+  const remainingSeconds = wholeSeconds % 60
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`
+}
+
+function formatMomentLabel(moment: ShotVideoDescriptionMoment): string {
+  const timing = formatMomentTimecode(moment.startSec)
+  const endTiming = formatMomentTimecode(moment.endSec)
+  if (timing && endTiming) return `${moment.label} (${timing}–${endTiming})`
+  if (timing) return `${moment.label} (${timing})`
+  return moment.label
+}
+
 function normalizeManualAnchorMatches(
   anchors: NarrationAnchor[],
   existingMatches: AnchorMatch[],
-  overrides: Record<string, string>,
+  shotOverrides: Record<string, string>,
+  momentOverrides: Record<string, string>,
 ): AnchorMatch[] {
   const matchByAnchorId = new Map(existingMatches.map((match) => [match.anchorId, match]))
 
   return anchors.map((anchor) => {
     const existing = matchByAnchorId.get(anchor.id)
-    const overrideShotId = overrides[anchor.id]
+    const overrideShotId = shotOverrides[anchor.id]
+    const overrideMomentId = momentOverrides[anchor.id]
     const selectedShotId = overrideShotId ?? existing?.selectedShotId
+    const hasShotOverride = Boolean(overrideShotId && overrideShotId !== existing?.selectedShotId)
 
     if (!selectedShotId) {
       return {
@@ -635,7 +722,7 @@ function normalizeManualAnchorMatches(
     return {
       anchorId: anchor.id,
       selectedShotId,
-      selectedMomentId: isManualOverride ? undefined : existing?.selectedMomentId,
+      selectedMomentId: hasShotOverride ? (overrideMomentId || undefined) : (overrideMomentId ?? existing?.selectedMomentId),
       confidence: isManualOverride ? 1.0 : (existing?.confidence ?? 0.67),
       status: isManualOverride ? 'matched' : (existing?.status ?? 'matched'),
       candidates: existing?.candidates ?? [],
@@ -657,15 +744,40 @@ function PlanStep({
   const [semanticError, setSemanticError] = useState<string | null>(null)
   const [feedback, setFeedback] = useState('')
   const [showJson, setShowJson] = useState(false)
+  const [showManualMode, setShowManualMode] = useState(false)
+  const [showDecisionPanel, setShowDecisionPanel] = useState(false)
+  const [assemblySummary, setAssemblySummary] = useState<MontageAssemblySummary | null>(null)
+  const [assemblyPlan, setAssemblyPlan] = useState<MontagePlan | null>(project.montagePlan ?? null)
+  const [assemblyStageIndex, setAssemblyStageIndex] = useState(0)
+  const progressTimerRef = useRef<number | null>(null)
   const [shotOverridesByAnchorId, setShotOverridesByAnchorId] = useState<Record<string, string>>({})
+  const [momentOverridesByAnchorId, setMomentOverridesByAnchorId] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    setAssemblyPlan(project.montagePlan ?? null)
+  }, [project.montagePlan])
+
+  useEffect(() => {
+    stopAssemblyProgress()
+    setAssemblyPlan(project.montagePlan ?? null)
+    setShowDecisionPanel(false)
+    setAssemblySummary(null)
+    setAssemblyStageIndex(0)
+    setShowManualMode(false)
+  }, [project.id])
+
+  useEffect(() => () => {
+    stopAssemblyProgress()
+  }, [])
 
   useEffect(() => {
     setShotOverridesByAnchorId({})
+    setMomentOverridesByAnchorId({})
     setSemanticError(null)
-  }, [project.id, project.anchorMatches, project.narrationAnchors])
+  }, [project.anchorMatches, project.narrationAnchors])
 
   const approvedShots = project.shots.filter((shot) => shot.status === 'approved')
-  const plan = project.montagePlan
+  const plan = assemblyPlan ?? project.montagePlan
   const narrationAnchors = [...(project.narrationAnchors ?? [])].sort((left, right) => left.order - right.order)
   const anchorMatches = project.anchorMatches ?? []
   const coverage = project.anchorCoverageSummary
@@ -674,7 +786,70 @@ function PlanStep({
     const status = existingMatchesByAnchorId.get(anchor.id)?.status
     return status === 'weak_match' || status === 'unmatched'
   })
-  const hasPendingOverrides = Object.keys(shotOverridesByAnchorId).length > 0
+  const hasPendingOverrides = Object.keys(shotOverridesByAnchorId).length > 0 || Object.keys(momentOverridesByAnchorId).length > 0
+  const currentSemanticBlocks = plan?.semanticBlocks ?? []
+  const semanticBlockCount = assemblySummary?.blocks ?? currentSemanticBlocks.length
+  const semanticClipCount = assemblySummary?.clips ?? (
+    currentSemanticBlocks.length > 0
+      ? currentSemanticBlocks.reduce((count: number, block: SemanticBlock) => count + block.segments.length, 0)
+      : (plan?.timeline.length ?? 0)
+  )
+  const semanticBlockLabel = formatMontageCount(
+    semanticBlockCount,
+    'смысловой блок',
+    'смысловых блока',
+    'смысловых блоков',
+  )
+  const semanticClipLabel = formatMontageCount(
+    semanticClipCount,
+    'клип',
+    'клипа',
+    'клипов',
+  )
+  const assemblyBreakdown = assemblySummary
+    ? [
+        {
+          label: 'Прямые',
+          value: formatMontageCount(
+            assemblySummary.directBlocks,
+            'прямой блок',
+            'прямых блока',
+            'прямых блоков',
+          ),
+          tone: 'text-emerald',
+        },
+        {
+          label: 'Визуальные',
+          value: formatMontageCount(
+            assemblySummary.visualBlocks,
+            'визуальный блок',
+            'визуальных блока',
+            'визуальных блоков',
+          ),
+          tone: 'text-sky-400',
+        },
+        {
+          label: 'Атмосферные',
+          value: formatMontageCount(
+            assemblySummary.atmosphericBlocks,
+            'атмосферный блок',
+            'атмосферных блока',
+            'атмосферных блоков',
+          ),
+          tone: 'text-amber',
+        },
+        {
+          label: 'Требуют внимания',
+          value: formatMontageCount(
+            assemblySummary.unresolvedBlocks,
+            'блок требует внимания',
+            'блока требуют внимания',
+            'блоков требуют внимания',
+          ),
+          tone: 'text-red-400',
+        },
+      ]
+    : []
 
   const generatePlan = async () => {
     setLoading(true)
@@ -715,13 +890,58 @@ function PlanStep({
     }
   }
 
+  const stopAssemblyProgress = () => {
+    if (progressTimerRef.current !== null) {
+      window.clearInterval(progressTimerRef.current)
+      progressTimerRef.current = null
+    }
+  }
+
+  const startAssemblyProgress = () => {
+    stopAssemblyProgress()
+    setAssemblyStageIndex(1)
+    progressTimerRef.current = window.setInterval(() => {
+      setAssemblyStageIndex((current) => (current >= 4 ? current : current + 1))
+    }, 700)
+  }
+
+  const finishAssemblyProgress = () => {
+    stopAssemblyProgress()
+    setAssemblyStageIndex(4)
+  }
+
+  const assembleDraft = async () => {
+    setLoading(true)
+    setSemanticError(null)
+    startAssemblyProgress()
+    try {
+      const result = await api.montage.assembleDraft(project.id)
+      setAssemblySummary(result.summary)
+      setAssemblyPlan(result.montagePlan)
+      finishAssemblyProgress()
+      onRefresh()
+    } catch (err) {
+      stopAssemblyProgress()
+      setAssemblyStageIndex(0)
+      setSemanticError(err instanceof Error ? err.message : 'Не удалось собрать черновик')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const saveAnchorOverrides = async () => {
-    const nextMatches = normalizeManualAnchorMatches(narrationAnchors, anchorMatches, shotOverridesByAnchorId)
+    const nextMatches = normalizeManualAnchorMatches(
+      narrationAnchors,
+      anchorMatches,
+      shotOverridesByAnchorId,
+      momentOverridesByAnchorId,
+    )
     setSemanticAction('save')
     setSemanticError(null)
     try {
       await api.montage.updateAnchorMatches(project.id, nextMatches)
       setShotOverridesByAnchorId({})
+      setMomentOverridesByAnchorId({})
       onRefresh()
     } catch (err) {
       setSemanticError(err instanceof Error ? err.message : 'Не удалось сохранить ручные сопоставления')
@@ -738,60 +958,144 @@ function PlanStep({
           План монтажа
         </h3>
 
-        <div className="mb-4">
-          <button
-            onClick={onOpenEditor}
-            className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
-          >
-            <Clapperboard size={14} />
-            Открыть в редакторе
-          </button>
-        </div>
+        {plan && (
+          <div className="mb-4 bg-emerald-dim border-2 border-emerald rounded-[5px] p-4 space-y-3">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
+              {assemblySummary ? 'Черновик собран' : 'Черновик готов для редактора'}
+            </p>
+            <p className="text-sm text-text-primary">
+              {assemblySummary
+                ? 'Черновик собран автоматически по визуальной пригодности. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.'
+                : 'Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.'}
+            </p>
+            <div className="flex flex-wrap gap-4 font-mono text-xs text-text-secondary">
+              <span>{semanticBlockLabel}</span>
+              <span>{semanticClipLabel}</span>
+            </div>
+            {assemblySummary && (
+              <div className="grid gap-2 sm:grid-cols-2 font-mono text-xs">
+                {assemblyBreakdown.map((item) => (
+                  <div
+                    key={item.label}
+                    className={`flex items-center justify-between gap-3 rounded-[5px] border border-border bg-surface-1 px-3 py-2 ${item.tone}`}
+                  >
+                    <span>{item.label}</span>
+                    <span>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {assemblySummary?.issues?.length ? (
+              <div className="bg-surface-1 border-2 border-amber rounded-[5px] p-3">
+                <p className="font-mono text-[10px] uppercase tracking-wider text-amber mb-1">Замечания</p>
+                <p className="text-xs text-text-secondary">{assemblySummary.issues[0]}</p>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={onOpenEditor}
+                className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+              >
+                <Clapperboard size={14} />
+                Открыть в редакторе
+              </button>
+              <button
+                onClick={() => setShowDecisionPanel((current) => !current)}
+                className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+              >
+                {showDecisionPanel ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                Разобрать решения
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showDecisionPanel && plan && currentSemanticBlocks.length > 0 && (
+          <div className="mb-4 bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-3">
+            <div className="space-y-1">
+              <h4 className="font-heading font-semibold text-sm">Разбор решений</h4>
+              <p className="text-xs text-text-muted">
+                Здесь видно, почему каждый смысловой блок собран именно так и какие варианты были рядом.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {currentSemanticBlocks.map((block: SemanticBlock) => (
+                <div key={block.id} className="bg-surface-2 border-2 border-border rounded-[5px] p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">{block.anchorLabel}</p>
+                      <p className="text-sm text-text-primary">{block.anchorText}</p>
+                    </div>
+                    <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">{block.strategy}</p>
+                  </div>
+                  {block.explanation?.length ? (
+                    <p className="text-xs text-text-secondary">{block.explanation.join(' ')}</p>
+                  ) : null}
+                  <div className="space-y-1">
+                    {block.segments.map((segment, index: number) => (
+                      <p key={`${segment.shotId}-${segment.momentId ?? index}`} className="text-xs text-text-secondary">
+                        {segment.shotId}{segment.momentId ? ` / ${segment.momentId}` : ''} · {Math.round(segment.durationSec)}с · {segment.reason}
+                      </p>
+                    ))}
+                  </div>
+                  {block.alternatives?.length ? (
+                    <div className="space-y-1">
+                      {block.alternatives.map((alternative) => (
+                        <p key={`${alternative.shotId}-${alternative.momentId ?? 'alt'}`} className="text-xs text-amber">
+                          {alternative.reason} {alternative.rejectedBecause ? `— ${alternative.rejectedBecause}` : ''}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="mb-4 bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h4 className="font-heading font-semibold text-sm">Семантическая сборка</h4>
               <p className="text-xs text-text-muted mt-1">
-                Сначала опишем готовые видео, затем извлечем смысловые якоря диктора и сопоставим их с шотами.
+                Черновик собирается по visual-first summary, а ручное покрытие и диагностика остаются в отдельном режиме.
               </p>
             </div>
-            {coverage && (
-              <div className="text-right">
-                <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">Покрытие</p>
-                <p className="font-mono text-xs text-text-secondary mt-1">
-                  {coverage.matchedAnchors}/{coverage.totalAnchors} сильных совпадений
-                </p>
-              </div>
-            )}
           </div>
 
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => runSemanticAction('describe', () => api.montage.describeVideos(project.id))}
-              disabled={loading || semanticAction !== null || approvedShots.length === 0}
-              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+              onClick={assembleDraft}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
             >
-              {semanticAction === 'describe' ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
-              Описать видео
+              {loading ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+              Собрать черновик
             </button>
             <button
-              onClick={() => runSemanticAction('extract', () => api.montage.extractAnchors(project.id))}
-              disabled={loading || semanticAction !== null || !project.voiceoverScript?.trim()}
-              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+              onClick={() => setShowManualMode((current) => !current)}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
             >
-              {semanticAction === 'extract' ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
-              Извлечь якоря
-            </button>
-            <button
-              onClick={() => runSemanticAction('match', () => api.montage.matchAnchors(project.id))}
-              disabled={loading || semanticAction !== null || narrationAnchors.length === 0}
-              className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
-            >
-              {semanticAction === 'match' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-              Сопоставить
+              {showManualMode ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              Ручной режим
             </button>
           </div>
+
+          {loading && assemblyStageIndex > 0 && (
+            <div className="flex items-center gap-2 text-text-secondary">
+              <Loader2 size={14} className="animate-spin" />
+              <span className="font-mono text-xs">
+                {assemblyStageIndex}/4 {assemblyStageIndex === 1
+                  ? 'Описываем видео'
+                  : assemblyStageIndex === 2
+                    ? 'Извлекаем якоря'
+                    : assemblyStageIndex === 3
+                      ? 'Сопоставляем якоря'
+                      : 'Собираем план'}
+              </span>
+            </div>
+          )}
 
           {semanticError && (
             <div className="bg-surface-2 border-2 border-red-500 rounded-[5px] p-3 flex items-start gap-2">
@@ -800,94 +1104,168 @@ function PlanStep({
             </div>
           )}
 
-          {coverage && (coverage.weakMatches > 0 || coverage.unmatchedAnchors > 0) && (
-            <div className="bg-surface-2 border-2 border-amber rounded-[5px] p-3 flex items-start gap-2">
-              <AlertCircle size={14} className="text-amber mt-0.5 shrink-0" />
-              <span className="font-mono text-xs text-amber">
-                {coverage.weakMatches + coverage.unmatchedAnchors} якорей требуют проверки перед сборкой плана.
-              </span>
-            </div>
-          )}
+          {showManualMode && (
+            <>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => runSemanticAction('describe', () => api.montage.describeVideos(project.id))}
+                  disabled={loading || semanticAction !== null || approvedShots.length === 0}
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {semanticAction === 'describe' ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+                  Описать видео
+                </button>
+                <button
+                  onClick={() => runSemanticAction('extract', () => api.montage.extractAnchors(project.id))}
+                  disabled={loading || semanticAction !== null || !(project.voiceoverScript?.trim() || project.script?.trim())}
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {semanticAction === 'extract' ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
+                  Извлечь якоря
+                </button>
+                <button
+                  onClick={() => runSemanticAction('match', () => api.montage.matchAnchors(project.id))}
+                  disabled={loading || semanticAction !== null || narrationAnchors.length === 0}
+                  className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {semanticAction === 'match' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                  Сопоставить
+                </button>
+              </div>
 
-          {narrationAnchors.length > 0 ? (
-            <div className="space-y-3">
-              {narrationAnchors.map((anchor) => {
-                const match = existingMatchesByAnchorId.get(anchor.id)
-                const selectedShotId = shotOverridesByAnchorId[anchor.id] ?? match?.selectedShotId ?? ''
-                const selectedShot = approvedShots.find((shot) => shot.id === selectedShotId)
-                const needsReview = match?.status === 'weak_match' || match?.status === 'unmatched'
+              {coverage && (coverage.weakMatches > 0 || coverage.unmatchedAnchors > 0) && (
+                <div className="bg-surface-2 border-2 border-amber rounded-[5px] p-3 flex items-start gap-2">
+                  <AlertCircle size={14} className="text-amber mt-0.5 shrink-0" />
+                  <span className="font-mono text-xs text-amber">
+                    {formatMontageCount(
+                      coverage.weakMatches + coverage.unmatchedAnchors,
+                      'якорь требует проверки перед сборкой плана.',
+                      'якоря требуют проверки перед сборкой плана.',
+                      'якорей требуют проверки перед сборкой плана.',
+                    )}
+                  </span>
+                </div>
+              )}
 
-                return (
-                  <div key={anchor.id} className="bg-surface-2 border-2 border-border rounded-[5px] p-3 space-y-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
-                          Якорь {anchor.order}
-                        </p>
-                        <p className="text-sm text-text-primary">{anchor.sourceText}</p>
-                        <p className="text-xs text-text-muted mt-1">
-                          {selectedShot ? `Выбран шот: ${selectedShot.scene || selectedShot.id}` : 'Шот пока не выбран'}
-                        </p>
-                      </div>
-                      <div className={`shrink-0 rounded-[5px] border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${semanticStatusClasses(match?.status)}`}>
-                        {semanticStatusLabel(match?.status)}
-                      </div>
-                    </div>
+              {narrationAnchors.length > 0 ? (
+                <div className="space-y-3">
+                  {narrationAnchors.map((anchor) => {
+                    const match = existingMatchesByAnchorId.get(anchor.id)
+                    const selectedShotId = shotOverridesByAnchorId[anchor.id] ?? match?.selectedShotId ?? ''
+                    const selectedMomentId = momentOverridesByAnchorId[anchor.id] ?? match?.selectedMomentId ?? ''
+                    const selectedShot = approvedShots.find((shot) => shot.id === selectedShotId)
+                    const selectedMoments = selectedShot?.videoDescription?.moments ?? []
+                    const needsReview = match?.status === 'weak_match' || match?.status === 'unmatched'
 
-                    {needsReview && (
-                      <div className="space-y-2">
-                        <label className="block">
-                          <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
-                            Выбор шота для якоря {anchor.label}
-                          </span>
-                          <select
-                            aria-label={`Выбор шота для якоря ${anchor.label}`}
-                            value={selectedShotId}
-                            onChange={(event) => {
-                              const value = event.target.value
-                              setShotOverridesByAnchorId((current) => ({
-                                ...current,
-                                [anchor.id]: value,
-                              }))
-                            }}
-                            className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
-                          >
-                            <option value="">Не выбран</option>
-                            {approvedShots.map((shot) => (
-                              <option key={shot.id} value={shot.id}>
-                                {shot.scene || shot.id}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        {typeof match?.confidence === 'number' && match.confidence > 0 && (
-                          <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
-                            confidence {Math.round(match.confidence * 100)}%
-                          </p>
+                    return (
+                      <div key={anchor.id} className="bg-surface-2 border-2 border-border rounded-[5px] p-3 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                              Якорь {anchor.order}
+                            </p>
+                            <p className="text-sm text-text-primary">{anchor.sourceText}</p>
+                            <p className="text-xs text-text-muted mt-1">
+                              {selectedShot ? `Выбран шот: ${selectedShot.scene || selectedShot.id}` : 'Шот пока не выбран'}
+                            </p>
+                          </div>
+                          <div className={`shrink-0 rounded-[5px] border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${semanticStatusClasses(match?.status)}`}>
+                            {semanticStatusLabel(match?.status)}
+                          </div>
+                        </div>
+
+                        {needsReview && (
+                          <div className="space-y-2">
+                            <label className="block">
+                              <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                                Выбор шота для якоря {anchor.label}
+                              </span>
+                              <select
+                                aria-label={`Выбор шота для якоря ${anchor.label}`}
+                                value={selectedShotId}
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  setShotOverridesByAnchorId((current) => ({
+                                    ...current,
+                                    [anchor.id]: value,
+                                  }))
+                                  setMomentOverridesByAnchorId((current) => {
+                                    const next = { ...current }
+                                    delete next[anchor.id]
+                                    return next
+                                  })
+                                }}
+                                className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                              >
+                                <option value="">Не выбран</option>
+                                {approvedShots.map((shot) => (
+                                  <option key={shot.id} value={shot.id}>
+                                    {shot.scene || shot.id}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            {selectedShot && selectedMoments.length > 0 && (
+                              <label className="block">
+                                <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1">
+                                  Выбор момента для якоря {anchor.label}
+                                </span>
+                                <select
+                                  aria-label={`Выбор момента для якоря ${anchor.label}`}
+                                  value={selectedMomentId}
+                                  onChange={(event) => {
+                                    const value = event.target.value
+                                    setMomentOverridesByAnchorId((current) => {
+                                      const next = { ...current }
+                                      if (value) {
+                                        next[anchor.id] = value
+                                      } else {
+                                        delete next[anchor.id]
+                                      }
+                                      return next
+                                    })
+                                  }}
+                                  className="w-full bg-surface-1 border-2 border-border rounded-[5px] px-3 py-2 font-mono text-xs focus:border-amber outline-none"
+                                >
+                                  <option value="">Без привязки к моменту</option>
+                                  {selectedMoments.map((moment) => (
+                                    <option key={moment.id} value={moment.id}>
+                                      {formatMomentLabel(moment)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
+                            {typeof match?.confidence === 'number' && match.confidence > 0 && (
+                              <p className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                                confidence {Math.round(match.confidence * 100)}%
+                              </p>
+                            )}
+                          </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="text-xs text-text-muted">
-              Смысловые якоря еще не извлечены. Начните с описания видео и извлечения якорей.
-            </p>
-          )}
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-text-muted">
+                  Смысловые якоря еще не извлечены. Начните с описания видео и извлечения якорей.
+                </p>
+              )}
 
-          {anchorsNeedingReview.length > 0 && (
-            <div className="flex gap-2">
-              <button
-                onClick={saveAnchorOverrides}
-                disabled={loading || semanticAction !== null || !hasPendingOverrides}
-                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
-              >
-                {semanticAction === 'save' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                Сохранить выбор
-              </button>
-            </div>
+              {anchorsNeedingReview.length > 0 && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveAnchorOverrides}
+                    disabled={loading || semanticAction !== null || !hasPendingOverrides}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
+                  >
+                    {semanticAction === 'save' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                    Сохранить выбор
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -908,7 +1286,7 @@ function PlanStep({
                 label="Длительность"
                 value={`${Math.round(
                   (plan.motionGraphics.intro?.durationSec ?? 3) +
-                  plan.timeline.reduce((s, e) => s + e.durationSec, 0) +
+                  plan.timeline.reduce((s: number, e) => s + e.durationSec, 0) +
                   (plan.motionGraphics.outro?.durationSec ?? 4)
                 )}с`}
               />
@@ -954,52 +1332,10 @@ function PlanStep({
 
 // ── Render Step ─────────────────────────────────────────────────────
 
-function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
-  const [loading, setLoading] = useState(false)
-  const [polling, setPolling] = useState<string | null>(null)
-  const [currentJob, setCurrentJob] = useState<RenderJob | null>(null)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Poll render status
-  useEffect(() => {
-    if (!polling) return
-    const poll = async () => {
-      try {
-        const job = await api.montage.getRenderStatus(project.id, polling)
-        setCurrentJob(job)
-        if (job.status === 'done' || job.status === 'failed') {
-          setPolling(null)
-          onRefresh()
-        }
-      } catch {
-        setPolling(null)
-      }
-    }
-    intervalRef.current = setInterval(poll, 3000)
-    poll()
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [polling, project.id])
-
-  const startRender = async (quality: 'preview' | 'final') => {
-    setLoading(true)
-    try {
-      const result = await api.montage.render(project.id, quality)
-      setPolling(result.jobId)
-      setCurrentJob({
-        id: result.jobId,
-        createdAt: new Date().toISOString(),
-        quality: result.quality,
-        resolution: quality === 'final' ? '3840x2160' : '1280x720',
-        status: result.status,
-        progress: 0,
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
+function RenderStep({ project, onOpenEditor }: { project: Project; onOpenEditor: () => void }) {
   const renders = project.renders || []
   const doneRenders = renders.filter((r) => r.status === 'done')
+  const latestExport = project.latestExportArtifact
 
   return (
     <div className="space-y-4">
@@ -1018,47 +1354,39 @@ function RenderStep({ project, onRefresh }: { project: Project; onRefresh: () =>
 
         {project.montagePlan && (
           <div className="space-y-4">
-            {/* Start render buttons */}
-            <div className="flex gap-3">
+            <div className="bg-surface-1 border-2 border-border rounded-[5px] p-4 space-y-3">
+              <div className="space-y-1">
+                <div className="font-mono text-xs uppercase tracking-wider text-amber">
+                  Финальная сборка через OpenReel Export
+                </div>
+                <p className="text-sm text-text-muted">
+                  Откройте проект в редакторе, соберите финальную версию и выполните экспорт из OpenReel.
+                  Готовый файл вернется в CutRoom как артефакт проекта.
+                </p>
+              </div>
               <button
-                onClick={() => startRender('preview')}
-                disabled={loading || !!polling}
-                className="flex items-center gap-2 px-4 py-2 bg-surface-1 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
+                onClick={onOpenEditor}
+                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all"
               >
-                <Play size={14} /> Превью (720p)
-              </button>
-              <button
-                onClick={() => startRender('final')}
-                disabled={loading || !!polling}
-                className="flex items-center gap-2 px-4 py-2 bg-amber text-surface-1 rounded-[5px] border-2 border-amber font-mono text-xs uppercase tracking-wider shadow-brutal-sm hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
-              >
-                <Film size={14} /> Финальный (4K)
+                <Edit3 size={14} /> Открыть в редакторе
               </button>
             </div>
 
-            {/* Current render progress */}
-            {currentJob && (currentJob.status === 'queued' || currentJob.status === 'rendering') && (
-              <div className="bg-surface-1 border-2 border-sky rounded-[5px] p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Loader2 size={14} className="animate-spin text-sky" />
-                  <span className="font-mono text-xs uppercase text-sky">
-                    {currentJob.status === 'queued' ? 'В очереди...' : `Рендер ${currentJob.progress ?? 0}%`}
-                  </span>
+            {latestExport && (
+              <div className="bg-surface-1 border-2 border-emerald rounded-[5px] p-4 space-y-2">
+                <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                  Последний экспорт
                 </div>
-                <div className="w-full bg-surface-2 rounded-full h-2">
-                  <div
-                    className="bg-sky h-2 rounded-full transition-all duration-500"
-                    style={{ width: `${currentJob.progress ?? 0}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {currentJob?.status === 'failed' && (
-              <div className="bg-surface-1 border-2 border-red-500 rounded-[5px] p-4">
-                <div className="flex items-center gap-2 text-red-400">
-                  <X size={14} />
-                  <span className="font-mono text-xs">Ошибка: {currentJob.errorMessage || 'Unknown'}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-emerald">
+                      <Check size={14} />
+                      <span className="font-mono text-xs">{latestExport.filename}</span>
+                    </div>
+                    <div className="font-mono text-[10px] text-text-muted">
+                      {new Date(latestExport.exportedAt).toLocaleString('ru')}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

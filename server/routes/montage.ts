@@ -5,15 +5,42 @@ import path from 'node:path';
 import multer from 'multer';
 import { readLimiter, mutationLimiter, generationLimiter } from '../lib/rate-limit.js';
 import { getProject, withProject, ensureDir, resolveProjectPath } from '../lib/storage.js';
-import type { NarrationAnchor, ShotVideoDescription, ShotVideoDescriptionMoment } from '../lib/storage.js';
+import type {
+  AnchorCoverageSummary,
+  AnchorMatch,
+  GroundedMatchClass,
+  GroundedScriptBlock,
+  MontageAssemblySummary,
+  MontagePlan,
+  NarrationAnchor,
+  Project,
+  ShotMeta,
+  ShotVideoDescription,
+  ShotVideoDescriptionMoment,
+} from '../lib/storage.js';
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
+import { safeWriteFile } from '../lib/file-utils.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
+import { extractScriptBlocks } from '../lib/script-blocks.js';
 import { matchNarrationAnchors, summarizeAnchorCoverage } from '../lib/montage-anchor-matching.js';
+import { buildSemanticBlocks } from '../lib/semantic-block-planner.js';
+import { groundScriptBlock } from '../lib/grounded-script-blocks.js';
+import { sampleVideoFrames } from '../lib/video-description.js';
 
 const router = Router({ mergeParams: true });
 const VIDEO_DESCRIPTION_VERSION = 1;
+const VIDEO_DESCRIPTION_SAMPLE_COUNT = 2;
+const VOICE_PREVIEW_TEXT = 'Это демонстрационный фрагмент озвучки для выбора голоса.';
+const ALLOWED_TTS_AUDIO_TYPES = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/wave', 'audio/x-wav'] as const;
+type TtsProvider = 'kokoro' | 'elevenlabs-fal' | 'elevenlabs';
+const VALID_TTS_PROVIDERS: TtsProvider[] = ['kokoro', 'elevenlabs-fal', 'elevenlabs'];
+const DEFAULT_VOICES: Record<TtsProvider, string> = {
+  kokoro: 'af_heart',
+  'elevenlabs-fal': 'Aria',
+  elevenlabs: 'pNInz6obpgDQGcFmaJgB',
+};
 
 // Helper: load project or 404
 async function loadProject(req: Request, res: Response) {
@@ -25,8 +52,87 @@ async function loadProject(req: Request, res: Response) {
   return project;
 }
 
+function isLegacyMontageRenderEnabled(req: Request): boolean {
+  return req.app.get('enableLegacyMontageRender') === true;
+}
+
 function isExternalMediaRef(value: string) {
   return /^https?:\/\//i.test(value) || /^data:/i.test(value);
+}
+
+function isTtsProvider(value: unknown): value is TtsProvider {
+  return typeof value === 'string' && VALID_TTS_PROVIDERS.includes(value as TtsProvider);
+}
+
+function getPreviewVoiceBasename() {
+  return 'preview-voice';
+}
+
+function getPreviewVoiceCandidates(projectId: string) {
+  return ['.mp3', '.wav'].map((ext) => ({
+    ext,
+    path: resolveProjectPath(projectId, 'montage', 'previews', `${getPreviewVoiceBasename()}${ext}`),
+  }));
+}
+
+async function findPreviewVoiceFile(projectId: string) {
+  for (const candidate of getPreviewVoiceCandidates(projectId)) {
+    try {
+      await fs.access(candidate.path);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function resolveRequestedTtsVoice(
+  project: Awaited<ReturnType<typeof getProject>>,
+  body: unknown,
+) {
+  const settings = await getGlobalSettings();
+  const { getAvailableProviders, getVoices } = await import('../lib/tts-providers.js');
+  const payload = body && typeof body === 'object' ? body as Record<string, unknown> : {};
+
+  const requestedProvider = (
+    payload.provider
+    || project?.voiceoverProvider
+    || settings.defaultVoiceoverProvider
+    || 'elevenlabs-fal'
+  ) as TtsProvider;
+
+  if (!isTtsProvider(requestedProvider)) {
+    return { error: `Unknown TTS provider: ${String(requestedProvider).slice(0, 50)}` } as const;
+  }
+
+  const requestedVoice = (
+    payload.voiceId
+    || project?.voiceoverVoiceId
+    || settings.defaultVoiceoverVoiceId
+    || DEFAULT_VOICES[requestedProvider]
+    || 'Aria'
+  );
+
+  const providerVoices = getVoices(requestedProvider);
+  if (providerVoices.length > 0 && !providerVoices.some((voice) => voice.id === requestedVoice)) {
+    return {
+      error: `Voice '${String(requestedVoice).slice(0, 50)}' does not belong to provider '${requestedProvider}'`,
+    } as const;
+  }
+
+  const providers = await getAvailableProviders();
+  const providerInfo = providers.find((provider) => provider.id === requestedProvider);
+  if (!providerInfo?.configured) {
+    const keyName = requestedProvider === 'kokoro' ? 'fal.ai' : 'ElevenLabs';
+    return { error: `${keyName} API key is not configured. Please set it in Settings.` } as const;
+  }
+
+  return {
+    provider: requestedProvider,
+    voiceId: String(requestedVoice),
+  } as const;
 }
 
 async function resolveLocalShotVideoPath(projectId: string, shotId: string, videoFile: string) {
@@ -151,6 +257,58 @@ function parseVideoDescriptionResponse(
   }
 }
 
+function buildVideoDescriptionContext(shot: {
+  scene?: string;
+  audioDescription?: string;
+  imagePrompt?: string;
+  videoPrompt?: string;
+  videoFile?: string | null;
+}) {
+  return [
+    `Shot scene: ${shot.scene?.trim() || '—'}`,
+    `Audio description: ${shot.audioDescription?.trim() || '—'}`,
+    `Image prompt: ${shot.imagePrompt?.trim() || '—'}`,
+    `Video prompt: ${shot.videoPrompt?.trim() || '—'}`,
+    `Cached video file: ${shot.videoFile?.trim() || '—'}`,
+  ].join('\n');
+}
+
+function buildVideoDescriptionUserContent(
+  shot: {
+    scene?: string;
+    audioDescription?: string;
+    imagePrompt?: string;
+    videoPrompt?: string;
+    videoFile?: string | null;
+  },
+  sampledFrames: Array<{ timeSec: number; imageDataUrl: string }>,
+) {
+  const contextText = buildVideoDescriptionContext(shot);
+
+  if (sampledFrames.length === 0) {
+    return contextText;
+  }
+
+  const evidenceText = [
+    'These sampled frames are the primary evidence for describing the shot.',
+    `Sampled frame times: ${sampledFrames.map((frame) => `${frame.timeSec.toFixed(2)}s`).join(', ')}`,
+    'Use the sampled images first, then use the text context only as fallback context.',
+    contextText,
+    'Return valid JSON with version, summary, tags, matchHints, and moments.',
+  ].join('\n\n');
+
+  return [
+    ...sampledFrames.map((frame) => ({
+      type: 'image_url' as const,
+      image_url: { url: frame.imageDataUrl },
+    })),
+    {
+      type: 'text' as const,
+      text: evidenceText,
+    },
+  ];
+}
+
 const VALID_ANCHOR_INTENTS: NarrationAnchor['intent'][] = ['hook', 'feature', 'detail', 'lifestyle', 'cta'];
 
 function normalizeAnchor(anchor: unknown, index: number): NarrationAnchor | null {
@@ -242,6 +400,381 @@ function parseNarrationAnchorsResponse(rawResponse: string, voiceoverScript: str
   } catch {
     return buildFallbackAnchors(voiceoverScript);
   }
+}
+
+type AssemblyStepKey = 'describe-videos' | 'extract-anchors' | 'match-anchors' | 'generate-plan';
+type AssemblyStepStatus = 'done' | 'skipped' | 'failed';
+
+type AssemblyStepSummary = Extract<MontageAssemblySummary['steps'][number], { status: AssemblyStepStatus }>;
+
+function formatRussianCount(count: number, singular: string, few: string, many: string) {
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+
+  if (mod100 >= 11 && mod100 <= 14) {
+    return `${count} ${many}`;
+  }
+
+  if (mod10 === 1) {
+    return `${count} ${singular}`;
+  }
+
+  if (mod10 >= 2 && mod10 <= 4) {
+    return `${count} ${few}`;
+  }
+
+  return `${count} ${many}`;
+}
+
+function buildAssemblyGrounding(project: Project) {
+  return extractScriptBlocks(project).map((block) => groundScriptBlock(block));
+}
+
+function classifyAssemblyMatch(match?: AnchorMatch): GroundedMatchClass {
+  if (!match?.selectedShotId || match.status === 'unmatched') {
+    return 'unresolved';
+  }
+
+  const selectedCandidateReason = match.candidates.find((candidate) => (
+    candidate.shotId === match.selectedShotId
+    && (candidate.momentId ?? undefined) === (match.selectedMomentId ?? undefined)
+  ))?.reason?.toLowerCase() ?? match.candidates[0]?.reason?.toLowerCase() ?? '';
+
+  if (selectedCandidateReason.includes('literal grounding')) {
+    return 'direct';
+  }
+  if (selectedCandidateReason.includes('visual grounding')) {
+    return 'visual';
+  }
+  if (selectedCandidateReason.includes('atmospheric grounding')) {
+    return 'atmospheric';
+  }
+  if (selectedCandidateReason.includes('fallback grounding')) {
+    return 'unresolved';
+  }
+
+  return match.status === 'matched' ? 'visual' : 'atmospheric';
+}
+
+function buildAssemblySummary(
+  project: Project,
+  montagePlan: Pick<MontagePlan, 'semanticBlocks' | 'timeline'>,
+  issues: string[],
+  steps: AssemblyStepSummary[],
+): MontageAssemblySummary {
+  const groundedBlocks = buildAssemblyGrounding(project);
+  const anchors = [...(project.narrationAnchors ?? [])].sort((left, right) => left.order - right.order);
+  const matchesByAnchorId = new Map((project.anchorMatches ?? []).map((match) => [match.anchorId, match]));
+  const counts = anchors.reduce(
+    (acc, block) => {
+      const matchClass = classifyAssemblyMatch(matchesByAnchorId.get(block.id));
+
+      if (matchClass === 'direct') {
+        acc.directBlocks += 1;
+      } else if (matchClass === 'visual') {
+        acc.visualBlocks += 1;
+      } else if (matchClass === 'atmospheric') {
+        acc.atmosphericBlocks += 1;
+      } else {
+        acc.unresolvedBlocks += 1;
+      }
+
+      return acc;
+    },
+    {
+      directBlocks: 0,
+      visualBlocks: 0,
+      atmosphericBlocks: 0,
+      unresolvedBlocks: 0,
+    },
+  );
+  const groundedBlocksWithClass = groundedBlocks.map((block, index) => {
+    const anchor = anchors[index];
+    if (!anchor) {
+      return block;
+    }
+
+    return {
+      ...block,
+      matchClass: classifyAssemblyMatch(matchesByAnchorId.get(anchor.id)),
+    } satisfies GroundedScriptBlock;
+  });
+  const totalBlocks = anchors.length || groundedBlocksWithClass.length || (montagePlan.semanticBlocks?.length ?? 0);
+
+  return {
+    blocks: totalBlocks,
+    clips: montagePlan.timeline.length,
+    issues: [...new Set([
+      ...issues,
+      !groundedBlocksWithClass.length ? 'Не удалось собрать grounded-блоки из сценария.' : '',
+      ...(montagePlan.semanticBlocks?.length === 0 ? ['Семантические блоки не были собраны.'] : []),
+    ].filter(Boolean))],
+    steps: [
+      ...steps,
+      {
+        key: 'generate-plan',
+      status: 'done',
+      detail: `Собрано ${montagePlan.semanticBlocks?.length ?? 0} блоков и ${montagePlan.timeline.length} клипов.`,
+      },
+    ],
+    ...counts,
+    groundedBlocks: groundedBlocksWithClass.length > 0 ? groundedBlocksWithClass : undefined,
+  };
+}
+
+async function describeShotsForAssembly(project: Project, approvedShots: ShotMeta[]) {
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    return {
+      step: {
+        key: 'describe-videos' as const,
+        status: 'failed' as const,
+        detail: 'OpenRouter API key is not configured.',
+      },
+      issues: ['Не удалось описать видео: не настроен OpenRouter API key.'],
+      describedShots: [],
+    };
+  }
+
+  const settings = await getGlobalSettings();
+  const model = settings.defaultVisionModel || settings.defaultTextModel || 'openai/gpt-4o';
+  const describedShots: Array<{ shotId: string; videoDescription: ShotVideoDescription }> = [];
+  const skippedShots: Array<{ shotId: string; reason: string }> = [];
+
+  for (const shot of approvedShots) {
+    const localVideoPath = shot.videoFile ? await resolveLocalShotVideoPath(project.id, shot.id, shot.videoFile) : null;
+    if (!localVideoPath) {
+      skippedShots.push({ shotId: shot.id, reason: 'missing_video_file' });
+      continue;
+    }
+
+    let sampledFrames: Array<{ timeSec: number; imageDataUrl: string }> = [];
+    try {
+      sampledFrames = (await sampleVideoFrames(localVideoPath, VIDEO_DESCRIPTION_SAMPLE_COUNT)).filter((frame) => (
+        Number.isFinite(frame.timeSec)
+        && typeof frame.imageDataUrl === 'string'
+        && frame.imageDataUrl.trim().length > 0
+      ));
+    } catch {
+      sampledFrames = [];
+    }
+
+    const systemPrompt = `You describe a finished real-estate video shot for AI-assisted montage planning.
+Use sampled video frames as the primary source of truth when they are provided.
+Use the provided shot text as fallback context only.
+Return ONLY valid JSON with this exact shape:
+{
+  "summary": "short Russian summary",
+  "tags": ["visual tag"],
+  "matchHints": ["phrase usable to match narrator anchors"],
+  "moments": [
+    {
+      "id": "moment-1",
+      "label": "short label",
+      "startSec": 0,
+      "endSec": 3,
+      "tags": ["tag"],
+      "summary": "moment summary in Russian"
+    }
+  ]
+}
+If exact moments are unclear, return an empty moments array.`;
+
+    try {
+      const llmResponse = await chatCompletion(
+        model,
+        [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: buildVideoDescriptionUserContent({
+              ...shot,
+              videoFile: path.basename(localVideoPath),
+            }, sampledFrames),
+          },
+        ],
+        0.2,
+      );
+
+      describedShots.push({
+        shotId: shot.id,
+        videoDescription: parseVideoDescriptionResponse(llmResponse, shot),
+      });
+    } catch (err) {
+      console.error(`Failed to describe video for shot ${shot.id}:`, err);
+      skippedShots.push({ shotId: shot.id, reason: 'description_failed' });
+    }
+  }
+
+  const issues = skippedShots.map((shot) => {
+    if (shot.reason === 'missing_video_file') {
+      return `Не найден видеофайл для шота ${shot.shotId}`;
+    }
+
+    return `Не удалось описать шот ${shot.shotId}`;
+  });
+
+  return {
+    step: {
+      key: 'describe-videos' as const,
+      status: describedShots.length > 0 ? 'done' as const : 'failed' as const,
+      detail: describedShots.length > 0
+        ? `Описано ${describedShots.length} шотов, пропущено ${skippedShots.length}.`
+        : 'Не удалось описать ни одного утвержденного шота.',
+    },
+    issues,
+    describedShots,
+  };
+}
+
+async function extractAnchorsForAssembly(project: Project) {
+  const voiceoverScript = project.voiceoverScript?.trim();
+  const scriptSource = project.script?.trim();
+  const anchorSourceText = voiceoverScript || scriptSource;
+
+  if (!anchorSourceText) {
+    const existingAnchors = project.narrationAnchors ?? [];
+    if (existingAnchors.length > 0) {
+      return {
+        step: {
+          key: 'extract-anchors' as const,
+          status: 'skipped' as const,
+          detail: `Нет текста сценария или озвучки, поэтому используем ${existingAnchors.length} уже сохранённых якорей.`,
+        },
+        issues: [] as string[],
+        anchors: existingAnchors,
+      };
+    }
+
+    return {
+      step: {
+        key: 'extract-anchors' as const,
+        status: 'failed' as const,
+        detail: 'Нет текста сценария или озвучки для извлечения якорей.',
+      },
+      issues: ['Не удалось извлечь смысловые якоря: отсутствует сценарий и текст озвучки.'],
+      anchors: [] as NarrationAnchor[],
+    };
+  }
+
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    return {
+      step: {
+        key: 'extract-anchors' as const,
+        status: 'failed' as const,
+        detail: 'OpenRouter API key is not configured.',
+      },
+      issues: ['Не удалось извлечь смысловые якоря: не настроен OpenRouter API key.'],
+      anchors: [] as NarrationAnchor[],
+    };
+  }
+
+  const settings = await getGlobalSettings();
+  const model = settings.defaultScriptModel || settings.defaultTextModel || 'openai/gpt-4o-mini';
+  const systemPrompt = `You extract ordered narrator anchors for AI-assisted montage planning.
+Return ONLY valid JSON in one of these forms:
+[
+  {
+    "id": "anchor-1",
+    "sourceText": "exact Russian phrase from the voiceover",
+    "label": "short Russian anchor label",
+    "order": 1,
+    "intent": "hook|feature|detail|lifestyle|cta"
+  }
+]
+or
+{ "anchors": [ ... ] }
+
+Rules:
+- Keep sourceText in Russian and close to the original voiceover wording
+- If there is no voiceover, keep sourceText close to the provided script wording
+- Preserve story order
+- Prefer 3-8 meaningful anchors
+- Keep labels short and montage-friendly`;
+
+  const anchorsResponse = await chatCompletion(
+    model,
+    [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: anchorSourceText },
+    ],
+    0.2,
+  );
+
+  const anchors = parseNarrationAnchorsResponse(anchorsResponse, anchorSourceText);
+
+  return {
+    step: {
+      key: 'extract-anchors' as const,
+      status: 'done' as const,
+      detail: voiceoverScript
+        ? `Извлечено ${anchors.length} якорей из текста озвучки.`
+        : `Извлечено ${anchors.length} якорей из сценария.`,
+    },
+    issues: [] as string[],
+    anchors,
+  };
+}
+
+async function matchAnchorsForAssembly(project: Project) {
+  const anchors = project.narrationAnchors ?? [];
+  if (anchors.length === 0) {
+    return {
+      step: {
+        key: 'match-anchors' as const,
+        status: 'failed' as const,
+        detail: 'Нечего сопоставлять без смысловых якорей.',
+      },
+      issues: ['Не удалось сопоставить якоря: список смысловых якорей пуст.'],
+      anchorMatches: [] as AnchorMatch[],
+      anchorCoverageSummary: undefined as AnchorCoverageSummary | undefined,
+    };
+  }
+
+  const approvedShots = project.shots.filter((shot) => shot.status === 'approved');
+  if (approvedShots.length === 0) {
+    return {
+      step: {
+        key: 'match-anchors' as const,
+        status: 'failed' as const,
+        detail: 'Нет утвержденных шотов для сопоставления.',
+      },
+      issues: ['Не удалось сопоставить якоря: нет утвержденных шотов.'],
+      anchorMatches: [] as AnchorMatch[],
+      anchorCoverageSummary: undefined as AnchorCoverageSummary | undefined,
+    };
+  }
+
+  const result = matchNarrationAnchors(project);
+  const issues: string[] = [];
+  const unresolvedBlocks = result.anchorCoverageSummary.weakMatches + result.anchorCoverageSummary.unmatchedAnchors;
+  if (unresolvedBlocks > 0) {
+    issues.push(
+      `Для проверки осталось ${formatRussianCount(
+        unresolvedBlocks,
+        'смысловой блок',
+        'смысловых блока',
+        'смысловых блоков',
+      )}.`,
+    );
+  }
+
+  return {
+    step: {
+      key: 'match-anchors' as const,
+      status: 'done' as const,
+      detail: `Подобраны визуальные кандидаты для ${formatRussianCount(
+        result.anchorCoverageSummary.totalAnchors,
+        'смыслового блока',
+        'смысловых блоков',
+        'смысловых блоков',
+      )}.`,
+    },
+    issues,
+    anchorMatches: result.anchorMatches,
+    anchorCoverageSummary: result.anchorCoverageSummary,
+  };
 }
 
 // POST /api/projects/:id/montage/generate-vo-script
@@ -415,25 +948,14 @@ router.post('/montage/generate-voiceover', generationLimiter, async (req: Reques
     // Capture the script text at generation time for TOCTOU comparison
     const scriptAtGeneration = project.voiceoverScript || '';
 
-    // Determine provider and voice from request body → project → settings → defaults
-    const settings = await getGlobalSettings();
-    const { getAvailableProviders, generateSpeech } = await import('../lib/tts-providers.js');
-    type TtsProvider = 'kokoro' | 'elevenlabs-fal' | 'elevenlabs';
-
-    const requestedProvider = (req.body.provider || project.voiceoverProvider || settings.defaultVoiceoverProvider || 'elevenlabs-fal') as TtsProvider;
-    const defaultVoices: Record<string, string> = {
-      'kokoro': 'af_heart',
-      'elevenlabs-fal': 'Aria',
-      'elevenlabs': 'pNInz6obpgDQGcFmaJgB',
-    };
-    const requestedVoice = req.body.voiceId || project.voiceoverVoiceId || settings.defaultVoiceoverVoiceId || defaultVoices[requestedProvider] || 'Aria';
-
-    // Validate provider is a known value
-    const validProviders: TtsProvider[] = ['kokoro', 'elevenlabs-fal', 'elevenlabs'];
-    if (!validProviders.includes(requestedProvider)) {
-      sendApiError(res, 400, `Unknown TTS provider: ${String(requestedProvider).slice(0, 50)}`);
+    const resolution = await resolveRequestedTtsVoice(project, req.body);
+    if ('error' in resolution) {
+      sendApiError(res, 400, resolution.error);
       return;
     }
+    const { generateSpeech } = await import('../lib/tts-providers.js');
+    const requestedProvider = resolution.provider;
+    const requestedVoice = resolution.voiceId;
 
     const normalizedScript = normalizeVoiceoverText(scriptAtGeneration, {
       provider: requestedProvider,
@@ -445,29 +967,11 @@ router.post('/montage/generate-voiceover', generationLimiter, async (req: Reques
       return;
     }
 
-    // Validate voiceId belongs to the selected provider
-    const { getVoices } = await import('../lib/tts-providers.js');
-    const providerVoices = getVoices(requestedProvider);
-    if (providerVoices.length > 0 && !providerVoices.some(v => v.id === requestedVoice)) {
-      sendApiError(res, 400, `Voice '${String(requestedVoice).slice(0, 50)}' does not belong to provider '${requestedProvider}'`);
-      return;
-    }
-
-    // Verify provider is configured
-    const providers = await getAvailableProviders();
-    const providerInfo = providers.find(p => p.id === requestedProvider);
-    if (!providerInfo?.configured) {
-      const keyName = requestedProvider === 'kokoro' ? 'fal.ai' : 'ElevenLabs';
-      sendApiError(res, 400, `${keyName} API key is not configured. Please set it in Settings.`);
-      return;
-    }
-
     // Generate speech using normalized text for better TTS prosody
     const result = await generateSpeech(normalizedScript, requestedProvider, requestedVoice);
 
     // Validate audio content type before writing to disk
-    const allowedAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/wave', 'audio/x-wav'];
-    if (!allowedAudioTypes.some(t => result.contentType.includes(t))) {
+    if (!ALLOWED_TTS_AUDIO_TYPES.some(t => result.contentType.includes(t))) {
       sendApiError(res, 500, `Unexpected audio content type from TTS provider: ${result.contentType.slice(0, 50)}`);
       return;
     }
@@ -522,6 +1026,56 @@ router.post('/montage/generate-voiceover', generationLimiter, async (req: Reques
   } catch (err) {
     console.error('Failed to generate voiceover:', err);
     const msg = err instanceof Error ? err.message : 'Failed to generate voiceover';
+    sendApiError(res, 500, msg);
+  }
+});
+
+// POST /api/projects/:id/montage/preview-voice
+router.post('/montage/preview-voice', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const resolution = await resolveRequestedTtsVoice(project, req.body);
+    if ('error' in resolution) {
+      sendApiError(res, 400, resolution.error);
+      return;
+    }
+
+    const { generateSpeech } = await import('../lib/tts-providers.js');
+    const result = await generateSpeech(VOICE_PREVIEW_TEXT, resolution.provider, resolution.voiceId);
+
+    if (!ALLOWED_TTS_AUDIO_TYPES.some((type) => result.contentType.includes(type))) {
+      sendApiError(res, 500, `Unexpected audio content type from TTS provider: ${result.contentType.slice(0, 50)}`);
+      return;
+    }
+
+    const ext = result.contentType.includes('wav') ? '.wav' : '.mp3';
+    const previewsDir = resolveProjectPath(project.id, 'montage', 'previews');
+    await ensureDir(previewsDir);
+
+    const existingFiles = getPreviewVoiceCandidates(project.id);
+    await Promise.all(existingFiles.map((file) => fs.unlink(file.path).catch(() => {})));
+
+    const previewPath = path.join(previewsDir, `${getPreviewVoiceBasename()}${ext}`);
+    if (!path.resolve(previewPath).startsWith(path.resolve(previewsDir) + path.sep)) {
+      throw new Error('Path escapes preview directory');
+    }
+    if (!Buffer.isBuffer(result.audioBuffer) || result.audioBuffer.length > 50 * 1024 * 1024) {
+      throw new Error('Invalid or oversized audio data');
+    }
+
+    const safeAudio = Buffer.from(result.audioBuffer);
+    await safeWriteFile(previewsDir, previewPath, safeAudio);
+
+    res.json({
+      previewUrl: `/api/projects/${project.id}/montage/preview-voice?ts=${Date.now()}`,
+      provider: resolution.provider,
+      voiceId: resolution.voiceId,
+    });
+  } catch (err) {
+    console.error('Failed to generate voice preview:', err);
+    const msg = err instanceof Error ? err.message : 'Failed to generate voice preview';
     sendApiError(res, 500, msg);
   }
 });
@@ -678,6 +1232,35 @@ router.get('/montage/voiceover', readLimiter, async (req: Request, res: Response
   } catch (err) {
     console.error('Failed to stream voiceover:', err);
     sendApiError(res, 500, 'Failed to stream voiceover');
+  }
+});
+
+// GET /api/projects/:id/montage/preview-voice
+router.get('/montage/preview-voice', readLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const previewFile = await findPreviewVoiceFile(project.id);
+    if (!previewFile) {
+      sendApiError(res, 404, 'Preview voice file not found');
+      return;
+    }
+
+    res.setHeader('Content-Type', getMimeForExt(previewFile.ext));
+    const stream = fsCb.createReadStream(previewFile.path);
+    stream.on('error', (err) => {
+      console.error('Preview stream error:', err);
+      if (!res.headersSent) {
+        sendApiError(res, 500, 'Failed to stream preview voice');
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
+  } catch (err) {
+    console.error('Failed to stream preview voice:', err);
+    sendApiError(res, 500, 'Failed to stream preview voice');
   }
 });
 
@@ -911,7 +1494,24 @@ router.post('/montage/describe-videos', generationLimiter, async (req: Request, 
         continue;
       }
 
+      let sampledFrames: Array<{ timeSec: number; imageDataUrl: string }> = [];
+      try {
+        const sampled = await sampleVideoFrames(localVideoPath, VIDEO_DESCRIPTION_SAMPLE_COUNT);
+        sampledFrames = sampled.filter((frame): frame is { timeSec: number; imageDataUrl: string } => (
+          frame
+          && typeof frame === 'object'
+          && typeof frame.timeSec === 'number'
+          && Number.isFinite(frame.timeSec)
+          && typeof frame.imageDataUrl === 'string'
+          && frame.imageDataUrl.trim().length > 0
+        ));
+      } catch {
+        sampledFrames = [];
+      }
+
       const systemPrompt = `You describe a finished real-estate video shot for AI-assisted montage planning.
+Use sampled video frames as the primary source of truth when they are provided.
+Use the provided shot text as fallback context only.
 Return ONLY valid JSON with this exact shape:
 {
   "summary": "short Russian summary",
@@ -930,20 +1530,18 @@ Return ONLY valid JSON with this exact shape:
 }
 If exact moments are unclear, return an empty moments array.`;
 
-      const userPrompt = [
-        `Shot scene: ${shot.scene || 'n/a'}`,
-        `Audio description: ${shot.audioDescription || 'n/a'}`,
-        `Image prompt: ${shot.imagePrompt || 'n/a'}`,
-        `Video prompt: ${shot.videoPrompt || 'n/a'}`,
-        `Local video file is available: ${path.basename(localVideoPath)}`,
-      ].join('\n');
-
       try {
         const llmResponse = await chatCompletion(
           model,
           [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
+            {
+              role: 'user',
+              content: buildVideoDescriptionUserContent({
+                ...shot,
+                videoFile: path.basename(localVideoPath),
+              }, sampledFrames),
+            },
           ],
           0.2,
         );
@@ -992,8 +1590,10 @@ router.post('/montage/extract-anchors', generationLimiter, async (req: Request, 
     if (!project) return;
 
     const voiceoverScript = project.voiceoverScript?.trim();
-    if (!voiceoverScript) {
-      sendApiError(res, 400, 'Сначала добавьте текст озвучки, чтобы извлечь смысловые якоря.');
+    const scriptSource = project.script?.trim();
+    const anchorSourceText = voiceoverScript || scriptSource;
+    if (!anchorSourceText) {
+      sendApiError(res, 400, 'Сначала добавьте текст озвучки или сценарий, чтобы извлечь смысловые якоря.');
       return;
     }
 
@@ -1021,6 +1621,7 @@ or
 
 Rules:
 - Keep sourceText in Russian and close to the original voiceover wording
+- If there is no voiceover, keep sourceText close to the provided script wording
 - Preserve story order
 - Prefer 3-8 meaningful anchors
 - Keep labels short and montage-friendly`;
@@ -1029,12 +1630,12 @@ Rules:
       model,
       [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: voiceoverScript },
+        { role: 'user', content: anchorSourceText },
       ],
       0.2,
     );
 
-    const anchors = parseNarrationAnchorsResponse(anchorsResponse, voiceoverScript);
+    const anchors = parseNarrationAnchorsResponse(anchorsResponse, anchorSourceText);
 
     await withProject(project.id, (proj) => {
       proj.narrationAnchors = anchors;
@@ -1080,6 +1681,136 @@ router.post('/montage/match-anchors', generationLimiter, async (req: Request, re
   }
 });
 
+// POST /api/projects/:id/montage/assemble-draft
+router.post('/montage/assemble-draft', generationLimiter, async (req: Request, res: Response) => {
+  try {
+    const project = await loadProject(req, res);
+    if (!project) return;
+
+    const approvedShots = project.shots.filter((shot) => shot.status === 'approved');
+    if (approvedShots.length === 0) {
+      sendApiError(res, 400, 'Нет утвержденных шотов для сборки черновика.');
+      return;
+    }
+
+    let workingProject: Project = project;
+    const issues: string[] = [];
+    const steps: AssemblyStepSummary[] = [];
+
+    const describeResult = await describeShotsForAssembly(workingProject, approvedShots);
+    steps.push(describeResult.step);
+    issues.push(...describeResult.issues);
+    if (describeResult.describedShots.length > 0) {
+      const descriptionsByShotId = new Map(
+        describeResult.describedShots.map(({ shotId, videoDescription }) => [shotId, videoDescription]),
+      );
+      workingProject = {
+        ...workingProject,
+        shots: workingProject.shots.map((shot) => {
+          const videoDescription = descriptionsByShotId.get(shot.id);
+          return videoDescription ? { ...shot, videoDescription } : shot;
+        }),
+      };
+
+      await withProject(project.id, (proj) => {
+        proj.shots = workingProject.shots;
+      });
+    }
+
+    const anchorResult = await extractAnchorsForAssembly(workingProject);
+    steps.push(anchorResult.step);
+    issues.push(...anchorResult.issues);
+    if (anchorResult.anchors.length > 0 && anchorResult.step.status !== 'skipped') {
+      workingProject = {
+        ...workingProject,
+        narrationAnchors: anchorResult.anchors,
+        anchorMatches: undefined,
+        anchorCoverageSummary: undefined,
+      };
+
+      await withProject(project.id, (proj) => {
+        proj.narrationAnchors = anchorResult.anchors;
+        delete proj.anchorMatches;
+        delete proj.anchorCoverageSummary;
+      });
+    }
+
+    const shouldRefreshMatches = Boolean(workingProject.narrationAnchors?.length) && (
+      anchorResult.step.status === 'skipped'
+      || !workingProject.anchorMatches
+      || workingProject.anchorMatches.length === 0
+    );
+
+    if (shouldRefreshMatches) {
+      const matchResult = await matchAnchorsForAssembly(workingProject);
+      steps.push(matchResult.step);
+      issues.push(...matchResult.issues);
+
+      if (matchResult.anchorMatches.length > 0) {
+        workingProject = {
+          ...workingProject,
+          anchorMatches: matchResult.anchorMatches,
+          anchorCoverageSummary: matchResult.anchorCoverageSummary,
+        };
+
+        await withProject(project.id, (proj) => {
+          proj.anchorMatches = matchResult.anchorMatches;
+          proj.anchorCoverageSummary = matchResult.anchorCoverageSummary;
+        });
+      }
+    } else if (workingProject.anchorMatches?.length) {
+      steps.push({
+        key: 'match-anchors',
+        status: 'skipped',
+        detail: `Уже есть ${workingProject.anchorMatches.length} сопоставлений.`,
+      });
+    }
+
+    const approvedShotsForPlan = workingProject.shots.filter((shot) => shot.status === 'approved');
+    const { normalizeClips } = await import('../lib/normalize.js');
+    await normalizeClips(project.id, approvedShotsForPlan);
+
+    let voiceoverDurationSec: number;
+    if (workingProject.voiceoverFile) {
+      const voPath = resolveProjectPath(project.id, workingProject.voiceoverFile);
+      const { probeDuration } = await import('../lib/normalize.js');
+      voiceoverDurationSec = await probeDuration(voPath);
+    } else {
+      const pacingText = workingProject.voiceoverScript?.trim() || workingProject.script || '';
+      const wordCount = pacingText.split(/\s+/).filter(Boolean).length;
+      voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
+      if (!pacingText.trim()) {
+        issues.push('Не найден текст озвучки, поэтому длительность черновика была оценена по сценарию.');
+      }
+    }
+
+    const { generateMontagePlan } = await import('../lib/montage-plan.js');
+    const planningProject: Project = {
+      ...workingProject,
+      semanticBlocks: undefined,
+    };
+    const semanticBlocks = buildSemanticBlocks(planningProject, approvedShotsForPlan);
+    planningProject.semanticBlocks = semanticBlocks;
+    const montagePlan = generateMontagePlan(planningProject, voiceoverDurationSec);
+
+    await withProject(project.id, (proj) => {
+      proj.montagePlan = montagePlan;
+      proj.semanticBlocks = montagePlan.semanticBlocks;
+      proj.stage = 'montage_draft';
+    });
+
+    const summary = buildAssemblySummary(workingProject, montagePlan, issues, steps);
+
+    res.json({
+      montagePlan,
+      summary,
+    });
+  } catch (err) {
+    console.error('Failed to assemble montage draft:', err);
+    sendApiError(res, 500, 'Failed to assemble montage draft');
+  }
+});
+
 // PUT /api/projects/:id/montage/anchor-matches
 router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res: Response) => {
   try {
@@ -1100,6 +1831,7 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
     const anchorIds = new Set(project.narrationAnchors.map((anchor) => anchor.id));
     const approvedShotIds = new Set(project.shots.filter((shot) => shot.status === 'approved').map((shot) => shot.id));
     const normalizedMatches = [];
+    const seenAnchorIds = new Set<string>();
 
     for (const rawMatch of rawAnchorMatches) {
       if (!rawMatch || typeof rawMatch !== 'object') {
@@ -1139,9 +1871,33 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         return;
       }
 
+      if (seenAnchorIds.has(anchorId)) {
+        sendApiError(res, 400, 'Каждый смысловой якорь должен встречаться в сопоставлении ровно один раз.');
+        return;
+      }
+      seenAnchorIds.add(anchorId);
+
       if (selectedShotId && !approvedShotIds.has(selectedShotId)) {
         sendApiError(res, 400, 'Для якоря выбран неизвестный или неутвержденный шот.');
         return;
+      }
+
+      if (selectedMomentId) {
+        if (!selectedShotId) {
+          sendApiError(res, 400, 'Для выбора момента сначала укажите шот.');
+          return;
+        }
+
+        const shot = project.shots.find((candidate) => candidate.id === selectedShotId);
+        const availableMomentIds = new Set(
+          (shot?.videoDescription?.moments ?? [])
+            .map((moment) => moment.id)
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+        );
+        if (!shot || availableMomentIds.size === 0 || !availableMomentIds.has(selectedMomentId)) {
+          sendApiError(res, 400, 'Для выбранного шота не найден указанный момент.');
+          return;
+        }
       }
 
       if (status !== 'matched' && status !== 'weak_match' && status !== 'unmatched') {
@@ -1157,6 +1913,11 @@ router.put('/montage/anchor-matches', mutationLimiter, async (req: Request, res:
         status,
         candidates,
       });
+    }
+
+    if (normalizedMatches.length !== anchorIds.size || seenAnchorIds.size !== anchorIds.size) {
+      sendApiError(res, 400, 'Сопоставление должно содержать все смысловые якоря без пропусков.');
+      return;
     }
 
     const coverage = summarizeAnchorCoverage(normalizedMatches);
@@ -1212,8 +1973,9 @@ router.post('/montage/generate-plan', generationLimiter, async (req: Request, re
       const { probeDuration } = await import('../lib/normalize.js');
       voiceoverDurationSec = await probeDuration(voPath);
     } else {
-      // Estimate from script: ~150 words/min for Russian
-      const wordCount = (planningProject.script || '').split(/\s+/).filter(Boolean).length;
+      // Estimate from approved voiceover text when audio has not been generated yet.
+      const pacingText = planningProject.voiceoverScript?.trim() || planningProject.script || '';
+      const wordCount = pacingText.split(/\s+/).filter(Boolean).length;
       voiceoverDurationSec = Math.max((wordCount / 150) * 60, 10);
     }
 
@@ -1272,6 +2034,49 @@ router.put('/montage/plan', async (req: Request, res: Response) => {
 const VALID_TRANSITION_TYPES = ['cut', 'fade', 'crossfade', 'slide_left', 'slide_right', 'zoom_blur', 'wipe'] as const;
 const VALID_MOTION_EFFECTS = ['ken_burns', 'zoom_in', 'zoom_out', 'pan_left', 'pan_right'] as const;
 
+function getTimelineEntryIdentity(entry: { clipId?: string; shotId: string }): string {
+  return typeof entry.clipId === 'string' && entry.clipId.trim() ? entry.clipId.trim() : entry.shotId;
+}
+
+function findTimelineEntryByIdentity<T extends { clipId?: string; shotId: string }>(timeline: T[], identity: string): T | undefined {
+  return timeline.find((entry) => getTimelineEntryIdentity(entry) === identity);
+}
+
+function getTransitionEndpointIdentity(
+  transition: { fromClipId?: string; fromShotId: string; toClipId?: string; toShotId: string },
+  side: 'from' | 'to',
+): string {
+  if (side === 'from') {
+    return typeof transition.fromClipId === 'string' && transition.fromClipId.trim()
+      ? transition.fromClipId
+      : transition.fromShotId;
+  }
+
+  return typeof transition.toClipId === 'string' && transition.toClipId.trim()
+    ? transition.toClipId
+    : transition.toShotId;
+}
+
+function resolveRequestedTimelineIdentity<T extends { clipId?: string; shotId: string }>(
+  timeline: T[],
+  entry: { clipId?: string; shotId: string },
+): string | null {
+  if (typeof entry.clipId === 'string' && entry.clipId.trim()) {
+    return entry.clipId;
+  }
+
+  const matchingByShot = timeline.filter((timelineEntry) => timelineEntry.shotId === entry.shotId);
+  if (matchingByShot.length === 1) {
+    return getTimelineEntryIdentity(matchingByShot[0]);
+  }
+
+  if (matchingByShot.length === 0) {
+    return entry.shotId;
+  }
+
+  return null;
+}
+
 // PUT /api/projects/:id/montage/plan/timeline
 // Reorder timeline + rebuild transitions
 router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
@@ -1289,9 +2094,9 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       sendApiError(res, 400, 'timeline must be an array');
       return;
     }
-    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; durationSec: number }>;
+    const timeline = rawTimeline as Array<Record<string, unknown> & { shotId: string; clipId?: string; durationSec: number }>;
 
-    // Validate: all entries must have shotId and durationSec
+    // Validate: all entries must have clip identity and duration
     for (const entry of timeline) {
       if (!entry.shotId || typeof entry.durationSec !== 'number' || entry.durationSec <= 0) {
         sendApiError(res, 400, `Invalid timeline entry: shotId and positive durationSec required`);
@@ -1299,18 +2104,24 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
       }
     }
 
-    // Validate: incoming shot IDs must match existing plan
-    const existingIds = new Set(project.montagePlan.timeline.map(e => e.shotId));
-    const newIds = new Set(timeline.map((entry) => entry.shotId));
-    for (const id of newIds) {
-      if (!existingIds.has(id)) {
-        sendApiError(res, 400, `Unknown shot ID: ${String(id).slice(0, 50)}`);
+    // Validate: incoming clip identities must match existing plan
+    const existingIds = new Set(project.montagePlan.timeline.map((entry) => getTimelineEntryIdentity(entry)));
+    const newIds = new Set<string>();
+    for (const entry of timeline) {
+      const identity = resolveRequestedTimelineIdentity(project.montagePlan.timeline, entry);
+      if (!identity) {
+        sendApiError(res, 400, `Timeline entry shot ${String(entry.shotId).slice(0, 50)} is ambiguous; provide clipId`);
         return;
       }
+      if (!existingIds.has(identity)) {
+        sendApiError(res, 400, `Unknown timeline entry ID: ${String(identity).slice(0, 50)}`);
+        return;
+      }
+      newIds.add(identity);
     }
 
     if (timeline.length !== project.montagePlan.timeline.length || newIds.size !== existingIds.size) {
-      sendApiError(res, 400, 'Timeline must contain all existing shots exactly once');
+      sendApiError(res, 400, 'Timeline must contain all existing clips exactly once');
       return;
     }
 
@@ -1318,10 +2129,15 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     const introSec = project.montagePlan.motionGraphics.intro?.durationSec ?? 0;
     let cursor = introSec;
     const reordered = timeline.map((entry) => {
-      const existing = project.montagePlan!.timeline.find(e => e.shotId === entry.shotId);
+      const entryId = resolveRequestedTimelineIdentity(project.montagePlan.timeline, entry);
+      if (!entryId) {
+        throw new Error(`Timeline entry shot ${entry.shotId} is ambiguous`);
+      }
+      const existing = findTimelineEntryByIdentity(project.montagePlan!.timeline, entryId);
       const result = {
         ...existing,
         ...entry,
+        clipId: entryId,
         startSec: cursor,
       };
       cursor += result.durationSec;
@@ -1332,6 +2148,8 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     const transitions = [];
     if (reordered.length > 0 && project.montagePlan.motionGraphics.intro) {
       transitions.push({
+        fromClipId: 'intro',
+        toClipId: reordered[0].clipId,
         fromShotId: 'intro',
         toShotId: reordered[0].shotId,
         type: 'fade' as const,
@@ -1341,9 +2159,13 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     for (let i = 0; i < reordered.length - 1; i++) {
       // Preserve existing transition type if it exists between these shots
       const existing = project.montagePlan.transitions.find(
-        t => t.fromShotId === reordered[i].shotId && t.toShotId === reordered[i + 1].shotId
+        t =>
+          getTransitionEndpointIdentity(t, 'from') === getTimelineEntryIdentity(reordered[i]) &&
+          getTransitionEndpointIdentity(t, 'to') === getTimelineEntryIdentity(reordered[i + 1])
       );
       transitions.push({
+        fromClipId: reordered[i].clipId,
+        toClipId: reordered[i + 1].clipId,
         fromShotId: reordered[i].shotId,
         toShotId: reordered[i + 1].shotId,
         type: existing?.type ?? 'crossfade',
@@ -1352,6 +2174,8 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
     }
     if (reordered.length > 0 && project.montagePlan.motionGraphics.outro) {
       transitions.push({
+        fromClipId: reordered[reordered.length - 1].clipId,
+        toClipId: 'outro',
         fromShotId: reordered[reordered.length - 1].shotId,
         toShotId: 'outro',
         type: 'fade' as const,
@@ -1373,9 +2197,9 @@ router.put('/montage/plan/timeline', async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/projects/:id/montage/plan/timeline/:shotId
+// PUT /api/projects/:id/montage/plan/timeline/:clipId
 // Update individual clip: durationSec, trimEndSec, motionEffect
-router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response) => {
+router.put('/montage/plan/timeline/:clipId', async (req: Request, res: Response) => {
   try {
     const project = await loadProject(req, res);
     if (!project) return;
@@ -1385,10 +2209,11 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
       return;
     }
 
-    const { shotId } = req.params;
-    const entry = project.montagePlan.timeline.find(e => e.shotId === shotId);
+    const { clipId } = req.params;
+    const entryId = resolveRequestedTimelineIdentity(project.montagePlan.timeline, { shotId: clipId, clipId });
+    const entry = entryId ? findTimelineEntryByIdentity(project.montagePlan.timeline, entryId) : undefined;
     if (!entry) {
-      sendApiError(res, 404, `Shot ${String(shotId).slice(0, 50)} not in timeline`);
+      sendApiError(res, 404, `Clip ${String(clipId).slice(0, 50)} not in timeline`);
       return;
     }
 
@@ -1406,6 +2231,15 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
       return;
     }
 
+    if (
+      trimEndSec !== undefined
+      && Number.isFinite(entry.trimStartSec)
+      && trimEndSec < Number(entry.trimStartSec)
+    ) {
+      sendApiError(res, 400, 'trimEndSec must be greater than or equal to trimStartSec');
+      return;
+    }
+
     if (motionEffect !== undefined && motionEffect !== null) {
       if (!VALID_MOTION_EFFECTS.includes(motionEffect)) {
         sendApiError(res, 400, `Invalid motionEffect. Allowed: ${VALID_MOTION_EFFECTS.join(', ')}`);
@@ -1415,7 +2249,7 @@ router.put('/montage/plan/timeline/:shotId', async (req: Request, res: Response)
 
     const updatedPlan = await withProject(project.id, (p) => {
       if (!p.montagePlan) return null;
-      const target = p.montagePlan.timeline.find(e => e.shotId === shotId);
+      const target = entryId ? findTimelineEntryByIdentity(p.montagePlan.timeline, entryId) : undefined;
       if (!target) return null;
 
       if (durationSec !== undefined) target.durationSec = durationSec;
@@ -1610,6 +2444,11 @@ router.post('/montage/refine-plan', generationLimiter, async (req: Request, res:
 // POST /api/projects/:id/montage/render
 router.post('/montage/render', generationLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 
@@ -1632,6 +2471,11 @@ router.post('/montage/render', generationLimiter, async (req: Request, res: Resp
 // GET /api/projects/:id/montage/render/:jobId
 router.get('/montage/render/:jobId', readLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 
@@ -1652,6 +2496,11 @@ router.get('/montage/render/:jobId', readLimiter, async (req: Request, res: Resp
 // DELETE /api/projects/:id/montage/render/:jobId
 router.delete('/montage/render/:jobId', mutationLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 
@@ -1677,6 +2526,11 @@ router.delete('/montage/render/:jobId', mutationLimiter, async (req: Request, re
 // GET /api/projects/:id/montage/render/:jobId/download
 router.get('/montage/render/:jobId/download', readLimiter, async (req: Request, res: Response) => {
   try {
+    if (!isLegacyMontageRenderEnabled(req)) {
+      sendApiError(res, 404, 'Not found');
+      return;
+    }
+
     const project = await loadProject(req, res);
     if (!project) return;
 

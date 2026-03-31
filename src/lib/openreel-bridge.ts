@@ -13,6 +13,10 @@ export interface OpenReelBundle {
     weak: number
     unmatched: number
   }
+  exportArtifact?: {
+    filename: string
+    exportedAt: number
+  }
   modifiedAt?: number
 }
 
@@ -21,7 +25,7 @@ export type BridgeMessage =
   | { type: 'openreel:ready' }
   | { type: 'openreel:project-change'; payload: { version: string; project: unknown } }
   | { type: 'openreel:export-progress'; payload: { phase: string; progress: number } }
-  | { type: 'openreel:export-complete'; payload: { filename: string } }
+  | { type: 'openreel:export-complete'; payload: { filename: string; artifact?: Blob } }
   | { type: 'openreel:error'; payload: { message: string } }
 
 const BRIDGE_MESSAGE_TYPES = new Set<BridgeMessage['type']>([

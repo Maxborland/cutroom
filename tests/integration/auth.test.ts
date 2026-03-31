@@ -26,6 +26,40 @@ function createAuthApp(options: {
 }
 
 describe('Authentication API', () => {
+  it('allows bootstrap and session-authenticated browser requests when API key is configured', async () => {
+    const authRepository = createInMemoryAuthRepository()
+    const app = createApp({
+      allowMissingApiKey: false,
+      apiAccessKey: 'test-secret',
+      authRepository,
+    })
+
+    const inviteResponse = await request(app)
+      .post('/api/users/bootstrap-owner-invite')
+      .send({ email: 'owner@example.com' })
+      .expect(201)
+
+    const acceptResponse = await request(app)
+      .post('/api/auth/accept-invite')
+      .send({
+        token: inviteResponse.body.invite.token,
+        name: 'Owner',
+        password: 'super-secret-pass',
+      })
+      .expect(200)
+
+    const sessionCookie = acceptResponse.headers['set-cookie']
+      ?.find((value: string) => value.startsWith('cutroom_session='))
+
+    expect(sessionCookie).toBeTruthy()
+    if (!sessionCookie) return
+
+    await request(app)
+      .get('/api/projects')
+      .set('Cookie', sessionCookie)
+      .expect(200)
+  })
+
   it('requires authentication for project APIs', async () => {
     const { app } = createAuthApp()
 

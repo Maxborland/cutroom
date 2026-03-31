@@ -2,9 +2,14 @@ import { Router, Request, Response } from 'express';
 import { readLimiter, generationLimiter } from '../../lib/rate-limit.js';
 import {
   getProject,
-  saveProject,
+  withProject,
 } from '../../lib/storage.js';
 import { getProjectStorageAdapter } from '../../lib/storage-adapters/index.js';
+import {
+  chooseFalCapabilityOption,
+  fetchFalEndpointCapabilities,
+  normalizeFalDurationOption,
+} from '../../lib/fal-schema.js';
 import {
   cacheVideoLocally,
   enqueueVideoCacheJob,
@@ -29,15 +34,41 @@ async function setShotVideoFile(
   shotId: string,
   videoFile: string,
 ): Promise<void> {
-  const refreshed = await getProject(projectId);
-  if (!refreshed) return;
+  await withProject(projectId, (current) => {
+    const currentShot = current.shots.find((candidate) => candidate.id === shotId);
+    if (!currentShot) return;
 
-  const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
-  if (!refreshedShot) return;
+    currentShot.videoFile = videoFile;
+    currentShot.status = 'vid_review';
+  }).catch(() => {});
+}
 
-  refreshedShot.videoFile = videoFile;
-  refreshedShot.status = 'vid_review';
-  await saveProject(refreshed);
+async function resolveFalVideoInputs(
+  endpoint: string,
+  requestedQuality: string,
+  requestedAspectRatio: string,
+  requestedDuration: number,
+): Promise<{
+  qualityInput?: Record<string, string | number | boolean>;
+  aspectRatioInput?: string;
+  durationInput: number | string;
+}> {
+  try {
+    const capabilities = await fetchFalEndpointCapabilities(endpoint);
+    const explicitResolution = chooseFalCapabilityOption(requestedQuality, capabilities.resolutionOptions);
+    const explicitAspectRatio = chooseFalCapabilityOption(requestedAspectRatio, capabilities.aspectRatioOptions);
+    const explicitDuration = normalizeFalDurationOption(requestedDuration, capabilities.durationOptions);
+
+    return {
+      qualityInput: explicitResolution ? { resolution: explicitResolution } : undefined,
+      aspectRatioInput: explicitAspectRatio,
+      durationInput: explicitDuration ?? requestedDuration,
+    };
+  } catch {
+    return {
+      durationInput: requestedDuration,
+    };
+  }
 }
 
 // POST /api/projects/:id/shots/:shotId/generate-video
@@ -93,14 +124,37 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
 
     const videoPrompt = req.body.prompt || shot.videoPrompt;
     const requestedQuality = String(effective.videoQuality || 'auto');
-    const qualityInput = resolveVideoQualityInput(videoModel, requestedQuality);
+    let qualityInput = resolveVideoQualityInput(videoModel, requestedQuality);
+    let durationInput: number | string | undefined = shot.duration;
+    let aspectRatioInput: string | undefined;
+
+    if (videoModel.provider === 'fal') {
+      const resolvedInputs = await resolveFalVideoInputs(
+        videoModel.endpoint,
+        requestedQuality,
+        effective.imageAspectRatio,
+        shot.duration,
+      );
+      if (resolvedInputs.qualityInput) {
+        qualityInput = resolvedInputs.qualityInput;
+      }
+      aspectRatioInput = resolvedInputs.aspectRatioInput;
+      durationInput = resolvedInputs.durationInput;
+    }
+
     const appliedQualityParam = qualityInput ? Object.keys(qualityInput)[0] : undefined;
     const appliedQuality = appliedQualityParam
       ? String(qualityInput[appliedQualityParam])
       : undefined;
 
-    shot.status = 'vid_gen';
-    await saveProject(project);
+    await withProject(project.id, (current) => {
+      const currentShot = current.shots.find((candidate) => candidate.id === shotId);
+      if (!currentShot) {
+        throw new Error('Shot not found');
+      }
+
+      currentShot.status = 'vid_gen';
+    });
 
     const abortController = new AbortController();
     const key = genKey(project.id, shotId);
@@ -112,8 +166,12 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
           model: videoModel,
           prompt: videoPrompt,
           sourceImageUrl,
-          duration: shot.duration,
+          duration: durationInput,
           quality: effective.videoQuality,
+          extraInput: {
+            ...(qualityInput || {}),
+            ...(aspectRatioInput ? { aspect_ratio: aspectRatioInput } : {}),
+          },
         },
         abortController.signal,
       );
@@ -166,14 +224,12 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
       res.json(payload);
     } catch (genErr) {
       activeGenerations.delete(key);
-      const refreshed = await getProject(req.params.id);
-      if (refreshed) {
-        const refreshedShot = refreshed.shots.find((s) => s.id === shotId);
-        if (refreshedShot) {
-          refreshedShot.status = 'img_review';
-          await saveProject(refreshed);
+      await withProject(req.params.id, (current) => {
+        const currentShot = current.shots.find((candidate) => candidate.id === shotId);
+        if (currentShot) {
+          currentShot.status = 'img_review';
         }
-      }
+      }).catch(() => {});
       throw genErr;
     }
   } catch (err) {
@@ -277,6 +333,7 @@ router.post('/generate-all-videos', generationLimiter, async (req: Request, res:
     const shotsToGenerate = project.shots.filter(
       (s) => (s.generatedImages.length > 0 || (Array.isArray(s.enhancedImages) && s.enhancedImages.length > 0)) && !s.videoFile
     );
+    const requestedQuality = String(effective.videoQuality || 'auto');
 
     console.log(`[generate-all-videos] ${shotsToGenerate.length} shots to process`);
 
@@ -307,12 +364,34 @@ router.post('/generate-all-videos', generationLimiter, async (req: Request, res:
       }
 
       try {
+        let qualityInput = resolveVideoQualityInput(videoModel, requestedQuality);
+        let durationInput: number | string | undefined = shot.duration;
+        let aspectRatioInput: string | undefined;
+
+        if (videoModel.provider === 'fal') {
+          const resolvedInputs = await resolveFalVideoInputs(
+            videoModel.endpoint,
+            requestedQuality,
+            effective.imageAspectRatio,
+            shot.duration,
+          );
+          if (resolvedInputs.qualityInput) {
+            qualityInput = resolvedInputs.qualityInput;
+          }
+          aspectRatioInput = resolvedInputs.aspectRatioInput;
+          durationInput = resolvedInputs.durationInput;
+        }
+
         const videoUrl = await generateVideoFromImage({
           model: videoModel,
           prompt: shot.videoPrompt,
           sourceImageUrl,
-          duration: shot.duration,
+          duration: durationInput,
           quality: effective.videoQuality,
+          extraInput: {
+            ...(qualityInput || {}),
+            ...(aspectRatioInput ? { aspect_ratio: aspectRatioInput } : {}),
+          },
         });
 
         try {

@@ -12,9 +12,11 @@ import {
   resolveProjectPath,
   ensureDir,
   type Project,
+  type SemanticBlock,
   type ShotMeta,
   type MontagePlan,
 } from '../../server/lib/storage.js'
+import { buildSemanticBlocks } from '../../server/lib/semantic-block-planner.js'
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -55,6 +57,20 @@ function makeShot(overrides: Partial<ShotMeta> & { id: string; order: number }):
     enhancedImages: [],
     selectedImage: null,
     videoFile: null,
+    ...overrides,
+  }
+}
+
+function makeSemanticBlock(overrides: Partial<SemanticBlock> & {
+  id: string
+  anchorId: string
+  anchorText: string
+  anchorLabel: string
+  strategy: SemanticBlock['strategy']
+  confidence: number
+  segments: SemanticBlock['segments']
+}): SemanticBlock {
+  return {
     ...overrides,
   }
 }
@@ -190,9 +206,19 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
       // Timeline: 3 approved shots = 3 timeline entries
       expect(plan.timeline).toHaveLength(3)
+      expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
+        'clip-shot-001',
+        'clip-shot-002',
+        'clip-shot-003',
+      ])
 
       // Transitions: between each pair + intro->first shot = 3 transitions
       expect(plan.transitions).toHaveLength(3)
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-shot-001'],
+        ['clip-shot-001', 'clip-shot-002'],
+        ['clip-shot-002', 'clip-shot-003'],
+      ])
     })
 
     it('should only include approved shots, sorted by order', () => {
@@ -216,6 +242,100 @@ describe('Montage Plan Generation (Phase 4)', () => {
       // Sorted by order: shot-001 first, shot-003 second
       expect(plan.timeline[0].shotId).toBe('shot-001')
       expect(plan.timeline[1].shotId).toBe('shot-003')
+      expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
+        'clip-shot-001',
+        'clip-shot-003',
+      ])
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-shot-001'],
+        ['clip-shot-001', 'clip-shot-003'],
+      ])
+    })
+
+    it('should keep repeated semantic clips when the same shot is matched to multiple anchors', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Test',
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 0,
+            scene: 'Терраса с видом на реку',
+            duration: 6,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Один ролик с двумя выразительными моментами',
+              tags: ['terrace', 'sunset'],
+              matchHints: ['терраса', 'вид на реку', 'закат'],
+              moments: [
+                { id: 'moment-terrace', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['terrace'], summary: 'Терраса и вид' },
+                { id: 'moment-sunset', label: 'Закат', startSec: 2.5, endSec: 5.5, tags: ['sunset'], summary: 'Мягкий вечерний свет' },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-1', sourceText: 'Терраса с видом', label: 'Терраса', order: 1, intent: 'lifestyle' },
+          { id: 'anchor-2', sourceText: 'Вечерний закат', label: 'Закат', order: 2, intent: 'feature' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-1',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.94,
+            status: 'matched',
+            candidates: [],
+          },
+          {
+            anchorId: 'anchor-2',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-sunset',
+            confidence: 0.91,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 20)
+
+      expect(plan.timeline).toHaveLength(2)
+      expect(plan.timeline[0].clipId).toBe('clip-semantic-block-anchor-1')
+      expect(plan.timeline[1].clipId).toBe('clip-semantic-block-anchor-2')
+      expect(plan.timeline[0].anchorId).toBe('anchor-1')
+      expect(plan.timeline[1].anchorId).toBe('anchor-2')
+      expect(plan.timeline[0].selectedMomentId).toBe('moment-terrace')
+      expect(plan.timeline[1].selectedMomentId).toBe('moment-sunset')
+      expect(plan.timeline[0].shotId).toBe('shot-001')
+      expect(plan.timeline[1].shotId).toBe('shot-001')
+      expect(plan.transitions.map((transition) => [transition.fromClipId, transition.toClipId])).toEqual([
+        ['intro', 'clip-semantic-block-anchor-1'],
+        ['clip-semantic-block-anchor-1', 'clip-semantic-block-anchor-2'],
+      ])
+    })
+
+    it('should assign stable clip ids to fallback approved-shot clips', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Test',
+        shots: [
+          makeShot({ id: 'shot-001', order: 0, scene: 'Exterior', duration: 5, status: 'approved' }),
+          makeShot({ id: 'shot-002', order: 1, scene: 'Interior', duration: 4, status: 'approved' }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 15)
+
+      expect(plan.timeline.map((entry) => entry.clipId)).toEqual([
+        'clip-shot-001',
+        'clip-shot-002',
+      ])
     })
 
     it('should distribute durations proportionally, summing to voiceover + intro + outro', () => {
@@ -358,6 +478,1262 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(project.anchorCoverageSummary?.matchedAnchors).toBe(1)
     })
 
+    it('builds semantic timeline entries from raw anchor matches and keeps fallback approved shots', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 14,
+        },
+        script: 'Терраса с видом и дополнительный ракурс.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 0,
+            scene: 'Терраса с видом на город',
+            duration: 6,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с панорамным видом.',
+              tags: ['терраса', 'вид'],
+              matchHints: ['терраса с видом'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.5,
+                  tags: ['терраса'],
+                  summary: 'Терраса с видом на город.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-002',
+            order: 1,
+            scene: 'Общий интерьер',
+            duration: 5,
+            videoFile: 'shots/shot-002.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Интерьерный общий план.',
+              tags: ['интерьер'],
+              matchHints: ['интерьер'],
+              moments: [],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 0,
+            intent: 'lifestyle',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.96,
+            status: 'matched',
+            candidates: [
+              {
+                shotId: 'shot-001',
+                momentId: 'moment-terrace',
+                confidence: 0.96,
+                reason: 'Сильное совпадение по террасе',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 14)
+
+      expect(plan.semanticBlocks).toHaveLength(1)
+      expect(plan.semanticBlocks?.[0].segments[0].reason).toContain('Сильное совпадение')
+      expect(plan.timeline).toHaveLength(2)
+      expect(plan.timeline.map((entry) => entry.shotId)).toEqual(['shot-001', 'shot-002'])
+      expect(plan.timeline[0].semanticBlockId).toBe('semantic-block-anchor-001')
+      expect(plan.timeline[1].semanticBlockId).toBeUndefined()
+    })
+
+    it('keeps one strong semantic block as solo', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 12,
+        },
+        script: 'Терраса с видом на город.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-001',
+            order: 0,
+            scene: 'Терраса с видом на город',
+            duration: 6,
+            videoFile: 'shots/shot-001.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с панорамным видом.',
+              tags: ['терраса', 'вид'],
+              matchHints: ['терраса с видом'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.5,
+                  tags: ['терраса'],
+                  summary: 'Терраса с видом на город.',
+                },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 0,
+            intent: 'lifestyle',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-001',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.96,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-001',
+            anchorId: 'anchor-001',
+            anchorText: 'Терраса с видом',
+            anchorLabel: 'Терраса',
+            strategy: 'solo',
+            confidence: 0.96,
+            segments: [
+              {
+                shotId: 'shot-001',
+                momentId: 'moment-terrace',
+                durationSec: 4,
+                weight: 1,
+                reason: 'Один сильный визуальный ракурс',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 12)
+
+      const blockEntries = plan.timeline.filter((entry) => entry.semanticBlockId === 'semantic-block-001')
+
+      expect(blockEntries).toHaveLength(1)
+      expect(blockEntries[0]).toMatchObject({
+        shotId: 'shot-001',
+        selectedMomentId: 'moment-terrace',
+      })
+    })
+
+    it('turns two strong distinct candidates into a pair or split block', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 16,
+        },
+        script: 'Терраса и закат.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-terrace',
+            order: 0,
+            scene: 'Терраса с видом на город',
+            duration: 6,
+            videoFile: 'shots/shot-terrace.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с видом на город.',
+              tags: ['терраса', 'вид'],
+              matchHints: ['терраса'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.0,
+                  tags: ['терраса'],
+                  summary: 'Терраса и вид на город.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-sunset',
+            order: 1,
+            scene: 'Закат над городом',
+            duration: 6,
+            videoFile: 'shots/shot-sunset.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Закат и мягкий вечерний свет.',
+              tags: ['закат', 'вечер'],
+              matchHints: ['закат'],
+              moments: [
+                {
+                  id: 'moment-sunset',
+                  label: 'Закат',
+                  startSec: 1,
+                  endSec: 4,
+                  tags: ['закат'],
+                  summary: 'Закат над линией горизонта.',
+                },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'Терраса и закат',
+            label: 'Терраса и закат',
+            order: 0,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-terrace',
+            selectedMomentId: 'moment-terrace',
+            confidence: 0.94,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-002',
+            anchorId: 'anchor-001',
+            anchorText: 'Терраса и закат',
+            anchorLabel: 'Терраса и закат',
+            strategy: 'pair',
+            confidence: 0.91,
+            segments: [
+              {
+                shotId: 'shot-terrace',
+                momentId: 'moment-terrace',
+                durationSec: 3,
+                weight: 0.55,
+                reason: 'Первый сильный ракурс блока',
+              },
+              {
+                shotId: 'shot-sunset',
+                momentId: 'moment-sunset',
+                durationSec: 3,
+                weight: 0.45,
+                reason: 'Второй ракурс добавляет новый визуальный акцент',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 16)
+      const blockEntries = plan.timeline.filter((entry) => entry.semanticBlockId === 'semantic-block-002')
+
+      expect(blockEntries).toHaveLength(2)
+      expect(blockEntries.map((entry) => entry.shotId)).toEqual(['shot-terrace', 'shot-sunset'])
+    })
+
+    it('rejects a weak second candidate instead of forcing a multi-clip block', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 16,
+        },
+        script: 'Терраса с видом.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-hero',
+            order: 0,
+            scene: 'Терраса с видом на город',
+            duration: 6,
+            videoFile: 'shots/shot-hero.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с видом на город.',
+              tags: ['терраса', 'вид'],
+              matchHints: ['терраса'],
+              moments: [
+                {
+                  id: 'moment-hero',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.5,
+                  tags: ['терраса'],
+                  summary: 'Сильный визуальный ракурс террасы.',
+                },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-weak',
+            order: 1,
+            scene: 'Лобби и ресепшн',
+            duration: 6,
+            videoFile: 'shots/shot-weak.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Лобби и ресепшн.',
+              tags: ['лобби'],
+              matchHints: ['входная группа'],
+              moments: [
+                {
+                  id: 'moment-weak',
+                  label: 'Лобби',
+                  startSec: 1,
+                  endSec: 4,
+                  tags: ['лобби'],
+                  summary: 'Слабый вторичный ракурс без новой идеи.',
+                },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'Терраса с видом',
+            label: 'Терраса',
+            order: 0,
+            intent: 'lifestyle',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-hero',
+            selectedMomentId: 'moment-hero',
+            confidence: 0.9,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-003',
+            anchorId: 'anchor-001',
+            anchorText: 'Терраса с видом',
+            anchorLabel: 'Терраса',
+            strategy: 'solo',
+            confidence: 0.9,
+            segments: [
+              {
+                shotId: 'shot-hero',
+                momentId: 'moment-hero',
+                durationSec: 4,
+                weight: 1,
+                reason: 'Сильный основной ракурс',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 16)
+      const blockEntries = plan.timeline.filter((entry) => entry.semanticBlockId === 'semantic-block-003')
+
+      expect(blockEntries).toHaveLength(1)
+      expect(blockEntries[0]?.shotId).toBe('shot-hero')
+      expect(plan.timeline.map((entry) => entry.shotId)).toEqual(['shot-hero', 'shot-weak'])
+      expect(plan.timeline[1]?.semanticBlockId).toBeUndefined()
+    })
+
+    it('caps a semantic block at three segments even when four strong candidates are available', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 20,
+        },
+        script: 'Фасад, терраса, лобби, двор.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Фасад комплекса',
+            duration: 5,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад комплекса.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [
+                { id: 'moment-1', label: 'Фасад', startSec: 0.5, endSec: 2.5, tags: ['фасад'], summary: 'Фасад с улицы.' },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-2',
+            order: 1,
+            scene: 'Терраса',
+            duration: 5,
+            videoFile: 'shots/shot-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса.',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [
+                { id: 'moment-2', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса с видом.' },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-3',
+            order: 2,
+            scene: 'Лобби',
+            duration: 5,
+            videoFile: 'shots/shot-3.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Лобби.',
+              tags: ['лобби'],
+              matchHints: ['лобби'],
+              moments: [
+                { id: 'moment-3', label: 'Лобби', startSec: 0.5, endSec: 2.5, tags: ['лобби'], summary: 'Входная зона.' },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-4',
+            order: 3,
+            scene: 'Двор',
+            duration: 5,
+            videoFile: 'shots/shot-4.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Двор.',
+              tags: ['двор'],
+              matchHints: ['двор'],
+              moments: [
+                { id: 'moment-4', label: 'Двор', startSec: 0.5, endSec: 2.5, tags: ['двор'], summary: 'Дворовая территория.' },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'Фасад, терраса, лобби, двор',
+            label: 'Комплекс',
+            order: 0,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-1',
+            selectedMomentId: 'moment-1',
+            confidence: 0.95,
+            status: 'matched',
+            candidates: [],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 1,
+          weakMatches: 0,
+          unmatchedAnchors: 0,
+        },
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-004',
+            anchorId: 'anchor-001',
+            anchorText: 'Фасад, терраса, лобби, двор',
+            anchorLabel: 'Комплекс',
+            strategy: 'cascade',
+            confidence: 0.88,
+            segments: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-1',
+                durationSec: 2,
+                weight: 0.3,
+                reason: 'Первый визуальный акцент',
+              },
+              {
+                shotId: 'shot-2',
+                momentId: 'moment-2',
+                durationSec: 2,
+                weight: 0.25,
+                reason: 'Второй ракурс',
+              },
+              {
+                shotId: 'shot-3',
+                momentId: 'moment-3',
+                durationSec: 2,
+                weight: 0.25,
+                reason: 'Третий ракурс',
+              },
+              {
+                shotId: 'shot-4',
+                momentId: 'moment-4',
+                durationSec: 2,
+                weight: 0.2,
+                reason: 'Четвертый кандидат сверх лимита',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 20)
+      const blockEntries = plan.timeline.filter((entry) => entry.semanticBlockId === 'semantic-block-004')
+
+      expect(blockEntries).toHaveLength(3)
+    })
+
+    it('derives explanations and rejection reasons from raw anchor matches', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 20,
+        },
+        script: 'Фасад, терраса, лобби, двор.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Фасад комплекса',
+            duration: 5,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад комплекса.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [{ id: 'moment-1', label: 'Фасад', startSec: 0.5, endSec: 2.5, tags: ['фасад'], summary: 'Фасад с улицы.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-2',
+            order: 1,
+            scene: 'Терраса',
+            duration: 5,
+            videoFile: 'shots/shot-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса.',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [{ id: 'moment-2', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса с видом.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-3',
+            order: 2,
+            scene: 'Лобби',
+            duration: 5,
+            videoFile: 'shots/shot-3.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Лобби.',
+              tags: ['лобби'],
+              matchHints: ['лобби'],
+              moments: [{ id: 'moment-3', label: 'Лобби', startSec: 0.5, endSec: 2.5, tags: ['лобби'], summary: 'Входная зона.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-4',
+            order: 3,
+            scene: 'Двор',
+            duration: 5,
+            videoFile: 'shots/shot-4.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Двор.',
+              tags: ['двор'],
+              matchHints: ['двор'],
+              moments: [{ id: 'moment-4', label: 'Двор', startSec: 0.5, endSec: 2.5, tags: ['двор'], summary: 'Дворовая территория.' }],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-001',
+            sourceText: 'Фасад, терраса, лобби, двор',
+            label: 'Комплекс',
+            order: 0,
+            intent: 'feature',
+          },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-001',
+            selectedShotId: 'shot-1',
+            selectedMomentId: 'moment-1',
+            confidence: 0.95,
+            status: 'matched',
+            candidates: [
+              { shotId: 'shot-1', momentId: 'moment-1', confidence: 0.95, reason: 'Первый сильный ракурс' },
+              { shotId: 'shot-2', momentId: 'moment-2', confidence: 0.88, reason: 'Второй сильный ракурс' },
+              { shotId: 'shot-3', momentId: 'moment-3', confidence: 0.8, reason: 'Третий сильный ракурс' },
+              { shotId: 'shot-4', momentId: 'moment-4', confidence: 0.42, reason: 'Четвертый слабее и не нужен' },
+            ],
+          },
+        ],
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].strategy).toBe('cascade')
+      expect(blocks[0].segments).toHaveLength(3)
+      expect(blocks[0].explanation?.join(' ')).toMatch(/3/i)
+      expect(blocks[0].alternatives).toHaveLength(1)
+      expect(blocks[0].alternatives?.[0]).toMatchObject({
+        shotId: 'shot-4',
+        rejectedBecause: expect.any(String),
+      })
+      expect(blocks[0].segments[0].reason).toMatch(/Первый сильный ракурс/)
+    })
+
+    it('reconciles block strategy with the normalized segment count', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 20,
+        },
+        script: 'Тестовый сценарий.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Фасад комплекса',
+            duration: 5,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Фасад комплекса.',
+              tags: ['фасад'],
+              matchHints: ['фасад'],
+              moments: [{ id: 'moment-1', label: 'Фасад', startSec: 0.5, endSec: 2.5, tags: ['фасад'], summary: 'Фасад с улицы.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-2',
+            order: 1,
+            scene: 'Терраса',
+            duration: 5,
+            videoFile: 'shots/shot-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса.',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [{ id: 'moment-2', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса с видом.' }],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-001', sourceText: 'Фасад', label: 'Фасад', order: 0, intent: 'feature' },
+        ],
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-001',
+            anchorId: 'anchor-001',
+            anchorText: 'Фасад',
+            anchorLabel: 'Фасад',
+            strategy: 'solo',
+            confidence: 0.91,
+            segments: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-1',
+                durationSec: 3,
+                weight: 0.6,
+                reason: 'Первый ракурс',
+              },
+              {
+                shotId: 'shot-2',
+                momentId: 'moment-2',
+                durationSec: 3,
+                weight: 0.4,
+                reason: 'Второй ракурс',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].strategy).toBe('pair')
+    })
+
+    it('drops near-duplicate segments from the same shot even with different moments', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 20,
+        },
+        script: 'Тестовый сценарий.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Терраса с видом на город',
+            duration: 8,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с видом на город.',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [
+                { id: 'moment-1', label: 'Начало', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Начало кадра террасы.' },
+                { id: 'moment-2', label: 'Середина', startSec: 0.75, endSec: 2.75, tags: ['терраса'], summary: 'Почти тот же визуальный фрагмент.' },
+                { id: 'moment-3', label: 'Другой ракурс', startSec: 5.2, endSec: 7.2, tags: ['терраса'], summary: 'Другой ракурс.' },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-001', sourceText: 'Терраса', label: 'Терраса', order: 0, intent: 'lifestyle' },
+        ],
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-dup',
+            anchorId: 'anchor-001',
+            anchorText: 'Терраса',
+            anchorLabel: 'Терраса',
+            strategy: 'cascade',
+            confidence: 0.95,
+            segments: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-1',
+                durationSec: 3,
+                weight: 0.5,
+                reason: 'Первый близкий фрагмент',
+              },
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-2',
+                durationSec: 3,
+                weight: 0.5,
+                reason: 'Почти тот же фрагмент',
+              },
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-3',
+                durationSec: 3,
+                weight: 0.5,
+                reason: 'Другой ракурс',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].segments).toHaveLength(2)
+      expect(blocks[0].alternatives?.some((alternative) => alternative.momentId === 'moment-2')).toBe(true)
+    })
+
+    it('marks visual grounding explicitly in block explanations', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 12,
+        },
+        script: 'Терраса с видом.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Терраса',
+            duration: 8,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с видом.',
+              tags: ['терраса'],
+              matchHints: ['терраса с видом'],
+              moments: [
+                { id: 'moment-1', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса с видом.' },
+              ],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-visual', sourceText: 'Терраса с видом', label: 'Терраса', order: 0, intent: 'lifestyle' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-visual',
+            selectedShotId: 'shot-1',
+            selectedMomentId: 'moment-1',
+            confidence: 0.88,
+            status: 'matched',
+            candidates: [
+              { shotId: 'shot-1', momentId: 'moment-1', confidence: 0.88, reason: 'Visual grounding' },
+            ],
+          },
+        ],
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].explanation?.join(' ').toLowerCase()).toContain('визу')
+    })
+
+    it('prefers role diversity for the second segment when confidences are close', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 16,
+        },
+        script: 'Терраса и жизнь внутри.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-view-1',
+            order: 0,
+            scene: 'Терраса с видом на город',
+            duration: 8,
+            videoFile: 'shots/shot-view-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с видом.',
+              tags: ['терраса', 'панорамный вид'],
+              matchHints: ['терраса с видом'],
+              moments: [{ id: 'moment-view-1', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса с видом.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-view-2',
+            order: 1,
+            scene: 'Панорамный вид на реку',
+            duration: 8,
+            videoFile: 'shots/shot-view-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Ещё один панорамный вид.',
+              tags: ['вид', 'панорама'],
+              matchHints: ['панорамный вид'],
+              moments: [{ id: 'moment-view-2', label: 'Вид', startSec: 0.5, endSec: 2.5, tags: ['вид'], summary: 'Панорамный вид.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-interior',
+            order: 2,
+            scene: 'Гостиная с мягким светом',
+            duration: 8,
+            videoFile: 'shots/shot-interior.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Гостиная с мягким светом.',
+              tags: ['гостиная', 'интерьер'],
+              matchHints: ['уютный интерьер'],
+              moments: [{ id: 'moment-interior', label: 'Гостиная', startSec: 0.5, endSec: 2.5, tags: ['интерьер'], summary: 'Уютная гостиная.' }],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-roles', sourceText: 'Терраса и жизнь внутри', label: 'Терраса', order: 0, intent: 'lifestyle' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-roles',
+            selectedShotId: 'shot-view-1',
+            selectedMomentId: 'moment-view-1',
+            confidence: 0.93,
+            status: 'matched',
+            candidates: [
+              { shotId: 'shot-view-1', momentId: 'moment-view-1', confidence: 0.93, reason: 'Visual grounding' },
+              { shotId: 'shot-view-2', momentId: 'moment-view-2', confidence: 0.9, reason: 'Visual grounding' },
+              { shotId: 'shot-interior', momentId: 'moment-interior', confidence: 0.84, reason: 'Visual grounding' },
+            ],
+          },
+        ],
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].segments).toHaveLength(3)
+      expect(blocks[0].segments[0].shotId).toBe('shot-view-1')
+      expect(blocks[0].segments[1].shotId).toBe('shot-interior')
+    })
+
+    it('keeps atmospheric pairs montageable and labels them accordingly', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 16,
+        },
+        script: 'Я дома.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Гостиная в мягком свете',
+            duration: 8,
+            videoFile: 'shots/shot-1.mp4',
+          }),
+          makeShot({
+            id: 'shot-2',
+            order: 1,
+            scene: 'Терраса вечером',
+            duration: 8,
+            videoFile: 'shots/shot-2.mp4',
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-home', sourceText: 'Я дома', label: 'Дом', order: 0, intent: 'lifestyle' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-home',
+            selectedShotId: 'shot-1',
+            confidence: 0.61,
+            status: 'weak_match',
+            candidates: [
+              { shotId: 'shot-1', confidence: 0.61, reason: 'Atmospheric grounding' },
+              { shotId: 'shot-2', confidence: 0.42, reason: 'Atmospheric grounding' },
+            ],
+          },
+        ],
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].strategy).toBe('pair')
+      expect(blocks[0].segments).toHaveLength(2)
+      expect(blocks[0].explanation?.join(' ').toLowerCase()).toContain('атмос')
+    })
+
+    it('isolates fallback-only unresolved anchors instead of promoting them to semantic blocks', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 14,
+        },
+        script: 'Терраса. Атмосфера дома.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Терраса',
+            duration: 8,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса.',
+              tags: ['терраса'],
+              matchHints: ['терраса с видом'],
+              moments: [
+                { id: 'moment-1', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса с видом.' },
+              ],
+            },
+          }),
+          makeShot({
+            id: 'shot-2',
+            order: 1,
+            scene: 'Общий интерьер',
+            duration: 8,
+            videoFile: 'shots/shot-2.mp4',
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-visual', sourceText: 'Терраса', label: 'Терраса', order: 0, intent: 'feature' },
+          { id: 'anchor-fallback', sourceText: 'Атмосфера дома', label: 'Дом', order: 1, intent: 'lifestyle' },
+        ],
+        anchorMatches: [
+          {
+            anchorId: 'anchor-visual',
+            selectedShotId: 'shot-1',
+            selectedMomentId: 'moment-1',
+            confidence: 0.92,
+            status: 'matched',
+            candidates: [
+              { shotId: 'shot-1', momentId: 'moment-1', confidence: 0.92, reason: 'Visual grounding' },
+            ],
+          },
+          {
+            anchorId: 'anchor-fallback',
+            selectedShotId: 'shot-2',
+            confidence: 0.38,
+            status: 'weak_match',
+            candidates: [
+              { shotId: 'shot-2', confidence: 0.38, reason: 'Fallback grounding' },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 2,
+          matchedAnchors: 1,
+          weakMatches: 1,
+          unmatchedAnchors: 0,
+        },
+      } satisfies Project
+
+      const blocks = buildSemanticBlocks(project)
+      const plan = generateMontagePlan(project, 14)
+
+      expect(blocks.map((block) => block.anchorId)).toEqual(['anchor-visual'])
+      expect(plan.timeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            shotId: 'shot-2',
+            semanticBlockId: undefined,
+          }),
+        ]),
+      )
+    })
+
     it('builds timeline in anchor-match order and drafts trims from selected moments', () => {
       const project = {
         id: 'test-project',
@@ -492,6 +1868,98 @@ describe('Montage Plan Generation (Phase 4)', () => {
         trimStartSec: 1.5,
         trimEndSec: 4.5,
       })
+    })
+
+    it('uses semantic segment pacing to vary clip duration', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Semantic montage project',
+        created: '2026-03-13T00:00:00.000Z',
+        updated: '2026-03-13T00:00:00.000Z',
+        stage: 'montage_draft',
+        briefType: 'text',
+        brief: {
+          text: '',
+          assets: [],
+          targetDuration: 20,
+        },
+        script: 'Терраса и общий вид.',
+        settings: {
+          textModel: 'openai/gpt-4o',
+          imageModel: 'test-image-model',
+          enhanceModel: 'test-enhance-model',
+          masterPromptScriptwriter: '',
+          masterPromptShotSplitter: '',
+          masterPromptEnhance: '',
+        },
+        shots: [
+          makeShot({
+            id: 'shot-1',
+            order: 0,
+            scene: 'Терраса',
+            duration: 10,
+            videoFile: 'shots/shot-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса.',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [{ id: 'moment-1', label: 'Терраса', startSec: 0.5, endSec: 2.5, tags: ['терраса'], summary: 'Терраса.' }],
+            },
+          }),
+          makeShot({
+            id: 'shot-2',
+            order: 1,
+            scene: 'Общий вид',
+            duration: 10,
+            videoFile: 'shots/shot-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Общий вид.',
+              tags: ['вид'],
+              matchHints: ['вид'],
+              moments: [{ id: 'moment-2', label: 'Общий вид', startSec: 0.5, endSec: 2.5, tags: ['вид'], summary: 'Общий вид.' }],
+            },
+          }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+        narrationAnchors: [
+          { id: 'anchor-001', sourceText: 'Терраса и общий вид', label: 'Терраса и общий вид', order: 0, intent: 'feature' },
+        ],
+        semanticBlocks: [
+          makeSemanticBlock({
+            id: 'semantic-block-pace',
+            anchorId: 'anchor-001',
+            anchorText: 'Терраса и общий вид',
+            anchorLabel: 'Терраса и общий вид',
+            strategy: 'pair',
+            confidence: 0.93,
+            segments: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-1',
+                durationSec: 3,
+                weight: 0.15,
+                reason: 'Короткий акцент',
+              },
+              {
+                shotId: 'shot-2',
+                momentId: 'moment-2',
+                durationSec: 8,
+                weight: 0.85,
+                reason: 'Длинный акцент',
+              },
+            ],
+          }),
+        ],
+      } satisfies Project
+
+      const plan = generateMontagePlan(project, 20)
+      const blockEntries = plan.timeline.filter((entry) => entry.semanticBlockId === 'semantic-block-pace')
+
+      expect(blockEntries).toHaveLength(2)
+      expect(blockEntries[0].durationSec).toBeLessThan(blockEntries[1].durationSec)
     })
 
     it('falls back to remaining approved shots when matches are weak or missing', () => {
@@ -1059,44 +2527,78 @@ describe('Montage Plan Generation (Phase 4)', () => {
       anchorMatches: NonNullable<Project['anchorMatches']>
       anchorCoverageSummary: NonNullable<Project['anchorCoverageSummary']>
     }
+    let compareScoredCandidates: typeof import('../../server/lib/montage-anchor-matching.js').compareScoredCandidates
 
     beforeEach(async () => {
       const mod = await import('../../server/lib/' + 'montage-anchor-matching.js') as {
         matchNarrationAnchors: typeof matchNarrationAnchors
+        compareScoredCandidates: typeof compareScoredCandidates
       }
       matchNarrationAnchors = mod.matchNarrationAnchors
+      compareScoredCandidates = mod.compareScoredCandidates
     })
 
-    it('prefers videoDescription.matchHints over tags, summary, and fallback fields for a strong match', () => {
+    it('keeps class precedence stable when scores tie', () => {
+      const directCandidate = {
+        shotId: 'shot-direct',
+        momentId: undefined,
+        confidence: 0.58,
+        reason: 'direct',
+        score: 0.58,
+        matchClass: 'direct' as const,
+      }
+      const visualCandidate = {
+        shotId: 'shot-visual',
+        momentId: undefined,
+        confidence: 0.58,
+        reason: 'visual',
+        score: 0.58,
+        matchClass: 'visual' as const,
+      }
+      const atmosphericCandidate = {
+        shotId: 'shot-atmospheric',
+        momentId: undefined,
+        confidence: 0.58,
+        reason: 'atmospheric',
+        score: 0.58,
+        matchClass: 'atmospheric' as const,
+      }
+
+      expect(compareScoredCandidates(directCandidate, visualCandidate)).toBeLessThan(0)
+      expect(compareScoredCandidates(visualCandidate, atmosphericCandidate)).toBeLessThan(0)
+      expect([visualCandidate, atmosphericCandidate, directCandidate].sort(compareScoredCandidates)).toEqual([
+        directCandidate,
+        visualCandidate,
+        atmosphericCandidate,
+      ])
+    })
+
+    it('prefers a literal match over visual and fallback candidates', () => {
       const project = {
         id: 'test-project',
         name: 'Anchor matching',
         shots: [
           makeShot({
-            id: 'shot-hints',
+            id: 'shot-literal',
             order: 0,
-            scene: 'Тихая спальня с мягким светом',
-            imagePrompt: 'soft bedroom interior',
-            videoPrompt: 'slow bedroom push-in',
+            scene: 'Кухня с мраморным островом и высоким потолком',
             videoDescription: {
               version: 1,
-              summary: 'Камера показывает спальню и текстуры отделки.',
-              tags: ['спальня', 'интерьер'],
+              summary: 'Кухня с мраморным островом и высоким потолком.',
+              tags: ['кухня'],
               matchHints: ['кухня с мраморным островом'],
               moments: [],
             },
           }),
           makeShot({
-            id: 'shot-fallback',
+            id: 'shot-visual',
             order: 1,
-            scene: 'Кухня с мраморным островом и высоким потолком',
-            imagePrompt: 'marble island kitchen',
-            videoPrompt: 'camera glides through marble island kitchen',
+            scene: 'Кухня с барной стойкой',
             videoDescription: {
               version: 1,
-              summary: 'Плавный пролет по фасаду и лобби.',
-              tags: ['фасад'],
-              matchHints: ['терраса'],
+              summary: 'Современная кухня с барной стойкой и мягким светом.',
+              tags: ['кухня', 'мрамор'],
+              matchHints: ['барная стойка'],
               moments: [],
             },
           }),
@@ -1117,15 +2619,15 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(result.anchorMatches).toHaveLength(1)
       expect(result.anchorMatches[0]).toMatchObject({
         anchorId: 'anchor-1',
-        selectedShotId: 'shot-hints',
+        selectedShotId: 'shot-literal',
         status: 'matched',
       })
       expect(result.anchorMatches[0].candidates[0]).toMatchObject({
-        shotId: 'shot-hints',
+        shotId: 'shot-literal',
       })
-      expect(result.anchorMatches[0].candidates[0].reason).toMatch(/matchHints/i)
+      expect(result.anchorMatches[0].candidates[0].reason).toMatch(/literal/i)
       expect(result.anchorMatches[0].candidates[1]).toMatchObject({
-        shotId: 'shot-fallback',
+        shotId: 'shot-visual',
       })
       expect(result.anchorMatches[0].candidates[0].confidence).toBeGreaterThan(result.anchorMatches[0].candidates[1].confidence)
       expect(result.anchorCoverageSummary).toEqual({
@@ -1136,20 +2638,25 @@ describe('Montage Plan Generation (Phase 4)', () => {
       })
     })
 
-    it('matches anchors against videoDescription.tags when matchHints do not hit', () => {
+    it('lets a visual candidate beat a weak literal fallback', () => {
       const project = {
         id: 'test-project',
         name: 'Anchor matching',
         shots: [
           makeShot({
-            id: 'shot-tags',
+            id: 'shot-weak-literal',
             order: 0,
-            scene: 'Спокойная зона отдыха',
+            scene: 'Домашняя зона отдыха',
+          }),
+          makeShot({
+            id: 'shot-visual',
+            order: 1,
+            scene: 'Уютная гостиная',
             videoDescription: {
               version: 1,
-              summary: 'Камера мягко скользит по lounge зоне.',
-              tags: ['терраса на крыше'],
-              matchHints: ['лобби'],
+              summary: 'Уютная гостиная с теплым светом и спокойной атмосферой.',
+              tags: ['уютный интерьер'],
+              matchHints: ['уютный интерьер'],
               moments: [],
             },
           }),
@@ -1157,7 +2664,105 @@ describe('Montage Plan Generation (Phase 4)', () => {
         narrationAnchors: [
           {
             id: 'anchor-1',
-            sourceText: 'Терраса на крыше',
+            sourceText: 'Домашняя зона отдыха',
+            label: 'Домашняя зона',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-visual',
+        status: 'matched',
+      })
+      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/visual/i)
+      expect(result.anchorMatches[0].candidates[1]?.shotId).toBe('shot-weak-literal')
+      expect(result.anchorMatches[0].candidates[0].confidence).toBeGreaterThan(result.anchorMatches[0].candidates[1].confidence)
+    })
+
+    it('resolves emotional lines into an atmospheric weak match instead of unmatched', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-atmospheric',
+            order: 0,
+            scene: 'Тихая вечерняя сцена',
+            videoDescription: {
+              version: 1,
+              summary: 'Тихая атмосфера и спокойствие.',
+              tags: ['спокойствие'],
+              matchHints: [],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Я дома, всё спокойно',
+            label: 'Дома',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      } as unknown as Project
+
+      const result = matchNarrationAnchors(project)
+
+      expect(result.anchorMatches[0]).toMatchObject({
+        anchorId: 'anchor-1',
+        selectedShotId: 'shot-atmospheric',
+        status: 'weak_match',
+      })
+      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/atmospheric/i)
+      expect(result.anchorCoverageSummary).toEqual({
+        totalAnchors: 1,
+        matchedAnchors: 0,
+        weakMatches: 1,
+        unmatchedAnchors: 0,
+      })
+    })
+
+    it('keeps generic view shots below useful visual candidates', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Anchor matching',
+        shots: [
+          makeShot({
+            id: 'shot-generic',
+            order: 0,
+            scene: 'Общий вид',
+            videoDescription: {
+              version: 1,
+              summary: 'Общий вид комплекса.',
+              tags: ['вид'],
+              matchHints: ['вид'],
+              moments: [],
+            },
+          }),
+          makeShot({
+            id: 'shot-visual',
+            order: 1,
+            scene: 'Терраса с видом на город',
+            videoDescription: {
+              version: 1,
+              summary: 'Терраса с панорамным видом на город.',
+              tags: ['терраса', 'панорамный вид'],
+              matchHints: ['терраса с видом'],
+              moments: [],
+            },
+          }),
+        ],
+        narrationAnchors: [
+          {
+            id: 'anchor-1',
+            sourceText: 'Терраса с видом',
             label: 'Терраса',
             order: 1,
             intent: 'lifestyle',
@@ -1169,103 +2774,17 @@ describe('Montage Plan Generation (Phase 4)', () => {
 
       expect(result.anchorMatches[0]).toMatchObject({
         anchorId: 'anchor-1',
-        selectedShotId: 'shot-tags',
+        selectedShotId: 'shot-visual',
         status: 'matched',
       })
-      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/tags/i)
-    })
-
-    it('uses videoDescription.summary as a weak match when stronger signals are absent', () => {
-      const project = {
-        id: 'test-project',
-        name: 'Anchor matching',
-        shots: [
-          makeShot({
-            id: 'shot-summary',
-            order: 0,
-            scene: 'Нейтральный интерьер',
-            imagePrompt: 'neutral interior',
-            videoPrompt: 'neutral interior camera move',
-            videoDescription: {
-              version: 1,
-              summary: 'Камера задерживается на приватном кабинете у окна и рабочем столе.',
-              tags: ['интерьер'],
-              matchHints: [],
-              moments: [],
-            },
-          }),
-        ],
-        narrationAnchors: [
-          {
-            id: 'anchor-1',
-            sourceText: 'Приватный кабинет у окна',
-            label: 'Кабинет',
-            order: 1,
-            intent: 'detail',
-          },
-        ],
-      } as unknown as Project
-
-      const result = matchNarrationAnchors(project)
-
-      expect(result.anchorMatches[0]).toMatchObject({
-        anchorId: 'anchor-1',
-        selectedShotId: 'shot-summary',
-        status: 'weak_match',
-      })
-      expect(result.anchorMatches[0].candidates[0]?.reason).toMatch(/summary/i)
+      expect(result.anchorMatches[0].candidates[0]?.shotId).toBe('shot-visual')
+      expect(result.anchorMatches[0].candidates[1]?.shotId).toBe('shot-generic')
+      expect(result.anchorMatches[0].candidates[0].confidence).toBeGreaterThan(result.anchorMatches[0].candidates[1].confidence)
       expect(result.anchorCoverageSummary).toEqual({
         totalAnchors: 1,
-        matchedAnchors: 0,
-        weakMatches: 1,
-        unmatchedAnchors: 0,
-      })
-    })
-
-    it('marks anchors as unmatched when no description or fallback signal is relevant', () => {
-      const project = {
-        id: 'test-project',
-        name: 'Anchor matching',
-        shots: [
-          makeShot({
-            id: 'shot-1',
-            order: 0,
-            scene: 'Фасад комплекса на рассвете',
-            imagePrompt: 'sunrise exterior',
-            videoPrompt: 'slow drone over facade',
-            videoDescription: {
-              version: 1,
-              summary: 'Плавный пролет вдоль фасада и лобби.',
-              tags: ['фасад', 'лобби'],
-              matchHints: ['архитектура комплекса'],
-              moments: [],
-            },
-          }),
-        ],
-        narrationAnchors: [
-          {
-            id: 'anchor-1',
-            sourceText: 'Детская игровая комната',
-            label: 'Игровая',
-            order: 1,
-            intent: 'lifestyle',
-          },
-        ],
-      } as unknown as Project
-
-      const result = matchNarrationAnchors(project)
-
-      expect(result.anchorMatches[0]).toEqual({
-        anchorId: 'anchor-1',
-        confidence: 0,
-        status: 'unmatched',
-        candidates: [],
-      })
-      expect(result.anchorCoverageSummary).toEqual({
-        totalAnchors: 1,
-        matchedAnchors: 0,
+        matchedAnchors: 1,
         weakMatches: 0,
-        unmatchedAnchors: 1,
+        unmatchedAnchors: 0,
       })
     })
   })

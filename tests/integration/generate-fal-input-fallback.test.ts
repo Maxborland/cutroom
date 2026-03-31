@@ -10,10 +10,12 @@ import {
   type Project,
   type ShotMeta,
 } from '../../server/lib/storage.js'
+import { resetFalSchemaCache } from '../../server/lib/fal-schema.js'
 import { createApp } from './setup.js'
 
-const { subscribeMock, uploadMock, configMock } = vi.hoisted(() => ({
+const { subscribeMock, runMock, uploadMock, configMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
+  runMock: vi.fn(),
   uploadMock: vi.fn(),
   configMock: vi.fn(),
 }))
@@ -22,6 +24,7 @@ vi.mock('@fal-ai/client', () => ({
   fal: {
     config: configMock,
     subscribe: subscribeMock,
+    run: runMock,
     storage: {
       upload: uploadMock,
     },
@@ -46,8 +49,12 @@ describe('fal image generation fallback', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    subscribeMock.mockResolvedValue({
+    resetFalSchemaCache()
+    runMock.mockResolvedValue({
       data: { images: [{ url: 'data:image/png;base64,aW1hZ2UtYnl0ZXM=' }] },
+    })
+    subscribeMock.mockResolvedValue({
+      data: { video: { url: 'https://example.com/video.mp4' } },
     })
     global.fetch = originalFetch
   })
@@ -115,6 +122,7 @@ describe('fal image generation fallback', () => {
         openRouterApiKey: 'sk-or-test',
         falApiKey: 'fal_test_key',
         defaultImageGenModel: 'fal/nano-banana-pro',
+        defaultImageNoRefGenModel: '',
       })
       .expect(200)
 
@@ -156,6 +164,7 @@ describe('fal image generation fallback', () => {
         openRouterApiKey: 'sk-or-test',
         falApiKey: 'fal_test_key',
         defaultImageGenModel: 'fal/nano-banana-pro',
+        defaultImageNoRefGenModel: '',
         imageQuality: '4K',
       })
       .expect(200)
@@ -211,8 +220,9 @@ describe('fal image generation fallback', () => {
       .send({})
       .expect(200)
 
-    expect(subscribeMock).toHaveBeenCalled()
-    expect(subscribeMock).toHaveBeenCalledWith(
+    expect(runMock).toHaveBeenCalled()
+    expect(subscribeMock).not.toHaveBeenCalled()
+    expect(runMock).toHaveBeenCalledWith(
       'fal-ai/nano-banana-pro',
       expect.objectContaining({
         input: expect.objectContaining({
@@ -222,5 +232,134 @@ describe('fal image generation fallback', () => {
     )
     const openrouterCalls = fetchMock.mock.calls.filter(([url]) => String(url) === 'https://openrouter.ai/api/v1/chat/completions')
     expect(openrouterCalls).toHaveLength(0)
+  })
+
+  it('maps generic high quality to schema-backed explicit Fal resolution for no-reference generation', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai%2Fnano-banana-pro')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            openapi: '3.1.0',
+            info: { title: 'Fal Queue API', version: '1.0.0' },
+            paths: {},
+            components: {
+              schemas: {
+                NanoBananaInput: {
+                  type: 'object',
+                  properties: {
+                    resolution: { enum: ['1K', '2K', '4K'] },
+                    aspect_ratio: { enum: ['1:1', '16:9'] },
+                  },
+                },
+              },
+            },
+          }),
+        })
+      }
+
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await request(app)
+      .put('/api/settings')
+      .send({
+        falApiKey: 'fal_test_key',
+        defaultImageGenModel: 'fal/nano-banana-pro',
+        defaultImageNoRefGenModel: 'fal-endpoint:fal-ai/nano-banana-pro',
+        imageQuality: 'high',
+        imageAspectRatio: '16:9',
+      })
+      .expect(200)
+
+    const { project, shot } = await createProjectWithShot({
+      assetRefs: [],
+    })
+
+    await request(app)
+      .post(`/api/projects/${project.id}/shots/${shot.id}/generate-image`)
+      .send({})
+      .expect(200)
+
+    expect(runMock).toHaveBeenCalledWith(
+      'fal-ai/nano-banana-pro',
+      expect.objectContaining({
+        input: expect.objectContaining({
+          resolution: '4K',
+          aspect_ratio: '16:9',
+        }),
+      }),
+    )
+    expect(subscribeMock).not.toHaveBeenCalled()
+  })
+
+  it('logs the effective Fal request diagnostics for no-reference generation', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai%2Fnano-banana-pro')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            openapi: '3.1.0',
+            info: { title: 'Fal Queue API', version: '1.0.0' },
+            paths: {},
+            components: {
+              schemas: {
+                NanoBananaInput: {
+                  type: 'object',
+                  properties: {
+                    resolution: { enum: ['1K', '2K', '4K'] },
+                    aspect_ratio: { enum: ['1:1', '16:9'] },
+                  },
+                },
+              },
+            },
+          }),
+        })
+      }
+
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await request(app)
+      .put('/api/settings')
+      .send({
+        falApiKey: 'fal_test_key',
+        defaultImageGenModel: 'fal/nano-banana-pro',
+        defaultImageNoRefGenModel: 'fal-endpoint:fal-ai/nano-banana-pro',
+        imageQuality: 'high',
+        imageAspectRatio: '16:9',
+      })
+      .expect(200)
+
+    const { project, shot } = await createProjectWithShot({
+      assetRefs: [],
+    })
+
+    await request(app)
+      .post(`/api/projects/${project.id}/shots/${shot.id}/generate-image`)
+      .send({})
+      .expect(200)
+
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[generate-image] Fal request'),
+    )
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('endpoint=fal-ai/nano-banana-pro'),
+    )
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('resolution=4K'),
+    )
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('aspectRatio=16:9'),
+    )
+
+    logSpy.mockRestore()
   })
 })

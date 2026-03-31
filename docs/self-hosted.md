@@ -16,15 +16,16 @@ This profile packages CutRoom as a single-tenant installation for a customer-man
    - `POSTGRES_PASSWORD`
    - `DATABASE_URL`
    - `BOOTSTRAP_SETUP_TOKEN`
+   - `APP_HOST_PORT` if `3001` is already occupied on the host
    - `CORS_ORIGINS` if the browser origin differs from the app origin
    - `AUTH_COOKIE_SECURE=true` if you terminate TLS in front of the app and the proxy does not forward `X-Forwarded-Proto: https`
 3. Build and start the stack:
 
 ```bash
-docker compose -f docker-compose.self-hosted.yml up -d --build
+docker compose --env-file .env.self-hosted -f docker-compose.self-hosted.yml up -d --build
 ```
 
-4. Open `http://<server>:3001`.
+4. Open `http://<server>:<APP_HOST_PORT>`.
 5. Complete bootstrap with the `BOOTSTRAP_SETUP_TOKEN`, create the first `owner`, then invite the rest of the team from `Настройки -> Команда`.
 
 ## Runtime Notes
@@ -50,13 +51,13 @@ For a consistent backup, stop writes or snapshot the VM/storage while PostgreSQL
 2. Rebuild and restart:
 
 ```bash
-docker compose -f docker-compose.self-hosted.yml up -d --build
+docker compose --env-file .env.self-hosted -f docker-compose.self-hosted.yml up -d --build
 ```
 
 3. Confirm the app is healthy:
 
 ```bash
-docker compose -f docker-compose.self-hosted.yml ps
+docker compose --env-file .env.self-hosted -f docker-compose.self-hosted.yml ps
 ```
 
 4. Open `/api/health` and verify the UI loads.

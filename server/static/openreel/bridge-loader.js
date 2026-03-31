@@ -25,6 +25,20 @@
   // Store init payload until OpenReel store is ready
   var pendingInitPayload = null;
   var storeCheckInterval = null;
+  var blobUrlMap = Object.create(null);
+  var exportArtifactsByFilename = Object.create(null);
+  var nativeCreateObjectURL = window.URL && window.URL.createObjectURL
+    ? window.URL.createObjectURL.bind(window.URL)
+    : null;
+  var nativeRevokeObjectURL = window.URL && window.URL.revokeObjectURL
+    ? window.URL.revokeObjectURL.bind(window.URL)
+    : null;
+  var nativeAnchorClick = window.HTMLAnchorElement && window.HTMLAnchorElement.prototype
+    ? window.HTMLAnchorElement.prototype.click
+    : null;
+  var nativeParentPostMessage = window.parent && window.parent.postMessage
+    ? window.parent.postMessage.bind(window.parent)
+    : null;
 
   /** Notify CutRoom host that the editor is ready */
   function signalReady() {
@@ -45,6 +59,77 @@
       type: 'openreel:error',
       payload: { message: message },
     }, parentOrigin);
+  }
+
+  function rememberBlobUrl(blob, url) {
+    if (!blob || !url) return;
+    blobUrlMap[url] = blob;
+  }
+
+  function rememberDownloadArtifact(anchor) {
+    if (!anchor || !anchor.href || anchor.href.indexOf('blob:') !== 0) return;
+    if (!anchor.download) return;
+
+    var blob = blobUrlMap[anchor.href];
+    if (!blob) return;
+
+    exportArtifactsByFilename[anchor.download] = blob;
+  }
+
+  function attachExportArtifact(message) {
+    if (!message || message.type !== 'openreel:export-complete') return message;
+    if (!message.payload || message.payload.artifact) return message;
+
+    var filename = message.payload.filename;
+    if (!filename) return message;
+
+    var artifact = exportArtifactsByFilename[filename];
+    if (!artifact) return message;
+
+    delete exportArtifactsByFilename[filename];
+    return {
+      type: 'openreel:export-complete',
+      payload: {
+        filename: filename,
+        artifact: artifact,
+      },
+    };
+  }
+
+  if (nativeCreateObjectURL) {
+    window.URL.createObjectURL = function (blob) {
+      var url = nativeCreateObjectURL(blob);
+      rememberBlobUrl(blob, url);
+      return url;
+    };
+  }
+
+  if (nativeRevokeObjectURL) {
+    window.URL.revokeObjectURL = function (url) {
+      delete blobUrlMap[url];
+      return nativeRevokeObjectURL(url);
+    };
+  }
+
+  if (nativeAnchorClick) {
+    window.HTMLAnchorElement.prototype.click = function () {
+      try {
+        rememberDownloadArtifact(this);
+      } catch (err) {
+        // ignore interception errors
+      }
+      return nativeAnchorClick.apply(this, arguments);
+    };
+  }
+
+  if (nativeParentPostMessage) {
+    try {
+      window.parent.postMessage = function (message, targetOrigin, transfer) {
+        return nativeParentPostMessage(attachExportArtifact(message), targetOrigin, transfer);
+      };
+    } catch (err) {
+      // If the property is not writable in this browser, fall back silently.
+    }
   }
 
   /** Try to inject project into OpenReel's Zustand store */
