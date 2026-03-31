@@ -265,10 +265,26 @@ function createClip(params: {
   };
 }
 
+function isLegacyTailTrimEntry(entry: TimelineEntry, sourceDuration: number): boolean {
+  void sourceDuration;
+  if (!Number.isFinite(entry.trimEndSec)) return false;
+  if (Number.isFinite(entry.trimStartSec)) return false;
+  if (entry.selectedMomentId) return false;
+  return (entry.trimEndSec as number) >= 0 && (entry.trimEndSec as number) < entry.durationSec;
+}
+
 function resolveClipTiming(entry: TimelineEntry, sourceDuration: number) {
   const requestedStart = Number.isFinite(entry.trimStartSec) ? Math.max(entry.trimStartSec ?? 0, 0) : 0;
   const inPoint = Math.min(requestedStart, sourceDuration);
-  const requestedEnd = Number.isFinite(entry.trimEndSec) ? Math.max(entry.trimEndSec ?? 0, inPoint) : null;
+  const isLegacyTailTrim = isLegacyTailTrimEntry(entry, sourceDuration);
+  const requestedEnd = Number.isFinite(entry.trimEndSec)
+    ? Math.max(
+      isLegacyTailTrim
+        ? inPoint + clampPositiveNumber(entry.durationSec, sourceDuration)
+        : (entry.trimEndSec ?? 0),
+      inPoint,
+    )
+    : null;
   const boundedEnd = requestedEnd === null ? null : Math.min(requestedEnd, sourceDuration);
   const duration = boundedEnd === null
     ? clampPositiveNumber(entry.durationSec, sourceDuration)

@@ -74,7 +74,6 @@ export function OpenReelHost({
           setIsEditorReady(true)
           setShowPlaceholder(false)
           clearReadyTimeout()
-          sendInitBundle()
           break
         case 'openreel:project-change':
           onProjectChange(message.payload)
@@ -106,11 +105,12 @@ export function OpenReelHost({
   }, [clearReadyTimeout])
 
   const handleFrameLoad = () => {
-    setIsEditorReady(false)
     setShowPlaceholder(false)
-    sendInitBundle()
 
     clearReadyTimeout()
+    if (isReadyRef.current) return
+
+    setIsEditorReady(false)
     readyTimeoutRef.current = setTimeout(() => {
       if (isReadyRef.current) return
       setShowPlaceholder(true)
@@ -132,13 +132,19 @@ export function OpenReelHost({
   }
 
   return (
-    <section className="bg-surface-2 border-2 border-border rounded-[5px] p-4 shadow-brutal-sm space-y-3">
+    <section
+      data-testid="openreel-host-shell"
+      className="flex h-full min-h-0 flex-col bg-surface-2 border-2 border-border rounded-[5px] p-3 shadow-brutal-sm"
+    >
       <div className="flex items-center justify-between gap-3">
         <h2 className="font-heading font-semibold text-base">Редактор OpenReel</h2>
         <OpenReelSyncStatus status={syncStatus} />
       </div>
 
-      <div className="relative min-h-[520px] rounded-[5px] border-2 border-border overflow-hidden bg-surface-1">
+      <div
+        data-testid="openreel-host-viewport"
+        className="relative mt-3 flex-1 min-h-0 rounded-[5px] border-2 border-border overflow-hidden bg-surface-1"
+      >
         {!showPlaceholder && (
           <iframe
             key={iframeKey}
@@ -147,7 +153,7 @@ export function OpenReelHost({
             src={DEFAULT_EDITOR_URL}
             onLoad={handleFrameLoad}
             onError={handleFrameError}
-            className="h-[70vh] w-full bg-white"
+            className="h-full w-full bg-white"
           />
         )}
 
@@ -161,7 +167,7 @@ export function OpenReelHost({
         )}
 
         {showPlaceholder && (
-          <div className="h-[70vh] flex items-center justify-center p-6">
+          <div className="h-full flex items-center justify-center p-6">
             <div className="max-w-xl w-full text-center space-y-4">
               <h3 className="font-heading font-bold text-lg">Редактор пока недоступен</h3>
               <p className="text-sm text-text-muted">

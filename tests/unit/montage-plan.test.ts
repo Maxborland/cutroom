@@ -383,6 +383,29 @@ describe('Montage Plan Generation (Phase 4)', () => {
       expect(plan.timeline[1].durationSec).toBeGreaterThanOrEqual(2)
     })
 
+    it('stores absolute trimEndSec for non-moment clips that are shortened to fit the plan', () => {
+      const project = {
+        id: 'test-project',
+        name: 'Test',
+        shots: [
+          makeShot({ id: 'shot-001', order: 0, scene: 'Фасад', duration: 5, videoFile: 'shots/shot-001.mp4' }),
+          makeShot({ id: 'shot-002', order: 1, scene: 'Терраса', duration: 5, videoFile: 'shots/shot-002.mp4' }),
+        ],
+        voiceoverFile: 'montage/voiceover.mp3',
+        musicFile: 'montage/music.mp3',
+      } as unknown as Project
+
+      const plan = generateMontagePlan(project, 6)
+
+      expect(plan.timeline).toHaveLength(2)
+      expect(plan.timeline[0].durationSec).toBe(3)
+      expect(plan.timeline[0].trimStartSec).toBeUndefined()
+      expect(plan.timeline[0].trimEndSec).toBe(3)
+      expect(plan.timeline[1].durationSec).toBe(3)
+      expect(plan.timeline[1].trimStartSec).toBeUndefined()
+      expect(plan.timeline[1].trimEndSec).toBe(3)
+    })
+
     it('accepts semantic montage metadata on projects and shots without changing draft plan generation', () => {
       const project = {
         id: 'test-project',
