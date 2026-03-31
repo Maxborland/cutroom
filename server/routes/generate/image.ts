@@ -202,6 +202,11 @@ type RequestedImageControls = {
   aspectRatio: string;
 };
 
+function sanitizeLogValue(value: unknown, fallback = 'unknown'): string {
+  const normalized = String(value ?? '').replace(/[\r\n\t]/g, ' ').trim();
+  return normalized ? normalized.slice(0, 200) : fallback;
+}
+
 function toReferenceImageUrl(image: ReferenceImage): string {
   return image.kind === 'url'
     ? image.url
@@ -216,9 +221,14 @@ function logFalImageRequest(params: {
   aspectRatio?: string;
   hasReference: boolean;
 }) {
+  const route = sanitizeLogValue(params.route);
+  const modelId = sanitizeLogValue(params.modelId);
+  const endpoint = sanitizeLogValue(params.endpoint);
+  const resolution = sanitizeLogValue(params.resolution || 'auto', 'auto');
+  const aspectRatio = sanitizeLogValue(params.aspectRatio || 'auto', 'auto');
   console.log(
-    `[generate-image] Fal request route=${params.route} model=${params.modelId} endpoint=${params.endpoint} `
-    + `resolution=${params.resolution || 'auto'} aspectRatio=${params.aspectRatio || 'auto'} `
+    `[generate-image] Fal request route=${route} model=${modelId} endpoint=${endpoint} `
+    + `resolution=${resolution} aspectRatio=${aspectRatio} `
     + `hasReference=${params.hasReference ? 'yes' : 'no'}`,
   );
 }
