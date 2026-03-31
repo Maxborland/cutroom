@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { sendApiError } from '../lib/api-error.js';
+import { resolvePathWithin, safeWriteFile, sanitizeUploadedFilename } from '../lib/file-utils.js';
 import { buildOpenReelBundle } from '../lib/openreel-exporter.js';
 import { readLimiter, mutationLimiter } from '../lib/rate-limit.js';
 import type { RenderJob } from '../lib/storage.js';
@@ -33,13 +34,60 @@ function replaceControlCharacters(value: string): string {
   }).join('');
 }
 
+function trimTrailingDotsAndSpaces(value: string): string {
+  let end = value.length;
+  while (end > 0) {
+    const char = value[end - 1];
+    if (char !== '.' && char !== ' ') {
+      break;
+    }
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 function sanitizeExportFilename(filename: string): string {
-  const normalized = path.basename(filename.trim());
-  const cleaned = replaceControlCharacters(normalized)
-    .replace(/[<>:"/\\|?*]/g, '_')
-    .replace(/[. ]+$/g, '')
-    .trim();
-  return cleaned || 'openreel-export.mp4';
+  const sanitized = sanitizeUploadedFilename(replaceControlCharacters(filename), 'openreel-export');
+  const trimmed = trimTrailingDotsAndSpaces(sanitized).trim();
+  return trimmed || 'openreel-export.mp4';
+}
+
+function resolveUploadTempPath(candidatePath: string): string {
+  return resolvePathWithin(OPENREEL_EXPORT_TMP_DIR, path.basename(candidatePath));
+}
+
+function sanitizeJsonValue(value: unknown, depth = 0): unknown {
+  if (depth > 20) {
+    throw new Error('OpenReel payload is too deeply nested');
+  }
+
+  if (
+    value === null
+    || typeof value === 'boolean'
+    || typeof value === 'number'
+  ) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return replaceControlCharacters(value).slice(0, 100_000);
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 10_000).map((entry) => sanitizeJsonValue(entry, depth + 1));
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 10_000);
+    return Object.fromEntries(
+      entries.map(([key, entry]) => [
+        replaceControlCharacters(String(key)).slice(0, 200),
+        sanitizeJsonValue(entry, depth + 1),
+      ]),
+    );
+  }
+
+  return String(value);
 }
 
 function getOpenReelExportMaxBytes(): number {
@@ -57,13 +105,16 @@ function getOpenReelRenderResolution(project: Awaited<ReturnType<typeof getProje
   return '3840x2160';
 }
 
-async function copyUploadedArtifact(sourcePath: string, targetPath: string): Promise<void> {
-  await fs.copyFile(sourcePath, targetPath);
+async function copyUploadedArtifact(sourcePath: string, targetDir: string, targetFilename: string): Promise<void> {
+  const safeSourcePath = resolveUploadTempPath(sourcePath);
+  const safeTargetPath = resolvePathWithin(targetDir, targetFilename);
+  await fs.copyFile(safeSourcePath, safeTargetPath);
 }
 
 async function cleanupUploadedArtifact(file: Express.Multer.File | null): Promise<void> {
   if (!file?.path) return;
-  await fs.unlink(file.path).catch(() => {});
+  const safePath = resolveUploadTempPath(file.path);
+  await fs.unlink(safePath).catch(() => {});
 }
 
 async function parseFinalizeExportUpload(req: Request, res: Response): Promise<Express.Multer.File> {
@@ -172,14 +223,14 @@ router.put('/openreel-project', mutationLimiter, async (req: Request, res: Respo
     const modifiedAt = Date.now();
     const payload = {
       version: '1.0.0',
-      project: body.project,
+      project: sanitizeJsonValue(body.project),
       modifiedAt,
     };
 
     const openreelDir = resolveProjectPath(projectId, 'openreel');
     const openreelProjectPath = resolveProjectPath(projectId, 'openreel', 'project.json');
     await ensureDir(openreelDir);
-    await fs.writeFile(openreelProjectPath, JSON.stringify(payload, null, 2), 'utf-8');
+    await safeWriteFile(openreelDir, openreelProjectPath, JSON.stringify(payload, null, 2));
 
     res.json({
       saved: true,
@@ -252,15 +303,13 @@ router.post('/openreel-project/finalize-export', mutationLimiter, async (req: Re
     const openreelDir = resolveProjectPath(projectId, 'openreel');
     const exportDir = resolveProjectPath(projectId, 'openreel', 'exports');
     const openreelProjectPath = resolveProjectPath(projectId, 'openreel', 'project.json');
-    const exportPath = resolveProjectPath(projectId, exportRelativePath);
-
     await ensureDir(openreelDir);
     await ensureDir(exportDir);
-    await copyUploadedArtifact(uploadedArtifact.path, exportPath);
+    await copyUploadedArtifact(uploadedArtifact.path, exportDir, `${exportedAt}-${safeFilename}`);
 
     const snapshotPayload = {
       version: '1.0.0',
-      project: parsedProject,
+      project: sanitizeJsonValue(parsedProject),
       modifiedAt: exportedAt,
       exportArtifact: {
         filename: safeFilename,
@@ -268,7 +317,7 @@ router.post('/openreel-project/finalize-export', mutationLimiter, async (req: Re
       },
     };
 
-    await fs.writeFile(openreelProjectPath, JSON.stringify(snapshotPayload, null, 2), 'utf-8');
+    await safeWriteFile(openreelDir, openreelProjectPath, JSON.stringify(snapshotPayload, null, 2));
 
     await withProject(projectId, (current) => {
       const createdAt = new Date(exportedAt).toISOString();

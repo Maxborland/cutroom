@@ -14,6 +14,7 @@ import { saveImageResult, fetchRemoteMediaBuffer, getBestImageFile, getMimeType 
 import { prepareBriefReferences } from '../../lib/reference-media.js';
 import { cacheExternalImageReference, isExternalMediaRef } from '../../lib/external-image-cache.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
+import { sanitizeUploadedFilename } from '../../lib/file-utils.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
 
 const router = Router({ mergeParams: true });
@@ -46,6 +47,33 @@ function resolveProviderImageResolution(rawQuality: string): string | undefined 
   }
 
   return requested;
+}
+
+async function resolveProviderImageInputs(
+  model: { provider: 'fal' | 'replicate'; endpoint: string },
+  controls: RequestedImageControls,
+) {
+  if (model.provider !== 'fal') {
+    return {
+      aspectRatio: controls.aspectRatio,
+      resolution: resolveProviderImageResolution(controls.quality),
+    };
+  }
+
+  try {
+    const capabilities = await fetchFalEndpointCapabilities(model.endpoint);
+    return {
+      aspectRatio: chooseFalCapabilityOption(controls.aspectRatio, capabilities.aspectRatioOptions)
+        || controls.aspectRatio,
+      resolution: chooseFalCapabilityOption(controls.quality, capabilities.resolutionOptions)
+        || resolveProviderImageResolution(controls.quality),
+    };
+  } catch {
+    return {
+      aspectRatio: controls.aspectRatio,
+      resolution: resolveProviderImageResolution(controls.quality),
+    };
+  }
 }
 
 function isTransientDownloadError(err: unknown): boolean {
@@ -112,13 +140,14 @@ async function toReferenceImage(projectId: string, shotId: string, sourceImage: 
     return { kind: 'url', url: sourceImage };
   }
 
+  const safeFilename = sanitizeUploadedFilename(sourceImage, 'reference-image');
   const sourceBuffer = await mediaStorage.readBuffer({
     projectId,
     scope: 'shot-generated',
     shotId,
-    filename: sourceImage,
+    filename: safeFilename,
   });
-  const mimeType = getMimeType(sourceImage);
+  const mimeType = getMimeType(safeFilename);
   return { base64: sourceBuffer.toString('base64'), mimeType };
 }
 
@@ -147,13 +176,14 @@ async function toReviewImageUrl(projectId: string, shotId: string, sourceImage: 
     return sourceImage;
   }
 
+  const safeFilename = sanitizeUploadedFilename(sourceImage, 'review-image');
   const sourceBuffer = await mediaStorage.readBuffer({
     projectId,
     scope: 'shot-generated',
     shotId,
-    filename: sourceImage,
+    filename: safeFilename,
   });
-  const mimeType = getMimeType(sourceImage);
+  const mimeType = getMimeType(safeFilename);
   return `data:${mimeType};base64,${sourceBuffer.toString('base64')}`;
 }
 
@@ -166,8 +196,20 @@ export interface GenerateShotImageOptions {
   signal?: AbortSignal;
 }
 
+type RequestedImageControls = {
+  size: string;
+  quality: string;
+  aspectRatio: string;
+};
+
+function toReferenceImageUrl(image: ReferenceImage): string {
+  return image.kind === 'url'
+    ? image.url
+    : `data:${image.mimeType};base64,${image.base64}`;
+}
+
 function logFalImageRequest(params: {
-  route: 'primary' | 'no-ref';
+  route: 'primary' | 'no-ref' | 'enhance';
   modelId: string;
   endpoint: string;
   resolution?: string;
@@ -229,27 +271,12 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
     : prompt;
 
   async function resolveFalImageInputs(model: { provider: 'fal' | 'replicate'; endpoint: string }) {
-    if (model.provider !== 'fal') {
-      return {
-        aspectRatio: effective.imageAspectRatio,
-        resolution: resolveProviderImageResolution(effective.imageQuality),
-      }
-    }
-
-    try {
-      const capabilities = await fetchFalEndpointCapabilities(model.endpoint)
-      return {
-        aspectRatio: chooseFalCapabilityOption(effective.imageAspectRatio, capabilities.aspectRatioOptions)
-          || effective.imageAspectRatio,
-        resolution: chooseFalCapabilityOption(effective.imageQuality, capabilities.resolutionOptions)
-          || resolveProviderImageResolution(effective.imageQuality),
-      }
-    } catch {
-      return {
-        aspectRatio: effective.imageAspectRatio,
-        resolution: resolveProviderImageResolution(effective.imageQuality),
-      }
-    }
+    const controls: RequestedImageControls = {
+      size: effective.imageSize,
+      quality: effective.imageQuality,
+      aspectRatio: effective.imageAspectRatio,
+    };
+    return resolveProviderImageInputs(model, controls);
   }
 
   if (preparedRefs.summary.requested > 0) {
@@ -271,20 +298,30 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
   try {
     let resultUrl: string;
     const referenceImages = toOpenRouterReferenceImages(refDataUrls);
-    const imageOptions: ImageGenOptions = {
+    const primaryControls: RequestedImageControls = {
       size: effective.imageSize,
-      quality: normalizeOpenRouterImageQuality(effective.imageQuality),
+      quality: effective.imageQuality,
+      aspectRatio: effective.imageAspectRatio,
     };
+    const noRefControls: RequestedImageControls = {
+      size: effective.imageNoRefSize,
+      quality: effective.imageNoRefQuality,
+      aspectRatio: effective.imageNoRefAspectRatio,
+    };
+    const buildOpenRouterImageOptions = (controls: RequestedImageControls): ImageGenOptions => ({
+      size: controls.size,
+      quality: normalizeOpenRouterImageQuality(controls.quality),
+    });
     const fallbackModelId = resolveOpenRouterImageFallbackModel(
       modelId,
       effective.imageModel || 'openai/gpt-image-1',
     );
-    const generateViaOpenRouter = async (targetModelId: string): Promise<string> => generateImageOpenRouter(
+    const generateViaOpenRouter = async (targetModelId: string, controls = primaryControls): Promise<string> => generateImageOpenRouter(
       targetModelId,
       promptWithReferenceHints,
       referenceImages,
       options.signal,
-      imageOptions,
+      buildOpenRouterImageOptions(controls),
     );
 
     if (genModel) {
@@ -307,7 +344,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
               resultUrl = await generateViaOpenRouter(fallbackModelId);
             } else {
               try {
-                const { resolution, aspectRatio } = await resolveFalImageInputs(noRefModel);
+                const { resolution, aspectRatio } = await resolveProviderImageInputs(noRefModel, noRefControls);
                 logFalImageRequest({
                   route: 'no-ref',
                   modelId: noRefModelId,
@@ -329,17 +366,17 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
                 console.warn(
                   `[generate-image] Configured no-reference model ${noRefModelId} failed (${noRefErr?.message || 'unknown error'}). Falling back to OpenRouter.`,
                 );
-                resultUrl = await generateViaOpenRouter(fallbackModelId);
+                resultUrl = await generateViaOpenRouter(fallbackModelId, noRefControls);
               }
             }
           } else {
             try {
-              resultUrl = await generateViaOpenRouter(noRefModelId);
+              resultUrl = await generateViaOpenRouter(noRefModelId, noRefControls);
             } catch (noRefErr: any) {
               console.warn(
                 `[generate-image] Configured no-reference OpenRouter model ${noRefModelId} failed (${noRefErr?.message || 'unknown error'}). Falling back to OpenRouter default.`,
               );
-              resultUrl = await generateViaOpenRouter(fallbackModelId);
+              resultUrl = await generateViaOpenRouter(fallbackModelId, noRefControls);
             }
           }
         }
@@ -370,7 +407,7 @@ export async function generateShotImageForProject(options: GenerateShotImageOpti
             console.log(
               `[generate-image] Falling back to OpenRouter (${genErr.message?.includes('not configured') ? 'missing credentials' : 'missing image input'})`,
             );
-            resultUrl = await generateViaOpenRouter(fallbackModelId);
+            resultUrl = await generateViaOpenRouter(fallbackModelId, primaryControls);
           } else {
             throw genErr;
           }
@@ -591,6 +628,12 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
     const effective = await resolveSettings(project);
     const enhanceModel = customModel || effective.enhanceModel;
     const enhancePrompt = customPrompt || effective.enhancePrompt;
+    const enhanceResolvedModel = resolveImageModel(enhanceModel);
+    const enhanceControls: RequestedImageControls = {
+      size: effective.enhanceSize,
+      quality: effective.enhanceQuality,
+      aspectRatio: effective.enhanceAspectRatio,
+    };
 
     let referenceImage: ReferenceImage;
     try {
@@ -603,20 +646,49 @@ router.post('/shots/:shotId/enhance-image', async (req: Request, res: Response) 
     const referenceImages: ReferenceImage[] = [referenceImage];
 
     const enhanceOptions: ImageGenOptions = {
-      size: effective.enhanceSize,
-      quality: effective.enhanceQuality,
+      size: enhanceControls.size,
+      quality: normalizeOpenRouterImageQuality(enhanceControls.quality),
     };
 
     console.log('[enhance-image] Request received');
 
+    const generateEnhancedImage = async (inputImage: ReferenceImage): Promise<string> => {
+      if (!enhanceResolvedModel) {
+        return generateImageOpenRouter(enhanceModel, enhancePrompt, [inputImage], undefined, enhanceOptions);
+      }
+
+      const { resolution, aspectRatio } = await resolveProviderImageInputs(enhanceResolvedModel, enhanceControls);
+
+      if (enhanceResolvedModel.provider === 'fal') {
+        logFalImageRequest({
+          route: 'enhance',
+          modelId: enhanceModel,
+          endpoint: enhanceResolvedModel.endpoint,
+          resolution,
+          aspectRatio,
+          hasReference: true,
+        });
+      }
+
+      return generateImageMulti(
+        {
+          model: enhanceResolvedModel,
+          prompt: enhancePrompt,
+          referenceImageUrl: toReferenceImageUrl(inputImage),
+          aspectRatio,
+          resolution,
+        },
+      );
+    };
+
     let result: string;
     try {
-      result = await generateImageOpenRouter(enhanceModel, enhancePrompt, referenceImages, undefined, enhanceOptions);
+      result = await generateEnhancedImage(referenceImage);
     } catch (err) {
       if (isExternalMediaRef(sourceImage) && isLikelyRemoteImageInputError(err)) {
         const localRef = await toLocalReferenceImage(project.id, shotId, sourceImage);
         if (localRef) {
-          result = await generateImageOpenRouter(enhanceModel, enhancePrompt, [localRef], undefined, enhanceOptions);
+          result = await generateEnhancedImage(localRef);
         } else {
           throw err;
         }
@@ -674,6 +746,12 @@ router.post('/enhance-all', async (req: Request, res: Response) => {
     const effective = await resolveSettings(project);
     const enhanceModel = effective.enhanceModel;
     const enhancePrompt = effective.enhancePrompt;
+    const enhanceResolvedModel = resolveImageModel(enhanceModel);
+    const enhanceControls: RequestedImageControls = {
+      size: effective.enhanceSize,
+      quality: effective.enhanceQuality,
+      aspectRatio: effective.enhanceAspectRatio,
+    };
 
     const shotsToEnhance = project.shots.filter(
       (s) => s.generatedImages.length > 0 && (!Array.isArray(s.enhancedImages) || s.enhancedImages.length === 0)
@@ -699,19 +777,48 @@ router.post('/enhance-all', async (req: Request, res: Response) => {
       const referenceImages: ReferenceImage[] = [referenceImage];
 
       const enhAllOptions: ImageGenOptions = {
-        size: effective.enhanceSize,
-        quality: effective.enhanceQuality,
+        size: enhanceControls.size,
+        quality: normalizeOpenRouterImageQuality(enhanceControls.quality),
+      };
+
+      const generateEnhancedImage = async (inputImage: ReferenceImage): Promise<string> => {
+        if (!enhanceResolvedModel) {
+          return generateImageOpenRouter(enhanceModel, enhancePrompt, [inputImage], undefined, enhAllOptions);
+        }
+
+        const { resolution, aspectRatio } = await resolveProviderImageInputs(enhanceResolvedModel, enhanceControls);
+
+        if (enhanceResolvedModel.provider === 'fal') {
+          logFalImageRequest({
+            route: 'enhance',
+            modelId: enhanceModel,
+            endpoint: enhanceResolvedModel.endpoint,
+            resolution,
+            aspectRatio,
+            hasReference: true,
+          });
+        }
+
+        return generateImageMulti(
+          {
+            model: enhanceResolvedModel,
+            prompt: enhancePrompt,
+            referenceImageUrl: toReferenceImageUrl(inputImage),
+            aspectRatio,
+            resolution,
+          },
+        );
       };
 
       try {
         let result: string;
         try {
-          result = await generateImageOpenRouter(enhanceModel, enhancePrompt, referenceImages, undefined, enhAllOptions);
+          result = await generateEnhancedImage(referenceImage);
         } catch (err) {
           if (isExternalMediaRef(sourceImage) && isLikelyRemoteImageInputError(err)) {
             const localRef = await toLocalReferenceImage(project.id, shot.id, sourceImage);
             if (localRef) {
-              result = await generateImageOpenRouter(enhanceModel, enhancePrompt, [localRef], undefined, enhAllOptions);
+              result = await generateEnhancedImage(localRef);
             } else {
               throw err;
             }

@@ -21,6 +21,7 @@ import type {
 import { sendApiError } from '../lib/api-error.js';
 import { chatCompletion } from '../lib/openrouter.js';
 import { getApiKey, getGlobalSettings } from '../lib/config.js';
+import { safeWriteFile } from '../lib/file-utils.js';
 import { normalizeVoiceoverText } from '../lib/tts-utils.js';
 import { extractScriptBlocks } from '../lib/script-blocks.js';
 import { matchNarrationAnchors, summarizeAnchorCoverage } from '../lib/montage-anchor-matching.js';
@@ -1064,7 +1065,8 @@ router.post('/montage/preview-voice', generationLimiter, async (req: Request, re
       throw new Error('Invalid or oversized audio data');
     }
 
-    await fs.writeFile(previewPath, Buffer.from(result.audioBuffer));
+    const safeAudio = Buffer.from(result.audioBuffer);
+    await safeWriteFile(previewsDir, previewPath, safeAudio);
 
     res.json({
       previewUrl: `/api/projects/${project.id}/montage/preview-voice?ts=${Date.now()}`,
