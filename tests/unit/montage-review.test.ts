@@ -44,7 +44,7 @@ function makeProject(shots: ShotMeta[]): Project {
   }
 }
 
-function makePlan(entries: Array<{ shotId: string; startSec: number; durationSec: number; clipFile?: string }>): MontagePlan {
+function makePlan(entries: Array<{ shotId: string; startSec: number; durationSec: number; clipFile?: string; selectedMomentId?: string }>): MontagePlan {
   return {
     version: 1,
     format: {
@@ -57,6 +57,7 @@ function makePlan(entries: Array<{ shotId: string; startSec: number; durationSec
       clipFile: entry.clipFile ?? `montage/normalized/${entry.shotId}.mp4`,
       startSec: entry.startSec,
       durationSec: entry.durationSec,
+      selectedMomentId: entry.selectedMomentId,
     })),
     transitions: [],
     motionGraphics: {
@@ -94,21 +95,21 @@ describe('reviewMontageDraft', () => {
     expect(review.summary.issues).toBeGreaterThan(0)
   })
 
-  it('detects consecutive same-role clips as visual_repetition', () => {
+  it('classifies view roles from scene and summary in visual_repetition', () => {
     const project = makeProject([
       makeShot({
         id: 'shot-view-1',
         order: 0,
         scene: 'Терраса у воды вечером',
         duration: 5,
-        videoDescription: { summary: '', tags: ['view'], matchHints: [], moments: [] },
+        videoDescription: { summary: 'Панорамный вид на воду', tags: [], matchHints: [], moments: [] },
       }),
       makeShot({
         id: 'shot-view-2',
         order: 1,
         scene: 'Панорама на реку с другого ракурса',
         duration: 5,
-        videoDescription: { summary: '', tags: ['view'], matchHints: [], moments: [] },
+        videoDescription: { summary: 'Вид на реку и закат', tags: [], matchHints: [], moments: [] },
       }),
       makeShot({
         id: 'shot-detail',
@@ -126,24 +127,100 @@ describe('reviewMontageDraft', () => {
 
     const review = reviewMontageDraft(project, plan)
 
-    expect(review.issues.some((issue) => issue.type === 'visual_repetition')).toBe(true)
+    expect(review.issues.find((issue) => issue.type === 'visual_repetition')?.message).toContain('view')
   })
 
-  it('detects visually repetitive adjacent clips even without explicit role labels', () => {
+  it('classifies interior roles from matchHints in visual_repetition', () => {
     const project = makeProject([
-      makeShot({ id: 'shot-view-1', order: 0, scene: 'Терраса у воды вечером', duration: 5 }),
-      makeShot({ id: 'shot-view-2', order: 1, scene: 'Терраса у воды на закате', duration: 5 }),
+      makeShot({
+        id: 'shot-interior-1',
+        order: 0,
+        scene: 'Комната без прямого указания роли',
+        duration: 5,
+        videoDescription: { summary: '', tags: [], matchHints: ['уютный интерьер'], moments: [] },
+      }),
+      makeShot({
+        id: 'shot-interior-2',
+        order: 1,
+        scene: 'Другой ракурс комнаты',
+        duration: 5,
+        videoDescription: { summary: '', tags: [], matchHints: ['интерьер премиум-класса'], moments: [] },
+      }),
       makeShot({ id: 'shot-detail', order: 2, scene: 'Крупная деталь света', duration: 5 }),
     ])
     const plan = makePlan([
-      { shotId: 'shot-view-1', startSec: 0, durationSec: 4 },
-      { shotId: 'shot-view-2', startSec: 4, durationSec: 4 },
+      { shotId: 'shot-interior-1', startSec: 0, durationSec: 4 },
+      { shotId: 'shot-interior-2', startSec: 4, durationSec: 4 },
       { shotId: 'shot-detail', startSec: 8, durationSec: 4 },
     ])
 
     const review = reviewMontageDraft(project, plan)
 
-    expect(review.issues.some((issue) => issue.type === 'visual_repetition')).toBe(true)
+    expect(review.issues.find((issue) => issue.type === 'visual_repetition')?.message).toContain('interior')
+  })
+
+  it('classifies detail roles from moments summary in visual_repetition', () => {
+    const project = makeProject([
+      makeShot({
+        id: 'shot-detail-1',
+        order: 0,
+        scene: 'Общий кадр без роли',
+        duration: 5,
+        videoDescription: {
+          summary: '',
+          tags: [],
+          matchHints: [],
+          moments: [{ id: 'm1', label: 'Moment 1', summary: 'Крупная деталь света', tags: [] }],
+        },
+      }),
+      makeShot({
+        id: 'shot-detail-2',
+        order: 1,
+        scene: 'Второй общий кадр без роли',
+        duration: 5,
+        videoDescription: {
+          summary: '',
+          tags: [],
+          matchHints: [],
+          moments: [{ id: 'm2', label: 'Moment 2', summary: 'Текстурная деталь света', tags: [] }],
+        },
+      }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-detail-1', startSec: 0, durationSec: 4, selectedMomentId: 'm1' },
+      { shotId: 'shot-detail-2', startSec: 4, durationSec: 4, selectedMomentId: 'm2' },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.issues.find((issue) => issue.type === 'visual_repetition')?.message).toContain('detail')
+  })
+
+  it('classifies transition roles from tags in visual_repetition', () => {
+    const project = makeProject([
+      makeShot({
+        id: 'shot-transition-1',
+        order: 0,
+        scene: 'Коридор между комнатами',
+        duration: 5,
+        videoDescription: { summary: '', tags: ['transition'], matchHints: [], moments: [] },
+      }),
+      makeShot({
+        id: 'shot-transition-2',
+        order: 1,
+        scene: 'Проход к лестнице',
+        duration: 5,
+        videoDescription: { summary: '', tags: ['transition'], matchHints: [], moments: [] },
+      }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-transition-1', startSec: 0, durationSec: 4 },
+      { shotId: 'shot-transition-2', startSec: 4, durationSec: 4 },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.issues.find((issue) => issue.type === 'visual_repetition')?.message).toContain('transition')
   })
 
   it('handles legacy video descriptions without moments arrays', () => {
@@ -166,6 +243,31 @@ describe('reviewMontageDraft', () => {
     const plan = makePlan([
       { shotId: 'shot-legacy-1', startSec: 0, durationSec: 4 },
       { shotId: 'shot-legacy-2', startSec: 4, durationSec: 4 },
+    ])
+
+    expect(() => reviewMontageDraft(project, plan)).not.toThrow()
+  })
+
+  it('handles legacy selected moments when videoDescription has no moments array', () => {
+    const project = makeProject([
+      makeShot({
+        id: 'shot-legacy-moment-1',
+        order: 0,
+        scene: 'Legacy detail angle',
+        duration: 5,
+        videoDescription: { summary: 'Legacy detail angle', tags: [], matchHints: [] } as ShotMeta['videoDescription'],
+      }),
+      makeShot({
+        id: 'shot-legacy-moment-2',
+        order: 1,
+        scene: 'Legacy detail panorama',
+        duration: 5,
+        videoDescription: { summary: 'Legacy detail panorama', tags: [], matchHints: [] } as ShotMeta['videoDescription'],
+      }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-legacy-moment-1', startSec: 0, durationSec: 4, selectedMomentId: 'legacy-1' },
+      { shotId: 'shot-legacy-moment-2', startSec: 4, durationSec: 4, selectedMomentId: 'legacy-2' },
     ])
 
     expect(() => reviewMontageDraft(project, plan)).not.toThrow()

@@ -10,10 +10,12 @@ import type {
   Project,
   ShotMeta,
 } from './storage.js'
+import { classifyVisualRole } from './semantic-block-planner.js'
 
 interface TimelineClipContext {
   clipId: string
   shotId: string
+  selectedMomentId?: string
   startSec: number
   durationSec: number
   endSec: number
@@ -24,16 +26,6 @@ interface TimelineClipContext {
 const ASSET_OVERUSE_GAP_SEC = 12
 const PACE_DRAG_MIN_SEC = 10
 const PACE_DRAG_MIN_SINGLE_SHOT_SEC = 9
-const DECLARED_VISUAL_ROLES = new Set([
-  'hero',
-  'establishing',
-  'view',
-  'interior',
-  'detail',
-  'lifestyle',
-  'transition',
-  'texture',
-])
 const VISUAL_REPETITION_TOKEN_MIN_LENGTH = 3
 const VISUAL_REPETITION_MIN_SHARED_TOKENS = 2
 const VISUAL_REPETITION_STOPWORDS = new Set([
@@ -142,6 +134,7 @@ function buildTimelineContexts(project: Project, montagePlan: MontagePlan): Time
       return [{
         clipId: entry.clipId ?? getClipId(entry),
         shotId: entry.shotId,
+        selectedMomentId: entry.selectedMomentId,
         startSec: entry.startSec,
         durationSec: entry.durationSec,
         endSec: entry.startSec + entry.durationSec,
@@ -149,37 +142,6 @@ function buildTimelineContexts(project: Project, montagePlan: MontagePlan): Time
         shot,
       }]
     })
-}
-
-function extractDeclaredVisualRoles(shot: ShotMeta): Set<string> {
-  const roles = new Set<string>()
-  const candidates = [
-    shot.scene,
-    shot.audioDescription,
-    shot.imagePrompt,
-    shot.videoPrompt,
-    shot.videoDescription?.summary,
-    ...(shot.videoDescription?.tags ?? []),
-    ...(shot.videoDescription?.matchHints ?? []),
-    ...(shot.videoDescription?.moments ?? []).flatMap((moment) => [
-      ...(moment.tags ?? []),
-    ]),
-  ]
-
-  for (const value of candidates) {
-    const normalized = normalizeText(value).trim()
-    if (DECLARED_VISUAL_ROLES.has(normalized)) {
-      roles.add(normalized)
-      continue
-    }
-
-    const roleMatch = normalized.match(/(?:^|[:/ -])(hero|establishing|view|interior|detail|lifestyle|transition|texture)(?:$|[:/ -])/u)
-    if (roleMatch) {
-      roles.add(roleMatch[1])
-    }
-  }
-
-  return roles
 }
 
 function tokenizeVisualText(shot: ShotMeta): string[] {
@@ -239,15 +201,14 @@ function detectVisualRepetition(clips: TimelineClipContext[]): MontageReviewIssu
       continue
     }
 
-    const currentRoles = extractDeclaredVisualRoles(current.shot)
-    const nextRoles = extractDeclaredVisualRoles(next.shot)
-    const sharedRole = [...currentRoles].find((role) => nextRoles.has(role))
+    const currentRole = classifyVisualRole(current.shot, current.selectedMomentId)
+    const nextRole = classifyVisualRole(next.shot, next.selectedMomentId)
 
-    if (sharedRole) {
+    if (currentRole !== 'generic' && currentRole === nextRole) {
       issues.push(createIssue(
         'visual_repetition',
         [current.clipId, next.clipId],
-        `Два соседних клипа занимают одну и ту же визуальную роль: ${sharedRole}.`,
+        `Два соседних клипа занимают одну и ту же визуальную роль: ${currentRole}.`,
         'Развести соседние клипы по разным визуальным акцентам или добавить более свежий ракурс.',
       ))
       continue

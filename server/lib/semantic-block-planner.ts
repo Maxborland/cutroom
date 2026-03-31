@@ -21,7 +21,14 @@ const MAX_BLOCK_SEGMENTS = 3;
 const ROLE_DIVERSITY_CONFIDENCE_GAP = 0.07;
 type NarrationAnchor = NonNullable<Project['narrationAnchors']>[number];
 type PlannerMatchClass = 'direct' | 'visual' | 'atmospheric' | 'fallback' | 'unresolved';
-type PlannerVisualRole = 'view' | 'interior' | 'detail' | 'lifestyle' | 'generic';
+export type PlannerVisualRole =
+  | 'view'
+  | 'interior'
+  | 'detail'
+  | 'transition'
+  | 'lifestyle'
+  | 'hero'
+  | 'generic';
 
 function getApprovedShots(project: Project, approvedShots?: ShotMeta[]): ShotMeta[] {
   if (approvedShots) {
@@ -245,12 +252,12 @@ function buildGroundedExplanation(anchorLabel: string, matchClass: PlannerMatchC
   return [`Якорь "${anchorLabel}" собран из ${segmentCount} сегментов с опорой на ${matchLabel}`];
 }
 
-function classifyVisualRole(
+export function classifyVisualRole(
   shot: ShotMeta,
   momentId?: string,
 ): PlannerVisualRole {
   const moment = momentId
-    ? shot.videoDescription?.moments.find((candidate) => candidate.id === momentId)
+    ? (shot.videoDescription?.moments ?? []).find((candidate) => candidate.id === momentId)
     : undefined;
   const roleText = [
     shot.scene,
@@ -277,8 +284,16 @@ function classifyVisualRole(
     return 'detail';
   }
 
+  if (/(вход|проход|лестниц|коридор|переход|между|walk|move|transition)/u.test(roleText)) {
+    return 'transition';
+  }
+
   if (/(уют|спокойств|домаш|lifestyle|атмосфер)/u.test(roleText)) {
     return 'lifestyle';
+  }
+
+  if (/(hero|главн|premium|престиж|шоукейс)/u.test(roleText)) {
+    return 'hero';
   }
 
   return 'generic';
