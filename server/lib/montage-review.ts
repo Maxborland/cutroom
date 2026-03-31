@@ -390,6 +390,176 @@ function buildAutoFixes(
   return autoFixes
 }
 
+function getDominantRole(roles: string[]): string {
+  const counts = new Map<string, number>()
+  for (const role of roles) {
+    const normalized = role.trim().toLowerCase()
+    if (!normalized || normalized === 'generic') {
+      continue
+    }
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1)
+  }
+
+  let dominantRole = 'generic'
+  let dominantCount = 0
+  for (const [role, count] of counts) {
+    if (count > dominantCount) {
+      dominantRole = role
+      dominantCount = count
+    }
+  }
+
+  return dominantRole
+}
+
+function complementRole(role: string): string {
+  switch (role) {
+    case 'view':
+    case 'interior':
+    case 'lifestyle':
+    case 'hero':
+      return 'detail'
+    case 'detail':
+    case 'transition':
+      return 'interior'
+    default:
+      return 'detail'
+  }
+}
+
+function buildPromptHints(
+  blockLabel: string,
+  neededVisualRole: string,
+  kind: 'novelty' | 'atmospheric' | 'missing',
+): string[] {
+  if (kind === 'atmospheric') {
+    return [
+      `Блок: ${blockLabel}`,
+      'Сохрани настроение, но добавь более конкретный жилой ракурс.',
+      'Покажи материалы, свет и ощущение пространства.',
+    ]
+  }
+
+  if (kind === 'missing') {
+    return [
+      `Блок: ${blockLabel}`,
+      `Нужен недостающий ${neededVisualRole === 'interior' ? 'интерьерный' : 'детальный'} кадр.`,
+      'Добавь контрапункт к текущим внешним ракурсам.',
+    ]
+  }
+
+  return [
+    `Блок: ${blockLabel}`,
+    `Нужен свежий ${neededVisualRole === 'detail' ? 'детальный' : 'визуальный'} ракурс.`,
+    'Избегай повторения уже использованных видов.',
+  ]
+}
+
+function buildShotGoal(
+  blockLabel: string,
+  neededVisualRole: string,
+  kind: 'novelty' | 'atmospheric' | 'missing',
+): string {
+  if (kind === 'atmospheric') {
+    return `Уточнить атмосферу блока "${blockLabel}" через более конкретный жилой ракурс.`
+  }
+
+  if (kind === 'missing') {
+    return `Доснять недостающий ${neededVisualRole} кадр для блока "${blockLabel}".`
+  }
+
+  return `Добавить новый ${neededVisualRole === 'detail' ? 'детальный' : 'визуально свежий'} кадр для блока "${blockLabel}".`
+}
+
+function buildSuggestedShotRequests(
+  montagePlan: MontagePlan,
+  clips: TimelineClipContext[],
+  issues: MontageReviewIssue[],
+): MontageShotRequest[] {
+  const requests: MontageShotRequest[] = []
+  const clipById = new Map(clips.map((clip) => [clip.clipId, clip]))
+  const seen = new Set<string>()
+
+  const addRequest = (request: MontageShotRequest) => {
+    if (seen.has(request.id)) {
+      return
+    }
+    seen.add(request.id)
+    requests.push(request)
+  }
+
+  for (const block of montagePlan.semanticBlocks ?? []) {
+    const blockClips = clips.filter((clip) => clip.semanticBlockId === block.id)
+    if (blockClips.length === 0) {
+      continue
+    }
+
+    const roles = blockClips.map((clip) => classifyVisualRole(clip.shot, clip.selectedMomentId))
+    const dominantRole = getDominantRole(roles)
+    const blockLabel = block.anchorLabel || block.anchorText
+    const selectedBlockText = [
+      block.anchorText,
+      block.anchorLabel,
+      ...(block.explanation ?? []),
+      ...(block.segments ?? []).map((segment) => segment.reason),
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join(' ')
+      .toLowerCase()
+
+    const blockIssues = issues.filter((issue) =>
+      issue.clipIds.some((clipId) => clipById.get(clipId)?.semanticBlockId === block.id),
+    )
+    const visualRepetitionInBlock = blockIssues.some((issue) => issue.type === 'visual_repetition')
+    const blockHasAnyIssue = blockIssues.length > 0
+
+    const hasAtmosphericFallback = /(атмосфер|fallback)/u.test(selectedBlockText)
+    const hasExteriorPattern = /(фасад|террас|вид|экстерьер|двор|панорам)/u.test(selectedBlockText)
+    const hasInteriorPattern = /(интерьер|лобби|гостиная|кухн|спальн|холл|комнат)/u.test(selectedBlockText)
+
+    let neededVisualRole: string | undefined
+    let priority: MontageShotRequestPriority | undefined
+    let canUseImageOnly = false
+    let kind: 'novelty' | 'atmospheric' | 'missing' | undefined
+
+    if (hasAtmosphericFallback) {
+      neededVisualRole = 'interior_detail'
+      priority = 'blocking'
+      canUseImageOnly = true
+      kind = 'atmospheric'
+    } else if (blockHasAnyIssue && hasInteriorPattern && !roles.includes('detail')) {
+      neededVisualRole = 'detail'
+      priority = 'blocking'
+      kind = 'missing'
+    } else if (blockHasAnyIssue && hasExteriorPattern && !roles.includes('interior')) {
+      neededVisualRole = 'interior'
+      priority = 'blocking'
+      kind = 'missing'
+    } else if (visualRepetitionInBlock && dominantRole !== 'generic') {
+      neededVisualRole = complementRole(dominantRole)
+      priority = 'recommended'
+      kind = 'novelty'
+    }
+
+    if (!neededVisualRole || !priority || !kind) {
+      continue
+    }
+
+    addRequest({
+      id: `shot-request-${block.id}-${neededVisualRole}`,
+      blockId: block.id,
+      priority,
+      neededVisualRole,
+      shotGoal: buildShotGoal(blockLabel, neededVisualRole, kind),
+      promptHints: buildPromptHints(blockLabel, neededVisualRole, kind),
+      recommendedCount: 1,
+      canUseImageOnly,
+    })
+  }
+
+  return requests
+}
+
 function scoreReview(issues: MontageReviewIssue[]): number {
   const penalty = issues.reduce((sum, issue) => {
     switch (issue.type) {
@@ -426,13 +596,14 @@ export function reviewMontageDraft(project: Project, montagePlan: MontagePlan): 
     ...detectPacingDrag(clips),
   ]
   const autoFixes = buildAutoFixes(project, montagePlan, clips, issues)
+  const suggestedShotRequests = buildSuggestedShotRequests(montagePlan, clips, issues)
 
   return {
     score: scoreReview(issues),
     summary: buildSummary(issues, autoFixes),
     issues,
     autoFixes,
-    suggestedShotRequests: [],
+    suggestedShotRequests,
   }
 }
 

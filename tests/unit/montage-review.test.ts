@@ -243,6 +243,171 @@ describe('reviewMontageDraft', () => {
     expect(review.autoFixes.filter((fix) => fix.type === 'split_clip')).toHaveLength(2)
   })
 
+  it('emits a detail request when visual novelty is exhausted', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-view-1', order: 0, scene: 'Терраса у воды вечером', duration: 5 }),
+      makeShot({ id: 'shot-view-2', order: 1, scene: 'Панорама на реку с другого ракурса', duration: 5 }),
+      makeShot({ id: 'shot-detail', order: 2, scene: 'Крупная деталь света', duration: 5 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-view-1', startSec: 0, durationSec: 4, semanticBlockId: 'block-1' },
+      { shotId: 'shot-view-2', startSec: 4, durationSec: 4, semanticBlockId: 'block-1' },
+    ], [
+      {
+        id: 'block-1',
+        anchorId: 'anchor-1',
+        anchorText: 'Сюжетный блок',
+        anchorLabel: 'Блок',
+        strategy: 'pair',
+        confidence: 0.92,
+        segments: [
+          { shotId: 'shot-view-1', durationSec: 4, weight: 0.9, reason: 'primary visual grounding' },
+          { shotId: 'shot-view-2', durationSec: 4, weight: 0.88, reason: 'visual grounding' },
+        ],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+    const request = review.suggestedShotRequests[0]
+
+    expect(review.suggestedShotRequests).toHaveLength(1)
+    expect(request.neededVisualRole).toBe('detail')
+    expect(request.priority).toBe('recommended')
+    expect(request.recommendedCount).toBe(1)
+    expect(request.canUseImageOnly).toBe(false)
+  })
+
+  it('emits an interior-detail request when only atmospheric fallback remains', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-atmo-1', order: 0, scene: 'Закат над водой', duration: 5 }),
+      makeShot({ id: 'shot-atmo-2', order: 1, scene: 'Небо и вода в мягком свете', duration: 5 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-atmo-1', startSec: 0, durationSec: 4, semanticBlockId: 'block-2' },
+    ], [
+      {
+        id: 'block-2',
+        anchorId: 'anchor-2',
+        anchorText: 'Я дома',
+        anchorLabel: 'Дом',
+        strategy: 'solo',
+        confidence: 0.55,
+        segments: [
+          { shotId: 'shot-atmo-1', durationSec: 4, weight: 0.45, reason: 'atmospheric grounding only' },
+        ],
+        explanation: ['Якорь "Дом" собран атмосферным совпадением'],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+    const request = review.suggestedShotRequests[0]
+
+    expect(review.suggestedShotRequests).toHaveLength(1)
+    expect(request.neededVisualRole).toBe('interior_detail')
+    expect(request.priority).toBe('blocking')
+    expect(request.recommendedCount).toBe(1)
+    expect(request.canUseImageOnly).toBe(true)
+  })
+
+  it('emits an interior request when an important role is missing entirely', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-ext-1', order: 0, scene: 'Фасад здания', duration: 5 }),
+      makeShot({ id: 'shot-ext-2', order: 1, scene: 'Терраса у воды', duration: 5 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-ext-1', startSec: 0, durationSec: 4, semanticBlockId: 'block-3' },
+      { shotId: 'shot-ext-2', startSec: 4, durationSec: 4, semanticBlockId: 'block-3' },
+    ], [
+      {
+        id: 'block-3',
+        anchorId: 'anchor-3',
+        anchorText: 'Фасад и терраса',
+        anchorLabel: 'Фасад',
+        strategy: 'pair',
+        confidence: 0.78,
+        segments: [
+          { shotId: 'shot-ext-1', durationSec: 4, weight: 0.8, reason: 'visual grounding' },
+          { shotId: 'shot-ext-2', durationSec: 4, weight: 0.75, reason: 'visual grounding' },
+        ],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+    const request = review.suggestedShotRequests[0]
+
+    expect(review.suggestedShotRequests).toHaveLength(1)
+    expect(request.neededVisualRole).toBe('interior')
+    expect(request.priority).toBe('blocking')
+    expect(request.promptHints.join(' ')).toContain('интерьер')
+    expect(request.recommendedCount).toBe(1)
+    expect(request.canUseImageOnly).toBe(false)
+  })
+
+  it('does not emit shot requests for a clean block just because alternatives exist', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-int-1', order: 0, scene: 'Интерьер гостиной', duration: 5 }),
+      makeShot({ id: 'shot-det-1', order: 1, scene: 'Крупная деталь света', duration: 5 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-int-1', startSec: 0, durationSec: 4, semanticBlockId: 'block-clean' },
+      { shotId: 'shot-det-1', startSec: 4, durationSec: 4, semanticBlockId: 'block-clean' },
+    ], [
+      {
+        id: 'block-clean',
+        anchorId: 'anchor-clean',
+        anchorText: 'Уютная гостиная',
+        anchorLabel: 'Гостиная',
+        strategy: 'pair',
+        confidence: 0.91,
+        segments: [
+          { shotId: 'shot-int-1', durationSec: 4, weight: 0.9, reason: 'direct visual grounding' },
+          { shotId: 'shot-det-1', durationSec: 4, weight: 0.84, reason: 'detail support' },
+        ],
+        alternatives: [
+          { shotId: 'shot-alt', confidence: 0.6, reason: 'alternate atmospheric fallback', rejectedBecause: 'unused' },
+        ],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.issues).toHaveLength(0)
+    expect(review.suggestedShotRequests).toHaveLength(0)
+  })
+
+  it('does not treat atmospheric alternatives as atmospheric-only coverage', () => {
+    const project = makeProject([
+      makeShot({ id: 'shot-view-1', order: 0, scene: 'Терраса у воды вечером', duration: 5 }),
+      makeShot({ id: 'shot-view-2', order: 1, scene: 'Панорама на реку с другого ракурса', duration: 5 }),
+    ])
+    const plan = makePlan([
+      { shotId: 'shot-view-1', startSec: 0, durationSec: 4, semanticBlockId: 'block-alt' },
+      { shotId: 'shot-view-2', startSec: 4, durationSec: 4, semanticBlockId: 'block-alt' },
+    ], [
+      {
+        id: 'block-alt',
+        anchorId: 'anchor-alt',
+        anchorText: 'Фасад и терраса',
+        anchorLabel: 'Фасад',
+        strategy: 'pair',
+        confidence: 0.83,
+        segments: [
+          { shotId: 'shot-view-1', durationSec: 4, weight: 0.82, reason: 'visual grounding' },
+          { shotId: 'shot-view-2', durationSec: 4, weight: 0.8, reason: 'visual grounding' },
+        ],
+        alternatives: [
+          { shotId: 'shot-atmo', confidence: 0.5, reason: 'atmospheric grounding fallback', rejectedBecause: 'weaker' },
+        ],
+      },
+    ])
+
+    const review = reviewMontageDraft(project, plan)
+
+    expect(review.suggestedShotRequests).toHaveLength(1)
+    expect(review.suggestedShotRequests[0].neededVisualRole).toBe('interior')
+    expect(review.suggestedShotRequests[0].priority).toBe('blocking')
+  })
+
   it('classifies view roles from scene and summary in visual_repetition', () => {
     const project = makeProject([
       makeShot({
