@@ -13,6 +13,7 @@ import type {
   AnchorCoverageSummary,
   AnchorMatch,
   NarrationAnchor,
+  MontageAssemblySummary,
   ShotVideoDescription,
 } from '../types/index'
 import type { OpenReelBundle } from './openreel-bridge'
@@ -79,6 +80,11 @@ export interface ExtractAnchorsResponse {
 export interface MatchAnchorsResponse {
   anchorMatches: AnchorMatch[]
   anchorCoverageSummary: AnchorCoverageSummary
+}
+
+export interface MontageAssembleDraftResponse {
+  montagePlan: MontagePlan
+  summary: MontageAssemblySummary
 }
 
 export interface OpenReelExportArtifact {
@@ -466,6 +472,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(options ?? {}),
       }),
+    previewVoice: (projectId: string, options?: { provider?: string; voiceId?: string }) =>
+      request<{ previewUrl: string; provider: string; voiceId: string }>(`/projects/${projectId}/montage/preview-voice`, {
+        method: 'POST',
+        body: JSON.stringify(options ?? {}),
+      }),
     generateMusicPrompt: (projectId: string) =>
       request<{ musicPrompt: string }>(`/projects/${projectId}/montage/generate-music-prompt`, { method: 'POST' }),
     updateMusicPrompt: (projectId: string, musicPrompt: string) =>
@@ -491,6 +502,8 @@ export const api = {
       request<ExtractAnchorsResponse>(`/projects/${projectId}/montage/extract-anchors`, { method: 'POST' }),
     matchAnchors: (projectId: string) =>
       request<MatchAnchorsResponse>(`/projects/${projectId}/montage/match-anchors`, { method: 'POST' }),
+    assembleDraft: (projectId: string) =>
+      request<MontageAssembleDraftResponse>(`/projects/${projectId}/montage/assemble-draft`, { method: 'POST' }),
     updateAnchorMatches: (projectId: string, anchorMatches: AnchorMatch[]) =>
       request<MatchAnchorsResponse>(`/projects/${projectId}/montage/anchor-matches`, {
         method: 'PUT',

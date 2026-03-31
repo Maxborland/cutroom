@@ -337,14 +337,18 @@ function buildSemanticClipMetadata(
   project: CutRoomProject,
   entry: TimelineEntry & { clipId: string },
 ): Record<string, unknown> | undefined {
-  if (!entry.anchorId) {
+  if (!entry.anchorId && !entry.semanticBlockId) {
     return undefined;
   }
 
   const anchorById = new Map((project.narrationAnchors ?? []).map((anchor) => [anchor.id, anchor]));
   const matchByAnchorId = new Map((project.anchorMatches ?? []).map((match) => [match.anchorId, match]));
-  const anchor = anchorById.get(entry.anchorId);
-  const match = matchByAnchorId.get(entry.anchorId);
+  const semanticBlocks = project.montagePlan?.semanticBlocks ?? project.semanticBlocks ?? [];
+  const semanticBlockById = new Map(semanticBlocks.map((block) => [block.id, block]));
+  const semanticBlock = entry.semanticBlockId ? semanticBlockById.get(entry.semanticBlockId) : undefined;
+  const resolvedAnchorId = entry.anchorId ?? semanticBlock?.anchorId;
+  const anchor = resolvedAnchorId ? anchorById.get(resolvedAnchorId) : undefined;
+  const match = resolvedAnchorId ? matchByAnchorId.get(resolvedAnchorId) : undefined;
 
   const matchedCandidate = match?.candidates.find((candidate) => (
     candidate.shotId === entry.shotId
@@ -354,11 +358,14 @@ function buildSemanticClipMetadata(
   return {
     cutroomSemantic: {
       clipId: entry.clipId,
-      anchorId: anchor?.id ?? entry.anchorId,
-      anchorLabel: anchor?.label,
-      anchorSourceText: anchor?.sourceText,
+      anchorId: resolvedAnchorId,
+      anchorLabel: anchor?.label ?? semanticBlock?.anchorLabel,
+      anchorSourceText: anchor?.sourceText ?? semanticBlock?.anchorText,
       matchStatus: match?.status ?? (entry.selectedMomentId ? 'matched' : undefined),
       matchConfidence: match?.confidence,
+      semanticBlockId: semanticBlock?.id ?? entry.semanticBlockId,
+      semanticBlockStrategy: semanticBlock?.strategy,
+      semanticBlockConfidence: semanticBlock?.confidence,
       selectedMomentId: entry.selectedMomentId,
       reason: matchedCandidate?.reason,
       trimStartSec: entry.trimStartSec,
@@ -578,7 +585,9 @@ export async function buildOpenReelBundle(
 
     const videoFilename = shot.videoFile ? path.basename(shot.videoFile) : `${shot.id}.mp4`;
     mediaManifest[mediaId] = {
-      url: `${cleanedBaseUrl}/shots/${encodeURIComponent(shot.id)}/video/${encodeURIComponent(videoFilename)}`,
+      url: shot.videoFile && isExternalMediaRef(shot.videoFile)
+        ? shot.videoFile
+        : `${cleanedBaseUrl}/shots/${encodeURIComponent(shot.id)}/video/${encodeURIComponent(videoFilename)}`,
       mimeType: guessMimeType(shot.videoFile ?? undefined, 'video'),
       kind: 'shot',
       shotId: shot.id,

@@ -15,9 +15,10 @@ vi.mock('../../src/lib/api', () => ({
   api: {
     montage: {
       getVoices: vi.fn().mockResolvedValue({
-        providers: [],
-        voices: [],
+        providers: [{ id: 'kokoro', name: 'Kokoro', configured: true }],
+        voices: [{ id: 'af_heart', name: 'Heart', gender: 'female', language: 'en-US', provider: 'kokoro' }],
       }),
+      assembleDraft: vi.fn(),
       describeVideos: vi.fn(),
       extractAnchors: vi.fn(),
       matchAnchors: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('../../src/lib/api', () => ({
       refinePlan: vi.fn(),
       musicUrl: vi.fn(() => '/music'),
       voiceoverUrl: vi.fn(() => '/voiceover'),
+      previewVoice: vi.fn().mockResolvedValue({ previewUrl: '/voice-preview?ts=1', provider: 'kokoro', voiceId: 'af_heart' }),
       getRenderStatus: vi.fn(),
       render: vi.fn(),
       getRenderDownloadUrl: vi.fn(() => '/download'),
@@ -172,31 +174,34 @@ describe('MontageView semantic planning panel', () => {
     vi.clearAllMocks()
   })
 
-  it('renders semantic planning controls and weak-match warning in the plan step', async () => {
+  it('renders one-click assemble CTA and keeps raw coverage behind manual diagnostics', async () => {
     const user = userEvent.setup()
     renderMontage(makeProject())
 
     await user.click(screen.getByRole('button', { name: 'План монтажа' }))
 
     expect(screen.getByText('Семантическая сборка')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Описать видео' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Извлечь якоря' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Сопоставить' })).toBeInTheDocument()
-    expect(screen.getByText(/требуют проверки/i)).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: 'Выбор шота для якоря Терраса' })).toHaveValue('shot-1')
-    expect(screen.getByRole('combobox', { name: 'Выбор момента для якоря Терраса' })).toHaveValue('moment-facade')
-    expect(screen.getByRole('option', { name: 'Фасад (0:00–0:02)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Собрать черновик' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ручной режим' })).toBeInTheDocument()
+    expect(screen.getByText(/visual-first summary/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Описать видео' })).not.toBeInTheDocument()
+    expect(screen.queryByText('1 якорь требует проверки перед сборкой плана.')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Ручной режим' }))
+
+    expect(screen.getByText('1 якорь требует проверки перед сборкой плана.')).toBeInTheDocument()
   })
 
-  it('shows editor-first handoff copy when a semantic draft already exists', async () => {
+  it('shows visual-first assembly summary after drafting', async () => {
     const user = userEvent.setup()
-    renderMontage(makeProject({
+    const assembleDraftMock = vi.mocked(api.montage.assembleDraft)
+    assembleDraftMock.mockResolvedValue({
       montagePlan: {
         version: 1,
         format: { width: 3840, height: 2160, fps: 30 },
         timeline: [
           {
-            clipId: 'clip-anchor-1',
+            clipId: 'clip-semantic-block-1',
             shotId: 'shot-1',
             clipFile: 'montage/normalized/shot-1.mp4',
             startSec: 0,
@@ -224,21 +229,42 @@ describe('MontageView semantic planning panel', () => {
           secondaryColor: '#e2b44d',
           textColor: '#ffffff',
         },
+        semanticBlocks: [],
       },
-      anchorCoverageSummary: {
-        totalAnchors: 1,
-        matchedAnchors: 1,
-        weakMatches: 0,
-        unmatchedAnchors: 0,
+      summary: {
+        blocks: 4,
+        clips: 6,
+        issues: [],
+        steps: [],
+        directBlocks: 2,
+        visualBlocks: 1,
+        atmosphericBlocks: 1,
+        unresolvedBlocks: 0,
       },
-    }))
+    })
+
+    renderMontage(makeProject({ montagePlan: undefined }))
 
     await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+    await user.click(screen.getByRole('button', { name: 'Собрать черновик' }))
 
-    expect(screen.getByText('Черновик готов для редактора')).toBeInTheDocument()
-    expect(screen.getByText('Семантический монтаж собран. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(assembleDraftMock).toHaveBeenCalledWith('project-1')
+    })
+
+    expect(screen.getByText('Черновик собран')).toBeInTheDocument()
+    expect(screen.getByText('Черновик собран автоматически по визуальной пригодности. Откройте его в редакторе, чтобы доработать клипы и продолжить сборку проекта.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Открыть в редакторе' })).toBeInTheDocument()
-    expect(screen.getByText('1 сильное совпадение')).toBeInTheDocument()
+    expect(screen.getByText('4 смысловых блока')).toBeInTheDocument()
+    expect(screen.getByText('6 клипов')).toBeInTheDocument()
+    expect(screen.getByText('Прямые')).toBeInTheDocument()
+    expect(screen.getByText('2 прямых блока')).toBeInTheDocument()
+    expect(screen.getByText('Визуальные')).toBeInTheDocument()
+    expect(screen.getByText('1 визуальный блок')).toBeInTheDocument()
+    expect(screen.getByText('Атмосферные')).toBeInTheDocument()
+    expect(screen.getByText('1 атмосферный блок')).toBeInTheDocument()
+    expect(screen.getByText('Требуют внимания')).toBeInTheDocument()
+    expect(screen.getByText('0 блоков требуют внимания')).toBeInTheDocument()
   })
 
   it('does not show the editor CTA before a semantic draft exists', async () => {
@@ -276,6 +302,7 @@ describe('MontageView semantic planning panel', () => {
     renderMontage(makeProject())
 
     await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+    await user.click(screen.getByRole('button', { name: 'Ручной режим' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Выбор шота для якоря Терраса' }), 'shot-2')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Выбор момента для якоря Терраса' }), 'moment-terrace')
     await user.click(screen.getByRole('button', { name: 'Сохранить выбор' }))
@@ -289,6 +316,24 @@ describe('MontageView semantic planning panel', () => {
           status: 'matched',
         }),
       ])
+    })
+  })
+
+  it('requests and renders temporary voice preview in the voiceover step', async () => {
+    const user = userEvent.setup()
+    const previewVoiceMock = vi.mocked(api.montage.previewVoice)
+    const { container } = renderMontage(makeProject())
+
+    const previewButton = await screen.findByRole('button', { name: 'Прослушать голос' })
+    await user.click(previewButton)
+
+    await waitFor(() => {
+      expect(previewVoiceMock).toHaveBeenCalledWith('project-1', { provider: 'kokoro', voiceId: 'af_heart' })
+    })
+
+    await waitFor(() => {
+      const previewAudio = container.querySelector('audio[src="/voice-preview?ts=1"]')
+      expect(previewAudio).not.toBeNull()
     })
   })
 

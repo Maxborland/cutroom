@@ -2,11 +2,14 @@ import type {
   AnchorCoverageSummary,
   AnchorMatch,
   AnchorMatchCandidate,
+  GroundedMatchClass,
+  GroundingPacket,
   NarrationAnchor,
   Project,
   ShotMeta,
   ShotVideoDescriptionMoment,
 } from './storage.js';
+import { groundScriptBlock } from './grounded-script-blocks.js';
 
 const STRONG_MATCH_THRESHOLD = 0.75;
 const WEAK_MATCH_THRESHOLD = 0.35;
@@ -17,8 +20,48 @@ const STOP_WORDS = new Set([
   'the', 'and', 'for', 'with', 'into', 'over',
 ]);
 
+const GENERIC_QUERY_TOKENS = new Set([
+  'вид',
+  'виды',
+  'общий',
+  'общая',
+  'общие',
+  'план',
+  'планы',
+  'кадр',
+  'кадры',
+  'ракурс',
+  'ракурсы',
+  'сцена',
+  'сцены',
+  'обзор',
+  'обзоры',
+]);
+
+const CLASS_ORDER: Record<GroundedMatchClass, number> = {
+  direct: 4,
+  visual: 3,
+  atmospheric: 2,
+  fallback: 1,
+  unresolved: 0,
+};
+
+const CLASS_WEIGHTS: Record<Exclude<GroundedMatchClass, 'unresolved'>, number> = {
+  direct: 1,
+  visual: 0.88,
+  atmospheric: 0.64,
+  fallback: 0.48,
+};
+
+const FALLBACK_MODIFIERS: Record<NonNullable<GroundingPacket['fallbackMode']>, number> = {
+  direct_only: 0.34,
+  visual_ok: 0.42,
+  atmospheric_broll: 0.38,
+};
+
 interface ScoredCandidate extends AnchorMatchCandidate {
   score: number;
+  matchClass: GroundedMatchClass;
 }
 
 function normalizeText(value: string): string {
@@ -27,6 +70,10 @@ function normalizeText(value: string): string {
     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function tokenize(value: string): string[] {
@@ -40,23 +87,39 @@ function uniqueTokens(values: string[]): string[] {
   return Array.from(new Set(values.flatMap((value) => tokenize(value))));
 }
 
-function overlapRatio(anchorTokens: string[], candidateTokens: string[]): number {
-  if (anchorTokens.length === 0 || candidateTokens.length === 0) {
-    return 0;
+function tokenMatches(queryToken: string, candidateToken: string): boolean {
+  if (queryToken === candidateToken) {
+    return true;
   }
 
-  const candidateSet = new Set(candidateTokens);
-  const hits = anchorTokens.filter((token) => candidateSet.has(token)).length;
-  return hits / anchorTokens.length;
+  const shortestLength = Math.min(queryToken.length, candidateToken.length);
+  if (shortestLength < 5) {
+    return false;
+  }
+
+  const shorter = queryToken.length <= candidateToken.length ? queryToken : candidateToken;
+  const longer = queryToken.length <= candidateToken.length ? candidateToken : queryToken;
+
+  return longer.startsWith(shorter);
 }
 
-function scoreTextValues(
-  anchor: NarrationAnchor,
+function isGenericToken(token: string): boolean {
+  return GENERIC_QUERY_TOKENS.has(token);
+}
+
+function scoreQueryAgainstValues(
+  query: string,
   values: string[],
   weight: number,
   reason: string,
+  matchClass: ScoredCandidate['matchClass'],
   moment?: ShotVideoDescriptionMoment,
 ): ScoredCandidate | null {
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedQuery) {
+    return null;
+  }
+
   const normalizedValues = values
     .filter((value): value is string => typeof value === 'string')
     .map((value) => value.trim())
@@ -65,18 +128,47 @@ function scoreTextValues(
     return null;
   }
 
-  const anchorPhrases = [anchor.label, anchor.sourceText]
-    .map((value) => normalizeText(value))
-    .filter(Boolean);
-  const normalizedCandidates = normalizedValues.map((value) => normalizeText(value));
-  const exactPhraseMatch = anchorPhrases.some((phrase) =>
-    normalizedCandidates.some((candidate) => candidate.includes(phrase)),
-  );
-
-  const anchorTokens = uniqueTokens([anchor.label, anchor.sourceText]);
+  const queryTokens = tokenize(query);
   const candidateTokens = uniqueTokens(normalizedValues);
-  const ratio = overlapRatio(anchorTokens, candidateTokens);
-  const score = Math.max(exactPhraseMatch ? weight : 0, ratio * weight);
+  if (queryTokens.length === 0 || candidateTokens.length === 0) {
+    return null;
+  }
+
+  const exactPhrasePattern = new RegExp(`(^|\\s)${escapeRegExp(normalizedQuery)}($|\\s)`, 'u');
+  const exactPhraseMatch = normalizedValues.some((value) => exactPhrasePattern.test(normalizeText(value)));
+  const matchedTokens = queryTokens.filter((queryToken) =>
+    candidateTokens.some((candidateToken) => tokenMatches(queryToken, candidateToken)),
+  );
+  const specificQueryTokens = queryTokens.filter((token) => !isGenericToken(token));
+  const specificMatchedTokens = matchedTokens.filter((token) => !isGenericToken(token));
+  const genericMatchedTokens = matchedTokens.filter((token) => isGenericToken(token));
+  const denominator = specificQueryTokens.length > 0 ? specificQueryTokens.length : queryTokens.length;
+
+  let score = 0;
+  if (exactPhraseMatch) {
+    score = weight * (specificQueryTokens.length > 0 ? 1 : 0.2);
+  } else if (specificMatchedTokens.length > 0) {
+    const coverage = specificMatchedTokens.length / denominator;
+    const floor = matchClass === 'direct'
+      ? 0.58
+      : matchClass === 'visual'
+        ? 0.66
+        : matchClass === 'atmospheric'
+          ? 0.52
+          : 0.32;
+    score = weight * Math.max(floor, coverage);
+  } else if (genericMatchedTokens.length > 0) {
+    const genericFloor = matchClass === 'direct'
+      ? 0.1
+      : matchClass === 'visual'
+        ? 0.08
+        : matchClass === 'atmospheric'
+          ? 0.06
+          : 0.04;
+    score = weight * genericFloor;
+  } else {
+    return null;
+  }
 
   if (score <= 0) {
     return null;
@@ -88,58 +180,180 @@ function scoreTextValues(
     confidence: Number(score.toFixed(2)),
     score,
     reason,
+    matchClass,
   };
+}
+
+function bestOfQueries(
+  queries: string[],
+  values: string[],
+  weight: number,
+  reason: string,
+  matchClass: ScoredCandidate['matchClass'],
+  moment?: ShotVideoDescriptionMoment,
+): ScoredCandidate | null {
+  let best: ScoredCandidate | null = null;
+
+  for (const query of queries) {
+    const candidate = scoreQueryAgainstValues(query, values, weight, reason, matchClass, moment);
+    if (!candidate) {
+      continue;
+    }
+
+    if (!best || candidate.score > best.score) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+function scoreTextValues(
+  queries: string[],
+  values: string[],
+  weight: number,
+  reason: string,
+  matchClass: ScoredCandidate['matchClass'],
+  moment?: ShotVideoDescriptionMoment,
+): ScoredCandidate | null {
+  return bestOfQueries(queries, values, weight, reason, matchClass, moment);
+}
+
+function scoreFallbackValues(
+  queries: string[],
+  values: string[],
+  fallbackMode: NonNullable<GroundingPacket['fallbackMode']>,
+  moment?: ShotVideoDescriptionMoment,
+): ScoredCandidate | null {
+  return bestOfQueries(
+    queries,
+    values,
+    FALLBACK_MODIFIERS[fallbackMode],
+    'Fallback grounding',
+    'fallback',
+    moment,
+  );
+}
+
+export function compareScoredCandidates(left: ScoredCandidate, right: ScoredCandidate): number {
+  if (right.score !== left.score) {
+    return right.score - left.score;
+  }
+
+  return CLASS_ORDER[right.matchClass] - CLASS_ORDER[left.matchClass];
 }
 
 function scoreShot(anchor: NarrationAnchor, shot: ShotMeta): ScoredCandidate[] {
   const candidates: ScoredCandidate[] = [];
   const videoDescription = shot.videoDescription;
+  const groundedAnchor = groundScriptBlock({
+    id: anchor.id,
+    order: anchor.order,
+    sourceText: anchor.sourceText,
+    intent: anchor.intent,
+  });
+
+  const literalQueries = [anchor.label, anchor.sourceText];
+  const visualQueries = groundedAnchor.grounding.visualQueries;
+  const moodQueries = groundedAnchor.grounding.moodQueries;
+  const fallbackQueries = [anchor.sourceText, anchor.label];
 
   if (videoDescription) {
-    const hintCandidate = scoreTextValues(anchor, videoDescription.matchHints, 1, 'Совпадение по videoDescription.matchHints');
-    if (hintCandidate) candidates.push(hintCandidate);
+    const descriptionValues = [
+      ...videoDescription.matchHints,
+      ...videoDescription.tags,
+      videoDescription.summary,
+    ];
 
-    const tagCandidate = scoreTextValues(anchor, videoDescription.tags, 0.82, 'Совпадение по videoDescription.tags');
-    if (tagCandidate) candidates.push(tagCandidate);
+    const literalCandidate = scoreTextValues(
+      literalQueries,
+      descriptionValues,
+      CLASS_WEIGHTS.direct,
+      'Literal grounding',
+      'direct',
+    );
+    if (literalCandidate) {
+      candidates.push(literalCandidate);
+    }
 
-    const summaryCandidate = scoreTextValues(anchor, [videoDescription.summary], 0.72, 'Совпадение по videoDescription.summary');
-    if (summaryCandidate) candidates.push(summaryCandidate);
+    const visualCandidate = scoreTextValues(
+      visualQueries,
+      descriptionValues,
+      CLASS_WEIGHTS.visual,
+      'Visual grounding',
+      'visual',
+    );
+    if (visualCandidate) {
+      candidates.push(visualCandidate);
+    }
+
+    const moodCandidate = scoreTextValues(
+      moodQueries,
+      descriptionValues,
+      CLASS_WEIGHTS.atmospheric,
+      'Atmospheric grounding',
+      'atmospheric',
+    );
+    if (moodCandidate) {
+      candidates.push(moodCandidate);
+    }
 
     for (const moment of videoDescription.moments) {
-      const momentTagsCandidate = scoreTextValues(
-        anchor,
-        moment.tags,
-        0.76,
-        'Совпадение по videoDescription.moments.tags',
-        moment,
-      );
-      if (momentTagsCandidate) candidates.push(momentTagsCandidate);
+      const momentValues = [...moment.tags, moment.summary, moment.label];
 
-      const momentSummaryCandidate = scoreTextValues(
-        anchor,
-        [moment.summary, moment.label],
-        0.56,
-        'Совпадение по videoDescription.moments.summary',
+      const momentLiteralCandidate = scoreTextValues(
+        literalQueries,
+        momentValues,
+        CLASS_WEIGHTS.direct,
+        'Literal grounding',
+        'direct',
         moment,
       );
-      if (momentSummaryCandidate) candidates.push(momentSummaryCandidate);
+      if (momentLiteralCandidate) {
+        candidates.push(momentLiteralCandidate);
+      }
+
+      const momentVisualCandidate = scoreTextValues(
+        visualQueries,
+        momentValues,
+        CLASS_WEIGHTS.visual,
+        'Visual grounding',
+        'visual',
+        moment,
+      );
+      if (momentVisualCandidate) {
+        candidates.push(momentVisualCandidate);
+      }
+
+      const momentMoodCandidate = scoreTextValues(
+        moodQueries,
+        momentValues,
+        CLASS_WEIGHTS.atmospheric,
+        'Atmospheric grounding',
+        'atmospheric',
+        moment,
+      );
+      if (momentMoodCandidate) {
+        candidates.push(momentMoodCandidate);
+      }
     }
   }
 
-  const fallbackCandidate = scoreTextValues(
-    anchor,
+  const fallbackCandidate = scoreFallbackValues(
+    fallbackQueries,
     [shot.scene, shot.imagePrompt, shot.videoPrompt, shot.audioDescription],
-    0.34,
-    'Совпадение по scene/imagePrompt/videoPrompt',
+    groundedAnchor.grounding.fallbackMode,
   );
-  if (fallbackCandidate) candidates.push(fallbackCandidate);
+  if (fallbackCandidate) {
+    candidates.push(fallbackCandidate);
+  }
 
   const rankedCandidates = candidates
     .map((candidate) => ({
       ...candidate,
       shotId: shot.id,
     }))
-    .sort((left, right) => right.score - left.score);
+    .sort(compareScoredCandidates);
 
   return rankedCandidates.length > 0 ? [rankedCandidates[0]] : [];
 }
@@ -191,7 +405,7 @@ export function matchNarrationAnchors(project: Project): {
   const anchorMatches = anchors.map((anchor) => {
     const shotCandidates = approvedShots
       .flatMap((shot) => scoreShot(anchor, shot))
-      .sort((left, right) => right.score - left.score)
+      .sort(compareScoredCandidates)
       .slice(0, 3);
 
     return buildMatch(anchor, shotCandidates);

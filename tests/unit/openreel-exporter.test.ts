@@ -459,6 +459,37 @@ describe('buildOpenReelBundle()', () => {
     });
   });
 
+  it('preserves external shot video URLs in mediaManifest instead of rewriting them to local API paths', async () => {
+    const externalUrl = 'https://cdn.example.test/render/shot-42.mp4'
+    const project = makeProject({
+      shots: [
+        {
+          id: 'shot-42',
+          order: 0,
+          scene: '',
+          audioDescription: '',
+          imagePrompt: '',
+          videoPrompt: '',
+          duration: 4,
+          assetRefs: [],
+          status: 'approved',
+          generatedImages: [],
+          enhancedImages: [],
+          selectedImage: null,
+          videoFile: externalUrl,
+        },
+      ],
+    })
+
+    const bundle = await buildOpenReelBundle(project, '/api/projects/project-1')
+
+    expect(bundle.mediaManifest['media-shot-shot-42']).toMatchObject({
+      url: externalUrl,
+      kind: 'shot',
+      shotId: 'shot-42',
+    })
+  })
+
   it('returns a valid empty timeline when there are no approved shots', async () => {
     const project = makeProject({ shots: [] });
     const bundle = await buildOpenReelBundle(project, '/api/projects/project-1');

@@ -132,14 +132,30 @@ describe('OpenReelEditorPage', () => {
     })
   })
 
-  it('renders semantic summary from the bundle header when present', async () => {
+  it('does not render semantic summary banners so the editor keeps the available height', async () => {
     getProjectMock.mockResolvedValue(mockBundle)
 
     renderEditorPage()
 
-    expect(await screen.findByText('Черновик из монтажного плана')).toBeInTheDocument()
-    expect(screen.getByText('1 сильное, 1 требует проверки')).toBeInTheDocument()
-    expect(screen.getByText('Откройте монтажный черновик в OpenReel, чтобы доработать клипы и синхронизировать правки с проектом.')).toBeInTheDocument()
+    await screen.findByTestId('openreel-host')
+
+    expect(screen.queryByText('Черновик из монтажного плана')).not.toBeInTheDocument()
+    expect(screen.queryByText('1 сильное, 1 требует проверки')).not.toBeInTheDocument()
+  })
+
+  it('renders the editor route as an immersive fullscreen shell', async () => {
+    getProjectMock.mockResolvedValue(mockBundle)
+
+    renderEditorPage()
+
+    const shell = await screen.findByTestId('openreel-page-shell')
+    const content = screen.getByTestId('openreel-page-content')
+
+    expect(shell.className).toContain('h-screen')
+    expect(shell.className).toContain('overflow-hidden')
+    expect(content.className).toContain('w-full')
+    expect(content.className).toContain('min-h-0')
+    expect(content.className).not.toContain('max-w-6xl')
   })
 
   it('renders the latest exported artifact when the bundle already knows it', async () => {

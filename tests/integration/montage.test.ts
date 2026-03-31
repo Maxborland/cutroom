@@ -8,6 +8,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createApp } from './setup.js'
 import { api } from '../../src/lib/api'
+import { chatCompletion } from '../../server/lib/openrouter.js'
 import {
   createProject,
   deleteProject,
@@ -1022,13 +1023,13 @@ describe('Montage Integration', () => {
         selectedShotId: 'shot-1',
         status: 'matched',
       })
-      expect(res.body.anchorMatches[0].candidates[0]?.reason).toMatch(/matchHints/i)
+      expect(res.body.anchorMatches[0].candidates[0]?.reason).toMatch(/literal/i)
       expect(res.body.anchorMatches[1]).toMatchObject({
         anchorId: 'anchor-2',
         selectedShotId: 'shot-2',
-        status: 'weak_match',
+        status: 'matched',
       })
-      expect(res.body.anchorMatches[1].candidates[0]?.reason).toMatch(/summary/i)
+      expect(res.body.anchorMatches[1].candidates[0]?.reason).toMatch(/literal/i)
       expect(res.body.anchorMatches[2]).toEqual({
         anchorId: 'anchor-3',
         confidence: 0,
@@ -1037,8 +1038,8 @@ describe('Montage Integration', () => {
       })
       expect(res.body.anchorCoverageSummary).toEqual({
         totalAnchors: 3,
-        matchedAnchors: 1,
-        weakMatches: 1,
+        matchedAnchors: 2,
+        weakMatches: 0,
         unmatchedAnchors: 1,
       })
 
@@ -1701,6 +1702,676 @@ describe('Montage Integration', () => {
       await request(app)
         .post(`/api/projects/${projectId}/montage/generate-plan`)
         .expect(400)
+    })
+  })
+
+  describe('POST /montage/assemble-draft', () => {
+    it('assembles a semantic draft from script when voiceover text is missing', async () => {
+      mockedSampleVideoFrames.mockResolvedValue([])
+      const montageDir = resolveProjectPath(projectId, 'shots', 'shot-1', 'video')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'clip-1.mp4'), 'video')
+
+      await withProject(projectId, (proj) => {
+        proj.script = 'Сцена 1: Терраса с видом. Сцена 2: Панорамные окна.'
+        proj.voiceoverScript = ''
+        proj.voiceoverScriptApproved = false
+        delete proj.voiceoverFile
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Терраса с видом на город',
+            videoFile: 'clip-1.mp4',
+            videoDescription: undefined,
+          },
+        ]
+        delete proj.narrationAnchors
+        delete proj.anchorMatches
+        delete proj.anchorCoverageSummary
+        delete proj.semanticBlocks
+        delete proj.montagePlan
+      })
+
+      vi.mocked(chatCompletion)
+        .mockResolvedValueOnce(JSON.stringify({
+          summary: 'Терраса и панорамные окна.',
+          tags: ['терраса', 'окна'],
+          matchHints: ['терраса с видом', 'панорамные окна'],
+          moments: [
+            {
+              id: 'moment-terrace',
+              label: 'Терраса',
+              startSec: 0.5,
+              endSec: 3.5,
+              tags: ['терраса'],
+              summary: 'Терраса с видом на город.',
+            },
+          ],
+        }))
+        .mockResolvedValueOnce(JSON.stringify({
+          anchors: [
+            {
+              id: 'anchor-script',
+              sourceText: 'Терраса с видом',
+              label: 'Терраса',
+              order: 1,
+              intent: 'lifestyle',
+            },
+          ],
+        }))
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockReturnValueOnce({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        semanticBlocks: [
+          {
+            id: 'semantic-block-anchor-script',
+            anchorId: 'anchor-script',
+            anchorText: 'Терраса с видом',
+            anchorLabel: 'Терраса',
+            strategy: 'solo',
+            confidence: 0.9,
+            segments: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-terrace',
+                durationSec: 4,
+                weight: 1,
+                reason: 'Visual grounding',
+              },
+            ],
+            explanation: ['Якорь "Терраса" собран визуальным совпадением'],
+          },
+        ],
+        timeline: [
+          {
+            clipId: 'clip-semantic-block-anchor-script',
+            shotId: 'shot-1',
+            anchorId: 'anchor-script',
+            semanticBlockId: 'semantic-block-anchor-script',
+            selectedMomentId: 'moment-terrace',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 3,
+            durationSec: 6,
+            trimStartSec: 0.5,
+            trimEndSec: 3.5,
+          },
+        ],
+        transitions: [],
+        motionGraphics: {
+          intro: { title: 'Test', durationSec: 3, animation: 'fade_in' },
+          lowerThirds: [],
+          outro: { title: 'End', durationSec: 4, animation: 'fade_in' },
+        },
+        audio: { voiceover: { file: '', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/assemble-draft`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          narrationAnchors: expect.arrayContaining([
+            expect.objectContaining({ id: 'anchor-script', sourceText: 'Терраса с видом' }),
+          ]),
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              anchorId: 'anchor-script',
+              selectedShotId: 'shot-1',
+            }),
+          ]),
+          semanticBlocks: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'semantic-block-anchor-script',
+            }),
+          ]),
+        }),
+        expect.any(Number),
+      )
+
+      expect(res.body.summary.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: 'extract-anchors',
+            status: 'done',
+          }),
+          expect.objectContaining({
+            key: 'match-anchors',
+            status: 'done',
+          }),
+        ]),
+      )
+      expect(res.body.summary).toMatchObject({
+        blocks: 1,
+        clips: 1,
+        directBlocks: 1,
+        visualBlocks: 0,
+        atmosphericBlocks: 0,
+        unresolvedBlocks: 0,
+      })
+
+      const project = await getProject(projectId)
+      expect(project?.narrationAnchors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'anchor-script', sourceText: 'Терраса с видом' }),
+        ]),
+      )
+    })
+
+    it('runs semantic prerequisites before generating a draft and returns assembly summary', async () => {
+      mockedSampleVideoFrames.mockResolvedValue([])
+      const montageDir = resolveProjectPath(projectId, 'shots', 'shot-1', 'video')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'clip-1.mp4'), 'video')
+      await withProject(projectId, (proj) => {
+        proj.script = 'Сцена 1: Терраса с видом. Сцена 2: Панорамные окна.'
+        proj.voiceoverScript = 'Терраса с видом. Панорамные окна.'
+        proj.voiceoverScriptApproved = true
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Терраса с видом на город',
+            videoFile: 'clip-1.mp4',
+            videoDescription: undefined,
+          },
+        ]
+        delete proj.narrationAnchors
+        delete proj.anchorMatches
+        delete proj.anchorCoverageSummary
+        delete proj.semanticBlocks
+        delete proj.montagePlan
+      })
+
+      vi.mocked(chatCompletion)
+        .mockResolvedValueOnce(JSON.stringify({
+          summary: 'Терраса и вид на город.',
+          tags: ['терраса', 'вид'],
+          matchHints: ['терраса с видом'],
+          moments: [
+            {
+              id: 'moment-terrace',
+              label: 'Терраса',
+              startSec: 0.5,
+              endSec: 3.5,
+              tags: ['терраса'],
+              summary: 'Терраса с видом на город.',
+            },
+          ],
+        }))
+        .mockResolvedValueOnce(JSON.stringify({
+          anchors: [
+            {
+              id: 'anchor-1',
+              sourceText: 'Терраса с видом',
+              label: 'Терраса',
+              order: 1,
+              intent: 'lifestyle',
+            },
+          ],
+        }))
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockReturnValueOnce({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        semanticBlocks: [
+          {
+            id: 'semantic-block-anchor-1',
+            anchorId: 'anchor-1',
+            anchorText: 'Терраса с видом',
+            anchorLabel: 'Терраса',
+            strategy: 'solo',
+            confidence: 0.94,
+            segments: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-terrace',
+                durationSec: 4,
+                weight: 1,
+                reason: 'Сильный первый ракурс блока',
+              },
+            ],
+            explanation: ['Якорь "Терраса" собран одним сильным ракурсом'],
+          },
+        ],
+        timeline: [
+          {
+            clipId: 'clip-semantic-block-anchor-1',
+            shotId: 'shot-1',
+            anchorId: 'anchor-1',
+            semanticBlockId: 'semantic-block-anchor-1',
+            selectedMomentId: 'moment-terrace',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 3,
+            durationSec: 6,
+            trimStartSec: 0.5,
+            trimEndSec: 3.5,
+          },
+        ],
+        transitions: [],
+        motionGraphics: {
+          intro: { title: 'Test', durationSec: 3, animation: 'fade_in' },
+          lowerThirds: [],
+          outro: { title: 'End', durationSec: 4, animation: 'fade_in' },
+        },
+        audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/assemble-draft`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          narrationAnchors: expect.arrayContaining([
+            expect.objectContaining({ id: 'anchor-1' }),
+          ]),
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              anchorId: 'anchor-1',
+              selectedShotId: 'shot-1',
+            }),
+          ]),
+          semanticBlocks: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'semantic-block-anchor-1',
+            }),
+          ]),
+        }),
+        expect.any(Number),
+      )
+
+      expect(res.body.summary).toMatchObject({
+        blocks: 1,
+        clips: 1,
+        directBlocks: 1,
+        visualBlocks: 0,
+        atmosphericBlocks: 0,
+        unresolvedBlocks: 0,
+      })
+      expect(res.body.summary.groundedBlocks).toHaveLength(2)
+      expect(res.body.summary.groundedBlocks?.map((block: { id: string; grounding: { fallbackMode: string } }) => [
+        block.id,
+        block.grounding.fallbackMode,
+      ])).toEqual([
+        ['script-block-1', 'visual_ok'],
+        ['script-block-2', 'visual_ok'],
+      ])
+      expect(res.body.summary.steps.map((step: { key: string; status: string }) => [step.key, step.status])).toEqual([
+        ['describe-videos', 'done'],
+        ['extract-anchors', 'done'],
+        ['match-anchors', 'done'],
+        ['generate-plan', 'done'],
+      ])
+
+      const project = await getProject(projectId)
+      expect(project?.montagePlan?.semanticBlocks).toHaveLength(1)
+      expect(project?.anchorMatches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            selectedShotId: 'shot-1',
+          }),
+        ]),
+      )
+    })
+
+    it('rebuilds from current voiceover and approved shots instead of stale semantic artifacts', async () => {
+      mockedSampleVideoFrames.mockResolvedValue([])
+      const montageDir = resolveProjectPath(projectId, 'shots', 'shot-1', 'video')
+      await ensureDir(montageDir)
+      await fs.writeFile(path.join(montageDir, 'clip-1.mp4'), 'video')
+      await withProject(projectId, (proj) => {
+        proj.script = 'Сцена 1: Новая терраса. Сцена 2: Большие окна.'
+        proj.voiceoverScript = 'Новая терраса с видом. Большие окна.'
+        proj.voiceoverScriptApproved = true
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Терраса с видом на город',
+            videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Устаревшее описание террасы.',
+              tags: ['терраса'],
+              matchHints: ['старый ракурс'],
+              moments: [
+                {
+                  id: 'moment-terrace',
+                  label: 'Терраса',
+                  startSec: 0.5,
+                  endSec: 3.5,
+                  tags: ['терраса'],
+                  summary: 'Устаревшее описание террасы.',
+                },
+              ],
+            },
+          },
+        ]
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-stale',
+            sourceText: 'Старый якорь',
+            label: 'Старый',
+            order: 1,
+            intent: 'feature',
+          },
+        ]
+        proj.anchorMatches = [
+          {
+            anchorId: 'anchor-stale',
+            selectedShotId: 'shot-1',
+            confidence: 0.12,
+            status: 'weak_match',
+            candidates: [],
+          },
+        ]
+        proj.anchorCoverageSummary = {
+          totalAnchors: 1,
+          matchedAnchors: 0,
+          weakMatches: 1,
+          unmatchedAnchors: 0,
+        }
+        proj.semanticBlocks = [
+          {
+            id: 'semantic-block-stale',
+            anchorId: 'anchor-stale',
+            anchorText: 'Старый якорь',
+            anchorLabel: 'Старый',
+            strategy: 'solo',
+            confidence: 0.12,
+            segments: [
+              {
+                shotId: 'shot-1',
+                durationSec: 2,
+                weight: 0.12,
+                reason: 'Старый блок',
+              },
+            ],
+            explanation: ['Старый блок не должен использоваться'],
+          },
+        ]
+      })
+
+      vi.mocked(chatCompletion)
+        .mockResolvedValueOnce(JSON.stringify({
+          summary: 'Новая терраса и окна с видом.',
+          tags: ['терраса', 'окна'],
+          matchHints: ['Новая терраса с видом', 'большие окна'],
+          moments: [
+            {
+              id: 'moment-fresh-terrace',
+              label: 'Новая терраса',
+              startSec: 0.5,
+              endSec: 3.5,
+              tags: ['терраса'],
+              summary: 'Новая терраса с видом.',
+            },
+          ],
+        }))
+        .mockResolvedValueOnce(JSON.stringify({
+          anchors: [
+            {
+              id: 'anchor-fresh',
+              sourceText: 'Новая терраса с видом',
+              label: 'Терраса',
+              order: 1,
+              intent: 'lifestyle',
+            },
+          ],
+        }))
+
+      const { generateMontagePlan } = await import('../../server/lib/montage-plan.js')
+      vi.mocked(generateMontagePlan).mockReturnValueOnce({
+        version: 1,
+        format: { width: 3840, height: 2160, fps: 30 },
+        semanticBlocks: [
+          {
+            id: 'semantic-block-anchor-fresh',
+            anchorId: 'anchor-fresh',
+            anchorText: 'Новая терраса с видом',
+            anchorLabel: 'Терраса',
+            strategy: 'solo',
+            confidence: 0.95,
+            segments: [
+              {
+                shotId: 'shot-1',
+                durationSec: 4,
+                weight: 1,
+                reason: 'Свежий ракурс',
+              },
+            ],
+            explanation: ['Новый якорь собран из свежего ракурса'],
+          },
+        ],
+        timeline: [
+          {
+            clipId: 'clip-semantic-block-anchor-fresh',
+            shotId: 'shot-1',
+            anchorId: 'anchor-fresh',
+            semanticBlockId: 'semantic-block-anchor-fresh',
+            clipFile: 'montage/normalized/shot-1.mp4',
+            startSec: 3,
+            durationSec: 6,
+          },
+        ],
+        transitions: [],
+        motionGraphics: {
+          intro: { title: 'Test', durationSec: 3, animation: 'fade_in' },
+          lowerThirds: [],
+          outro: { title: 'End', durationSec: 4, animation: 'fade_in' },
+        },
+        audio: { voiceover: { file: 'montage/voiceover.mp3', gainDb: 0 }, music: { file: 'montage/music.mp3', gainDb: -12, duckingDb: -18, duckFadeMs: 300 } },
+        style: { preset: 'premium', fontFamily: 'Montserrat', primaryColor: '#1a1a2e', secondaryColor: '#d4af37', textColor: '#ffffff' },
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/assemble-draft`)
+        .expect(200)
+
+      expect(vi.mocked(generateMontagePlan)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          narrationAnchors: expect.arrayContaining([
+            expect.objectContaining({ id: 'anchor-fresh', sourceText: 'Новая терраса с видом' }),
+          ]),
+          anchorMatches: expect.arrayContaining([
+            expect.objectContaining({
+              anchorId: 'anchor-fresh',
+              selectedShotId: 'shot-1',
+            }),
+          ]),
+          semanticBlocks: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'semantic-block-anchor-fresh',
+            }),
+          ]),
+        }),
+        expect.any(Number),
+      )
+
+      expect(res.body.summary).toMatchObject({
+        blocks: 1,
+        clips: 1,
+        directBlocks: 1,
+        visualBlocks: 0,
+        atmosphericBlocks: 0,
+        unresolvedBlocks: 0,
+      })
+
+      const project = await getProject(projectId)
+      expect(project?.narrationAnchors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'anchor-fresh', sourceText: 'Новая терраса с видом' }),
+        ]),
+      )
+      expect(project?.shots.find((shot) => shot.id === 'shot-1')?.videoDescription?.summary).toBe('Новая терраса и окна с видом.')
+      expect(project?.anchorMatches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ anchorId: 'anchor-fresh', selectedShotId: 'shot-1' }),
+        ]),
+      )
+      expect(project?.semanticBlocks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'semantic-block-anchor-fresh' }),
+        ]),
+      )
+      expect(project?.semanticBlocks).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'semantic-block-stale' }),
+        ]),
+      )
+      expect(project?.anchorMatches).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ anchorId: 'anchor-stale' }),
+        ]),
+      )
+    })
+
+    it('re-matches reused anchors when voiceover text is missing but saved matches are stale', async () => {
+      mockedSampleVideoFrames.mockResolvedValue([])
+      const shot1Dir = resolveProjectPath(projectId, 'shots', 'shot-1', 'video')
+      const shot2Dir = resolveProjectPath(projectId, 'shots', 'shot-2', 'video')
+      await ensureDir(shot1Dir)
+      await ensureDir(shot2Dir)
+      await fs.writeFile(path.join(shot1Dir, 'clip-1.mp4'), 'video')
+      await fs.writeFile(path.join(shot2Dir, 'clip-2.mp4'), 'video')
+
+      await withProject(projectId, (proj) => {
+        proj.script = 'Сцена 1: Терраса. Сцена 2: Панорамные окна.'
+        proj.voiceoverScript = ''
+        proj.voiceoverScriptApproved = false
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Терраса',
+            videoFile: 'clip-1.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Старое описание террасы.',
+              tags: ['терраса'],
+              matchHints: ['терраса'],
+              moments: [],
+            },
+          },
+          {
+            ...proj.shots[0]!,
+            id: 'shot-2',
+            order: 2,
+            scene: 'Панорамные окна',
+            videoFile: 'clip-2.mp4',
+            videoDescription: {
+              version: 1,
+              summary: 'Старое описание окон.',
+              tags: ['окна'],
+              matchHints: ['старый ракурс'],
+              moments: [],
+            },
+          },
+        ]
+        proj.narrationAnchors = [
+          {
+            id: 'anchor-windows',
+            sourceText: 'Панорамные окна',
+            label: 'Окна',
+            order: 1,
+            intent: 'feature',
+          },
+        ]
+        proj.anchorMatches = [
+          {
+            anchorId: 'anchor-windows',
+            selectedShotId: 'shot-1',
+            confidence: 0.38,
+            status: 'weak_match',
+            candidates: [
+              {
+                shotId: 'shot-1',
+                confidence: 0.38,
+                reason: 'Старое совпадение',
+              },
+            ],
+          },
+        ]
+        proj.anchorCoverageSummary = {
+          totalAnchors: 1,
+          matchedAnchors: 0,
+          weakMatches: 1,
+          unmatchedAnchors: 0,
+        }
+      })
+
+      vi.mocked(chatCompletion)
+        .mockResolvedValueOnce(JSON.stringify({
+          summary: 'Терраса без окон.',
+          tags: ['терраса'],
+          matchHints: ['терраса'],
+          moments: [],
+        }))
+        .mockResolvedValueOnce(JSON.stringify({
+          summary: 'Панорамные окна в гостиной.',
+          tags: ['окна'],
+          matchHints: ['панорамные окна', 'светлая гостиная'],
+          moments: [
+            {
+              id: 'moment-windows',
+              label: 'Окна',
+              startSec: 0.2,
+              endSec: 2.8,
+              tags: ['окна'],
+              summary: 'Крупный план панорамных окон.',
+            },
+          ],
+        }))
+        .mockResolvedValueOnce(JSON.stringify({
+          anchors: [
+            {
+              id: 'anchor-windows',
+              sourceText: 'Панорамные окна',
+              label: 'Окна',
+              order: 1,
+              intent: 'feature',
+            },
+          ],
+        }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/assemble-draft`)
+        .expect(200)
+
+      expect(res.body.summary.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: 'extract-anchors',
+            status: 'done',
+          }),
+          expect.objectContaining({
+            key: 'match-anchors',
+            status: 'done',
+          }),
+        ]),
+      )
+
+      const project = await getProject(projectId)
+      expect(project?.anchorMatches).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            anchorId: 'anchor-windows',
+            selectedShotId: 'shot-2',
+            status: 'matched',
+          }),
+        ]),
+      )
     })
   })
 

@@ -20,16 +20,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
-function formatSemanticSummary(summary: NonNullable<OpenReelBundle['semanticSummary']>): string {
-  const strongPart = `${summary.matched} ${summary.matched === 1 ? 'сильное' : 'сильных'}`
-  const reviewPart = `${summary.weak} ${summary.weak === 1 ? 'требует проверки' : 'требуют проверки'}`
-  const unmatchedPart = summary.unmatched > 0
-    ? `, ${summary.unmatched} ${summary.unmatched === 1 ? 'остается без совпадения' : 'остаются без совпадений'}`
-    : ''
-
-  return `${strongPart}, ${reviewPart}${unmatchedPart}`
-}
-
 export function OpenReelEditorPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
@@ -224,7 +214,7 @@ export function OpenReelEditorPage() {
   const renderBody = () => {
     if (loading) {
       return (
-        <div className="bg-surface-2 border-2 border-border rounded-[5px] p-8 flex items-center justify-center gap-2">
+        <div className="flex-1 min-h-0 bg-surface-2 border-2 border-border rounded-[5px] p-8 flex items-center justify-center gap-2">
           <Loader2 size={18} className="animate-spin text-amber" />
           <p className="font-mono text-xs uppercase tracking-wider text-text-muted">Загружаем редактор...</p>
         </div>
@@ -233,7 +223,7 @@ export function OpenReelEditorPage() {
 
     if (loadError || !bundle) {
       return (
-        <div className="bg-rose-dim border-2 border-rose rounded-[5px] p-4 text-sm text-rose">
+        <div className="flex-1 min-h-0 bg-rose-dim border-2 border-rose rounded-[5px] p-4 text-sm text-rose">
           <p className="font-semibold">Ошибка загрузки редактора</p>
           {loadError && <p className="mt-1">{loadError}</p>}
         </div>
@@ -241,73 +231,73 @@ export function OpenReelEditorPage() {
     }
 
     return (
-      <div className="space-y-4">
-        {bundle.semanticSummary && (
-          <div className="bg-surface-2 border-2 border-emerald rounded-[5px] p-4 space-y-2">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-emerald">
-              Черновик из монтажного плана
-            </p>
-            <p className="text-sm text-text-primary">
-              {formatSemanticSummary(bundle.semanticSummary)}
-            </p>
-            <p className="text-xs text-text-secondary">
-              Откройте монтажный черновик в OpenReel, чтобы доработать клипы и синхронизировать правки с проектом.
-            </p>
-          </div>
-        )}
-
+      <div className="flex-1 min-h-0 flex flex-col gap-3">
         {bundle.exportArtifact && (
-          <div className="bg-surface-2 border-2 border-sky rounded-[5px] p-4 space-y-2">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-sky">
-              Последний экспорт из редактора
-            </p>
-            <p className="text-sm text-text-primary">
-              Файл: {bundle.exportArtifact.filename}
-            </p>
-            <p className="text-xs text-text-secondary">
-              Экспорт сохранён в CutRoom и отмечен как последний готовый артефакт проекта.
-            </p>
+          <div className="grid gap-3">
+            <div className="bg-surface-2 border-2 border-sky rounded-[5px] px-4 py-3 space-y-1">
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-sky">
+                Последний экспорт из редактора
+              </p>
+              <p className="text-sm font-semibold text-text-primary">
+                Файл: {bundle.exportArtifact.filename}
+              </p>
+              <p className="text-xs text-text-secondary">
+                Экспорт сохранён в CutRoom и отмечен как последний готовый артефакт проекта.
+              </p>
+            </div>
           </div>
         )}
 
-        <OpenReelHost
-          bundle={bundle}
-          syncStatus={syncStatus}
-          onProjectChange={handleProjectChange}
-          onExportProgress={({ phase, progress }) => {
-            setExportStatus(`Экспорт: ${phase} (${Math.round(progress)}%)`)
-          }}
-          onExportComplete={handleExportComplete}
-          onError={(message) => {
-            setSyncStatus('error')
-            setSaveError(message)
-          }}
-        />
+        <div className="flex-1 min-h-0">
+          <OpenReelHost
+            bundle={bundle}
+            syncStatus={syncStatus}
+            onProjectChange={handleProjectChange}
+            onExportProgress={({ phase, progress }) => {
+              setExportStatus(`Экспорт: ${phase} (${Math.round(progress)}%)`)
+            }}
+            onExportComplete={handleExportComplete}
+            onError={(message) => {
+              setSyncStatus('error')
+              setSaveError(message)
+            }}
+          />
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 bg-bg min-h-screen">
-      <div className="max-w-6xl mx-auto space-y-4">
-        <button
-          onClick={goBack}
-          className="px-4 py-2 bg-surface-2 text-text-secondary border-2 border-border rounded-[5px] font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
-        >
-          ← Вернуться к проекту
-        </button>
+    <div
+      data-testid="openreel-page-shell"
+      className="h-screen overflow-hidden bg-bg px-4 py-4 sm:px-5 sm:py-5"
+    >
+      <div
+        data-testid="openreel-page-content"
+        className="mx-auto flex h-full w-full min-h-0 max-w-[1800px] flex-col gap-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button
+            onClick={goBack}
+            className="px-4 py-2 bg-surface-2 text-text-secondary border-2 border-border rounded-[5px] font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors"
+          >
+            ← Вернуться к проекту
+          </button>
 
-        {saveError && (
-          <div className="bg-rose-dim border-2 border-rose rounded-[5px] p-3 text-sm text-rose">
-            {saveError}
-          </div>
-        )}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {exportStatus && (
+              <div className="bg-surface-2 border-2 border-sky rounded-[5px] px-3 py-2 text-[10px] font-mono uppercase tracking-[0.2em] text-sky">
+                {exportStatus}
+              </div>
+            )}
 
-        {exportStatus && (
-          <div className="bg-surface-2 border-2 border-sky rounded-[5px] p-3 text-xs font-mono uppercase tracking-wider text-sky">
-            {exportStatus}
+            {saveError && (
+              <div className="bg-rose-dim border-2 border-rose rounded-[5px] px-3 py-2 text-[10px] font-mono uppercase tracking-[0.2em] text-rose">
+                {saveError}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         {renderBody()}
       </div>
