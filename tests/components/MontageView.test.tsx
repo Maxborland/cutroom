@@ -192,6 +192,41 @@ describe('MontageView semantic planning panel', () => {
     expect(screen.getByText('1 якорь требует проверки перед сборкой плана.')).toBeInTheDocument()
   })
 
+  it('allows extracting anchors in manual mode when only script is present', async () => {
+    const user = userEvent.setup()
+    const extractAnchorsMock = vi.mocked(api.montage.extractAnchors)
+    extractAnchorsMock.mockResolvedValue({
+      anchors: [
+        {
+          id: 'anchor-script',
+          sourceText: 'Сценарный блок',
+          label: 'Сценарий',
+          order: 1,
+          intent: 'feature',
+        },
+      ],
+    })
+
+    renderMontage(makeProject({
+      voiceoverScript: '',
+      voiceoverScriptApproved: false,
+      narrationAnchors: [],
+      anchorMatches: [],
+    }))
+
+    await user.click(screen.getByRole('button', { name: 'План монтажа' }))
+    await user.click(screen.getByRole('button', { name: 'Ручной режим' }))
+
+    const extractButton = screen.getByRole('button', { name: 'Извлечь якоря' })
+    expect(extractButton).toBeEnabled()
+
+    await user.click(extractButton)
+
+    await waitFor(() => {
+      expect(extractAnchorsMock).toHaveBeenCalledWith('project-1')
+    })
+  })
+
   it('shows visual-first assembly summary after drafting', async () => {
     const user = userEvent.setup()
     const assembleDraftMock = vi.mocked(api.montage.assembleDraft)

@@ -9,6 +9,7 @@ import path from 'node:path'
 import { createApp } from './setup.js'
 import { api } from '../../src/lib/api'
 import { chatCompletion } from '../../server/lib/openrouter.js'
+import * as montageAnchorMatching from '../../server/lib/montage-anchor-matching.js'
 import {
   createProject,
   deleteProject,
@@ -868,8 +869,48 @@ describe('Montage Integration', () => {
       expect(project?.narrationAnchors).toEqual(res.body.anchors)
     })
 
-    it('returns 400 when voiceover script is missing', async () => {
+    it('extracts ordered anchors from script when voiceover script is missing', async () => {
       await withProject(projectId, (proj) => {
+        proj.script = 'Просторная кухня с островом. Затем терраса с видом на реку.'
+        proj.voiceoverScript = ''
+        proj.voiceoverScriptApproved = false
+      })
+
+      const anchors = [
+        {
+          id: 'anchor-2',
+          sourceText: 'Затем терраса с видом на реку',
+          label: 'Терраса с видом',
+          order: 2,
+          intent: 'lifestyle',
+        },
+        {
+          id: 'anchor-1',
+          sourceText: 'Просторная кухня с островом',
+          label: 'Кухня с островом',
+          order: 1,
+          intent: 'feature',
+        },
+      ]
+
+      const { chatCompletion } = await import('../../server/lib/openrouter.js')
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({ anchors }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/extract-anchors`)
+        .expect(200)
+
+      expect(res.body.anchors).toHaveLength(2)
+      expect(res.body.anchors[0]).toMatchObject({
+        id: 'anchor-1',
+        sourceText: 'Просторная кухня с островом',
+      })
+      expect(chatCompletion).toHaveBeenCalledOnce()
+    })
+
+    it('returns 400 when both voiceover script and script are missing', async () => {
+      await withProject(projectId, (proj) => {
+        proj.script = ''
         proj.voiceoverScript = ''
         proj.voiceoverScriptApproved = false
       })
@@ -880,7 +921,7 @@ describe('Montage Integration', () => {
         .post(`/api/projects/${projectId}/montage/extract-anchors`)
         .expect(400)
 
-      expect(res.body.error).toContain('озвуч')
+      expect(res.body.error).toMatch(/озвуч|сценар/i)
       expect(chatCompletion).not.toHaveBeenCalled()
     })
   })
@@ -2372,6 +2413,105 @@ describe('Montage Integration', () => {
           }),
         ]),
       )
+    })
+
+    it('classifies assembly summary by the selected candidate reason, not the first candidate', async () => {
+      const matchSpy = vi.spyOn(montageAnchorMatching, 'matchNarrationAnchors').mockReturnValue({
+        anchorMatches: [
+          {
+            anchorId: 'anchor-home',
+            selectedShotId: 'shot-2',
+            selectedMomentId: 'moment-2',
+            confidence: 0.62,
+            status: 'weak_match',
+            candidates: [
+              {
+                shotId: 'shot-1',
+                momentId: 'moment-1',
+                confidence: 0.92,
+                reason: 'Literal grounding',
+              },
+              {
+                shotId: 'shot-2',
+                momentId: 'moment-2',
+                confidence: 0.62,
+                reason: 'Atmospheric grounding',
+              },
+            ],
+          },
+        ],
+        anchorCoverageSummary: {
+          totalAnchors: 1,
+          matchedAnchors: 0,
+          weakMatches: 1,
+          unmatchedAnchors: 0,
+        },
+      })
+
+      await withProject(projectId, (proj) => {
+        proj.script = 'Вы впервые чувствуете: я дома.'
+        proj.voiceoverScript = 'Вы впервые чувствуете: я дома.'
+        proj.voiceoverScriptApproved = true
+        proj.shots = [
+          {
+            ...proj.shots[0]!,
+            id: 'shot-1',
+            order: 1,
+            scene: 'Панорамный вид',
+            videoDescription: {
+              version: 1,
+              summary: 'Панорамный вид.',
+              tags: ['вид'],
+              matchHints: ['панорамный вид'],
+              moments: [{ id: 'moment-1', label: 'Вид', startSec: 0, endSec: 2, tags: ['вид'], summary: 'Панорамный вид.' }],
+            },
+          },
+          {
+            ...proj.shots[0]!,
+            id: 'shot-2',
+            order: 2,
+            scene: 'Гостиная в тёплом свете',
+            videoDescription: {
+              version: 1,
+              summary: 'Уютная гостиная.',
+              tags: ['интерьер'],
+              matchHints: ['уютный интерьер'],
+              moments: [{ id: 'moment-2', label: 'Гостиная', startSec: 0, endSec: 2, tags: ['интерьер'], summary: 'Уютная гостиная.' }],
+            },
+          },
+        ]
+        delete proj.voiceoverFile
+        delete proj.narrationAnchors
+        delete proj.anchorMatches
+        delete proj.anchorCoverageSummary
+        delete proj.semanticBlocks
+        delete proj.montagePlan
+      })
+
+      vi.mocked(chatCompletion).mockResolvedValueOnce(JSON.stringify({
+        anchors: [
+          {
+            id: 'anchor-home',
+            sourceText: 'Вы впервые чувствуете: я дома',
+            label: 'Я дома',
+            order: 1,
+            intent: 'lifestyle',
+          },
+        ],
+      }))
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/assemble-draft`)
+        .expect(200)
+
+      expect(res.body.summary).toMatchObject({
+        directBlocks: 0,
+        visualBlocks: 0,
+        atmosphericBlocks: 1,
+        unresolvedBlocks: 0,
+      })
+
+      matchSpy.mockRestore()
     })
   })
 

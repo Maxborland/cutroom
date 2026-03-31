@@ -1117,7 +1117,7 @@ function PlanStep({
                 </button>
                 <button
                   onClick={() => runSemanticAction('extract', () => api.montage.extractAnchors(project.id))}
-                  disabled={loading || semanticAction !== null || !project.voiceoverScript?.trim()}
+                  disabled={loading || semanticAction !== null || !(project.voiceoverScript?.trim() || project.script?.trim())}
                   className="flex items-center gap-2 px-4 py-2 bg-surface-2 text-text-secondary rounded-[5px] border-2 border-border font-mono text-xs uppercase tracking-wider hover:border-text-secondary transition-colors disabled:opacity-50"
                 >
                   {semanticAction === 'extract' ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}

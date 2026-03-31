@@ -434,17 +434,21 @@ function classifyAssemblyMatch(match?: AnchorMatch): GroundedMatchClass {
     return 'unresolved';
   }
 
-  const topReason = match.candidates[0]?.reason?.toLowerCase() ?? '';
-  if (topReason.includes('literal grounding')) {
+  const selectedCandidateReason = match.candidates.find((candidate) => (
+    candidate.shotId === match.selectedShotId
+    && (candidate.momentId ?? undefined) === (match.selectedMomentId ?? undefined)
+  ))?.reason?.toLowerCase() ?? match.candidates[0]?.reason?.toLowerCase() ?? '';
+
+  if (selectedCandidateReason.includes('literal grounding')) {
     return 'direct';
   }
-  if (topReason.includes('visual grounding')) {
+  if (selectedCandidateReason.includes('visual grounding')) {
     return 'visual';
   }
-  if (topReason.includes('atmospheric grounding')) {
+  if (selectedCandidateReason.includes('atmospheric grounding')) {
     return 'atmospheric';
   }
-  if (topReason.includes('fallback grounding')) {
+  if (selectedCandidateReason.includes('fallback grounding')) {
     return 'unresolved';
   }
 
@@ -1584,8 +1588,10 @@ router.post('/montage/extract-anchors', generationLimiter, async (req: Request, 
     if (!project) return;
 
     const voiceoverScript = project.voiceoverScript?.trim();
-    if (!voiceoverScript) {
-      sendApiError(res, 400, 'Сначала добавьте текст озвучки, чтобы извлечь смысловые якоря.');
+    const scriptSource = project.script?.trim();
+    const anchorSourceText = voiceoverScript || scriptSource;
+    if (!anchorSourceText) {
+      sendApiError(res, 400, 'Сначала добавьте текст озвучки или сценарий, чтобы извлечь смысловые якоря.');
       return;
     }
 
@@ -1613,6 +1619,7 @@ or
 
 Rules:
 - Keep sourceText in Russian and close to the original voiceover wording
+- If there is no voiceover, keep sourceText close to the provided script wording
 - Preserve story order
 - Prefer 3-8 meaningful anchors
 - Keep labels short and montage-friendly`;
@@ -1621,12 +1628,12 @@ Rules:
       model,
       [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: voiceoverScript },
+        { role: 'user', content: anchorSourceText },
       ],
       0.2,
     );
 
-    const anchors = parseNarrationAnchorsResponse(anchorsResponse, voiceoverScript);
+    const anchors = parseNarrationAnchorsResponse(anchorsResponse, anchorSourceText);
 
     await withProject(project.id, (proj) => {
       proj.narrationAnchors = anchors;
