@@ -15,6 +15,7 @@ import type {
   NarrationAnchor,
   MontageAssemblySummary,
   ShotVideoDescription,
+  MontageReview,
 } from '../types/index'
 import type { OpenReelBundle } from './openreel-bridge'
 
@@ -85,6 +86,7 @@ export interface MatchAnchorsResponse {
 export interface MontageAssembleDraftResponse {
   montagePlan: MontagePlan
   summary: MontageAssemblySummary
+  montageReview: MontageReview
 }
 
 export interface OpenReelExportArtifact {

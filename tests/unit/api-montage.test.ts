@@ -3,6 +3,10 @@ import { api } from '../../src/lib/api'
 import type {
   GroundedMatchClass,
   GroundedScriptBlock,
+  MontageAutoFix,
+  MontageReview,
+  MontageReviewIssue,
+  MontageShotRequest,
   ScriptBlock,
 } from '../../src/types'
 
@@ -40,6 +44,46 @@ const sampleAssemblySummary = {
 
 const sampleGroundedMatchClass: GroundedMatchClass = 'visual'
 
+const sampleMontageReviewIssue = {
+  id: 'issue-1',
+  type: 'asset_overuse',
+  severity: 'medium',
+  clipIds: ['clip-1'],
+  message: 'Один и тот же кадр используется слишком близко к предыдущему повтору.',
+  suggestedAction: 'Разнести повтор дальше по таймлайну.',
+} satisfies MontageReviewIssue
+
+const sampleMontageAutoFix = {
+  id: 'autofix-1',
+  type: 'move_repeat',
+  applied: true,
+  affectedClipIds: ['clip-1'],
+  explanation: 'Повторный клип был перенесён дальше, чтобы уменьшить визуальную однообразность.',
+} satisfies MontageAutoFix
+
+const sampleMontageShotRequest = {
+  id: 'request-1',
+  blockId: sampleScriptBlock.id,
+  priority: 'recommended',
+  neededVisualRole: 'interior_detail',
+  shotGoal: 'Добавить более свежий интерьерный ракурс для вечернего блока.',
+  promptHints: ['warm light', 'premium interior', 'tactile materials'],
+  recommendedCount: 2,
+  canUseImageOnly: false,
+} satisfies MontageShotRequest
+
+const sampleMontageReview = {
+  score: 0.78,
+  summary: {
+    issues: 1,
+    autoFixes: 1,
+    blockingRequests: 1,
+  },
+  issues: [sampleMontageReviewIssue],
+  autoFixes: [sampleMontageAutoFix],
+  suggestedShotRequests: [sampleMontageShotRequest],
+} satisfies MontageReview
+
 describe('api.montage contract', () => {
   const fetchMock = vi.fn()
 
@@ -62,6 +106,7 @@ describe('api.montage contract', () => {
     const assembledDraftResponse = {
       montagePlan: { version: 1 },
       summary: sampleAssemblySummary,
+      montageReview: sampleMontageReview,
     } satisfies Awaited<ReturnType<(typeof api.montage)['assembleDraft']>>
 
     expect(assembledDraftResponse.summary.directBlocks).toBe(1)
@@ -69,6 +114,9 @@ describe('api.montage contract', () => {
     expect(assembledDraftResponse.summary.groundedBlocks?.[0].grounding.fallbackMode).toBe('atmospheric_broll')
     expect(assembledDraftResponse.summary.visualBlocks).toBe(1)
     expect(sampleGroundedMatchClass).toBe('visual')
+    expect(assembledDraftResponse.montageReview.issues[0].type).toBe('asset_overuse')
+    expect(assembledDraftResponse.montageReview.autoFixes[0].type).toBe('move_repeat')
+    expect(assembledDraftResponse.montageReview.suggestedShotRequests[0].neededVisualRole).toBe('interior_detail')
   })
 
   it('updates a timeline entry by clipId', async () => {

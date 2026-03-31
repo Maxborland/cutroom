@@ -92,6 +92,7 @@ export interface Project {
   anchorCoverageSummary?: AnchorCoverageSummary
   semanticBlocks?: SemanticBlock[]
   montagePlan?: MontagePlan
+  montageReview?: MontageReview
   latestExportArtifact?: ProjectExportArtifact
   renders?: RenderJob[]
 }
@@ -296,6 +297,65 @@ export interface MontageAssemblySummary {
   atmosphericBlocks: number
   unresolvedBlocks: number
   groundedBlocks?: GroundedScriptBlock[]
+}
+
+export type MontageReviewIssueType =
+  | 'asset_overuse'
+  | 'visual_repetition'
+  | 'pacing_drag'
+  | 'novelty_gap'
+  | 'coverage_gap'
+
+export type MontageReviewSeverity = 'low' | 'medium' | 'high'
+
+export type MontageAutoFixType =
+  | 'move_repeat'
+  | 'swap_candidate'
+  | 'split_clip'
+  | 'change_block_strategy'
+  | 'insert_bridge'
+
+export type MontageShotRequestPriority = 'nice_to_have' | 'recommended' | 'blocking'
+
+export interface MontageReviewIssue {
+  id: string
+  type: MontageReviewIssueType
+  severity: MontageReviewSeverity
+  blockId?: string
+  clipIds: string[]
+  message: string
+  suggestedAction?: string
+}
+
+export interface MontageAutoFix {
+  id: string
+  type: MontageAutoFixType
+  applied: boolean
+  affectedClipIds: string[]
+  explanation: string
+}
+
+export interface MontageShotRequest {
+  id: string
+  blockId: string
+  priority: MontageShotRequestPriority
+  neededVisualRole: string
+  shotGoal: string
+  promptHints: string[]
+  recommendedCount: number
+  canUseImageOnly: boolean
+}
+
+export interface MontageReview {
+  score: number
+  summary: {
+    issues: number
+    autoFixes: number
+    blockingRequests: number
+  }
+  issues: MontageReviewIssue[]
+  autoFixes: MontageAutoFix[]
+  suggestedShotRequests: MontageShotRequest[]
 }
 
 export interface MontageAssemblyStep {
