@@ -83,6 +83,23 @@ describe('Settings API', () => {
       expect(res.body.openRouterApiKey).toBe('••••9999')
     })
 
+    it('should accept no-reference and enhance image control settings', async () => {
+      const res = await request(app)
+        .put('/api/settings')
+        .send({
+          imageNoRefSize: 'auto',
+          imageNoRefQuality: '4K',
+          imageNoRefAspectRatio: '9:16',
+          enhanceAspectRatio: '1:1',
+        })
+        .expect(200)
+
+      expect(res.body.imageNoRefSize).toBe('auto')
+      expect(res.body.imageNoRefQuality).toBe('4K')
+      expect(res.body.imageNoRefAspectRatio).toBe('9:16')
+      expect(res.body.enhanceAspectRatio).toBe('1:1')
+    })
+
     it('should reject unknown setting keys with 400', async () => {
       const res = await request(app)
         .put('/api/settings')
@@ -103,4 +120,3 @@ describe('Settings API', () => {
     })
   })
 })
-

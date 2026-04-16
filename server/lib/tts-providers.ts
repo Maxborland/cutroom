@@ -160,7 +160,7 @@ export async function generateSpeech(
 
 // ── Retry helper for transient network errors ──────────────────────
 
-const RETRYABLE_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EPIPE', 'EAI_AGAIN']);
+const RETRYABLE_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND']);
 
 function isRetryable(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;

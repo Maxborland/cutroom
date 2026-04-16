@@ -34,6 +34,8 @@ function runStep(command, args, label, env = {}) {
 
 runStep('pnpm', ['install'], 'dependency install')
 // Build only the web app with /openreel/app/ base path for iframe embedding
-runStep('pnpm', ['--filter', '@openreel/web', 'build', '--', '--base', '/openreel/app/'], 'build')
+runStep('pnpm', ['--filter', '@openreel/web', 'build'], 'build', {
+  OPENREEL_BASE: '/openreel/app/',
+})
 
 console.log('OpenReel build completed successfully.')

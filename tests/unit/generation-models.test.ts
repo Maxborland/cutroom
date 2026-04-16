@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   findImageModel,
   findVideoModel,
+  isVideoModelRuntimeSupported,
   resolveOpenRouterImageFallbackModel,
   resolveImageModel,
   resolveVideoModel,
@@ -90,5 +91,11 @@ describe('generation-models', () => {
     expect(wan?.videoQualityValues?.high).toBe('720p')
     expect(wan?.videoQualityOptions).toEqual(['480p', '720p'])
     expect(kling?.videoQualityParam).toBeUndefined()
+  })
+
+  it('flags runtime support for video models', () => {
+    expect(isVideoModelRuntimeSupported(resolveVideoModel('fal-endpoint:fal-ai/veo3.1/fast/image-to-video'))).toBe(true)
+    expect(isVideoModelRuntimeSupported(resolveVideoModel('fal-endpoint:fal-ai/ltx-2.3/text-to-video'))).toBe(false)
+    expect(isVideoModelRuntimeSupported(resolveVideoModel('rep/kling-2.1'))).toBe(true)
   })
 })

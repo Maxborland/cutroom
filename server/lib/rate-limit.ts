@@ -16,21 +16,8 @@ export function createRateLimit(max = 60, windowMs = 60_000) {
     max,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => {
-      // Support proxied deployments (x-forwarded-for) and direct connections.
-      // Use express-rate-limit helper to normalize IPv6 addresses (prevents bypass).
-      const forwarded = req.headers['x-forwarded-for'];
-      if (typeof forwarded === 'string') {
-        const ip = forwarded.split(',')[0].trim();
-        const forwardedRequest = Object.assign(
-          Object.create(Object.getPrototypeOf(req)) as Request,
-          req,
-          { ip },
-        );
-        return ipKeyGenerator(forwardedRequest);
-      }
-      return ipKeyGenerator(req);
-    },
+    skip: (req) => process.env.NODE_ENV === 'test' && req.header('x-test-rate-limit') !== '1',
+    keyGenerator: (req: Request) => ipKeyGenerator(req.ip || req.socket.remoteAddress || 'unknown'),
     message: { error: 'Too many requests, please try again later' },
   });
 }

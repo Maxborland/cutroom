@@ -23,9 +23,13 @@ export interface GlobalSettings {
   // Generation params
   imageSize?: string;
   imageQuality?: string;
+  imageNoRefSize?: string;
+  imageNoRefQuality?: string;
+  imageNoRefAspectRatio?: string;
   videoQuality?: string;
   enhanceSize?: string;
   enhanceQuality?: string;
+  enhanceAspectRatio?: string;
   imageAspectRatio?: string;
   // Master prompts
   masterPromptScriptwriter?: string;

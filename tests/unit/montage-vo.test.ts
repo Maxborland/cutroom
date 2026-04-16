@@ -320,6 +320,60 @@ describe('Montage Voiceover Pipeline', () => {
     })
   })
 
+  // ─── POST/GET /montage/preview-voice ─────────────────────────────
+
+  describe('POST /montage/preview-voice', () => {
+    it('should generate temporary preview audio without changing stored voiceover fields', async () => {
+      await withProject(projectId, (proj) => {
+        proj.voiceoverFile = 'montage/existing-voiceover.mp3'
+        proj.voiceoverProvider = 'elevenlabs-fal'
+        proj.voiceoverVoiceId = 'Aria'
+      })
+
+      const { generateSpeech } = await import('../../server/lib/tts-providers.js')
+      vi.mocked(generateSpeech).mockResolvedValueOnce({
+        audioBuffer: Buffer.from('fake-preview-audio'),
+        contentType: 'audio/mpeg',
+        provider: 'kokoro' as any,
+        voiceId: 'af_heart',
+      })
+
+      const res = await request(app)
+        .post(`/api/projects/${projectId}/montage/preview-voice`)
+        .send({ provider: 'kokoro', voiceId: 'af_heart' })
+        .expect(200)
+
+      expect(res.body.previewUrl).toContain(`/api/projects/${projectId}/montage/preview-voice`)
+      expect(res.body.provider).toBe('kokoro')
+      expect(res.body.voiceId).toBe('af_heart')
+      expect(generateSpeech).toHaveBeenCalledWith(
+        'Это демонстрационный фрагмент озвучки для выбора голоса.',
+        'kokoro',
+        'af_heart',
+      )
+
+      const updated = await getProject(projectId)
+      expect(updated!.voiceoverFile).toBe('montage/existing-voiceover.mp3')
+      expect(updated!.voiceoverProvider).toBe('elevenlabs-fal')
+      expect(updated!.voiceoverVoiceId).toBe('Aria')
+    })
+  })
+
+  describe('GET /montage/preview-voice', () => {
+    it('should stream the temporary preview file with audio content type', async () => {
+      const previewsDir = resolveProjectPath(projectId, 'montage', 'previews')
+      await ensureDir(previewsDir)
+      await fs.writeFile(path.join(previewsDir, 'preview-voice.mp3'), Buffer.from('fake-preview-bytes'))
+
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/montage/preview-voice`)
+        .expect(200)
+
+      expect(res.headers['content-type']).toContain('audio/mpeg')
+      expect(res.body).toBeTruthy()
+    })
+  })
+
   // ─── GET /montage/voiceover ───────────────────────────────────────
 
   describe('GET /montage/voiceover', () => {

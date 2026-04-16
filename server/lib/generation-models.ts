@@ -221,6 +221,19 @@ export function resolveVideoModel(modelId: string): VideoModel | undefined {
   };
 }
 
+export function isVideoModelRuntimeSupported(model: VideoModel | undefined): boolean {
+  if (!model) return false;
+
+  if (model.provider === 'fal') {
+    const endpoint = String(model.endpoint || '').toLowerCase();
+    if (endpoint.includes('/text-to-video')) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function normalizeVideoQualityTier(value: unknown): VideoQualityTier {
   if (value === 'low' || value === 'medium' || value === 'high') {
     return value;

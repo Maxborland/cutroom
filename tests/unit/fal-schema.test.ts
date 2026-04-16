@@ -99,6 +99,71 @@ describe('fal schema parsing', () => {
     })
   })
 
+  it('extracts schema-backed options from requestBody refs and composed property schemas', () => {
+    const schema: FalOpenApiDocument = {
+      openapi: '3.1.0',
+      info: { title: 'Fal Queue API', version: '1.0.0' },
+      paths: {
+        '/fal-ai/example/video': {
+          post: {
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    $ref: '#/components/schemas/RequestPayload',
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as Record<string, unknown>,
+      components: {
+        schemas: {
+          RequestPayload: {
+            type: 'object',
+            required: ['prompt', 'resolution'],
+            properties: {
+              prompt: { type: 'string' },
+              resolution: { $ref: '#/components/schemas/ResolutionEnum' },
+              aspect_ratio: {
+                allOf: [{ $ref: '#/components/schemas/AspectRatioEnum' }],
+              },
+              duration: {
+                anyOf: [{ $ref: '#/components/schemas/DurationEnum' }],
+              },
+            },
+          },
+          ResolutionEnum: {
+            enum: ['720p', '1080p', '4k'],
+            default: '1080p',
+          },
+          AspectRatioEnum: {
+            enum: ['16:9', '9:16'],
+            default: '16:9',
+          },
+          DurationEnum: {
+            oneOf: [{ const: '5s' }, { const: '8s' }],
+            default: '8s',
+          },
+        },
+      },
+    }
+
+    expect(extractFalEndpointCapabilities(schema)).toEqual({
+      resolutionOptions: ['720p', '1080p', '4k'],
+      aspectRatioOptions: ['16:9', '9:16'],
+      durationOptions: ['5s', '8s'],
+      defaults: {
+        resolution: '1080p',
+        aspect_ratio: '16:9',
+        duration: '8s',
+      },
+      requiredFields: ['prompt', 'resolution'],
+    })
+  })
+
   it('ignores unrelated schemas when there is no usable input object', () => {
     const schema: FalOpenApiDocument = {
       openapi: '3.1.0',
@@ -122,6 +187,62 @@ describe('fal schema parsing', () => {
       durationOptions: [],
       defaults: {},
       requiredFields: [],
+    })
+  })
+
+  it('falls back to inline requestBody schemas when components do not expose a usable input object', () => {
+    const schema: FalOpenApiDocument = {
+      openapi: '3.1.0',
+      info: { title: 'Fal Queue API', version: '1.0.0' },
+      paths: {
+        '/fal-ai/example/image': {
+          post: {
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['prompt'],
+                    properties: {
+                      prompt: { type: 'string' },
+                      resolution: {
+                        enum: ['1K', '2K', '4K'],
+                        default: '2K',
+                      },
+                      aspect_ratio: {
+                        enum: ['1:1', '16:9'],
+                        default: '16:9',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      } as Record<string, unknown>,
+      components: {
+        schemas: {
+          Output: {
+            type: 'object',
+            properties: {
+              url: { type: 'string' },
+            },
+          },
+        },
+      },
+    }
+
+    expect(extractFalEndpointCapabilities(schema)).toEqual({
+      resolutionOptions: ['1K', '2K', '4K'],
+      aspectRatioOptions: ['1:1', '16:9'],
+      durationOptions: [],
+      defaults: {
+        resolution: '2K',
+        aspect_ratio: '16:9',
+      },
+      requiredFields: ['prompt'],
     })
   })
 

@@ -410,4 +410,161 @@ describe('Models API', () => {
     expect(requestsAfterSecond).toBe(requestsAfterFirst)
     expect(falRequests).toBeGreaterThan(requestsAfterSecond)
   })
+
+  it('inherits sibling fal video capabilities and disambiguates endpoint mode labels', async () => {
+    await request(app)
+      .put('/api/settings')
+      .send({ falApiKey: 'fal_test_key_123' })
+      .expect(200)
+
+    global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString()
+
+      if (url.includes('openrouter.ai/api/v1/models')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [] }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models') && url.includes('category=image-to-video')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              models: [
+                {
+                  endpoint_id: 'fal-ai/ltx-2.3/image-to-video',
+                  metadata: { display_name: 'LTX 2.3 Video Pro', category: 'image-to-video' },
+                },
+              ],
+            }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models') && url.includes('category=text-to-video')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              models: [
+                {
+                  endpoint_id: 'fal-ai/ltx-2.3/text-to-video',
+                  metadata: {
+                    display_name: 'LTX 2.3 Video Pro',
+                    category: 'text-to-video',
+                    input_schema: {
+                      properties: {
+                        resolution: { enum: ['1080p', '1440p', '2160p'] },
+                        duration: { enum: ['6', '8', '10'] },
+                      },
+                    },
+                  },
+                },
+              ],
+            }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ models: [] }),
+        })
+      }
+
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    const res = await request(app).get('/api/models').expect(200)
+
+    expect(res.body.videoGenModels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'fal-endpoint:fal-ai/ltx-2.3/image-to-video',
+          name: 'LTX 2.3 Video Pro (Image to Video)',
+          videoQualitySupport: 'explicit',
+          videoQualityOptions: ['1080p', '1440p', '2160p'],
+          videoDurationSupport: 'explicit',
+          videoDurationOptions: ['6', '8', '10'],
+        }),
+      ]),
+    )
+    expect(res.body.videoGenModels).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'fal-endpoint:fal-ai/ltx-2.3/text-to-video',
+        }),
+      ]),
+    )
+  })
+
+  it('does not re-add unsupported text-to-video defaults into models response', async () => {
+    await request(app)
+      .put('/api/settings')
+      .send({
+        falApiKey: 'fal_test_key_123',
+        defaultVideoGenModel: 'fal-endpoint:fal-ai/ltx-2.3/text-to-video',
+      })
+      .expect(200)
+
+    global.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString()
+
+      if (url.includes('openrouter.ai/api/v1/models')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [] }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models') && url.includes('category=image-to-video')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              models: [
+                {
+                  endpoint_id: 'fal-ai/ltx-2.3/image-to-video',
+                  metadata: { display_name: 'LTX 2.3 Video Pro', category: 'image-to-video' },
+                },
+              ],
+            }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models') && url.includes('category=text-to-video')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              models: [
+                {
+                  endpoint_id: 'fal-ai/ltx-2.3/text-to-video',
+                  metadata: {
+                    display_name: 'LTX 2.3 Video Pro',
+                    category: 'text-to-video',
+                  },
+                },
+              ],
+            }),
+        })
+      }
+
+      if (url.includes('api.fal.ai/v1/models')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ models: [] }),
+        })
+      }
+
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    const res = await request(app).get('/api/models').expect(200)
+    const videoIds = (res.body.videoGenModels as Array<{ id: string }>).map((model) => model.id)
+
+    expect(videoIds).toContain('fal-endpoint:fal-ai/ltx-2.3/image-to-video')
+    expect(videoIds).not.toContain('fal-endpoint:fal-ai/ltx-2.3/text-to-video')
+  })
 })

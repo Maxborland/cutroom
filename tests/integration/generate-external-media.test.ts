@@ -10,11 +10,36 @@ import {
   type Project,
   type ShotMeta,
 } from '../../server/lib/storage.js'
+import { resetFalSchemaCache } from '../../server/lib/fal-schema.js'
 import { createApp } from './setup.js'
 
 vi.mock('node:dns/promises', () => ({
   lookup: vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
 }))
+
+const { runMock, configMock } = vi.hoisted(() => ({
+  runMock: vi.fn(),
+  configMock: vi.fn(),
+}))
+
+vi.mock('@fal-ai/client', () => ({
+  fal: {
+    config: configMock,
+    run: runMock,
+    subscribe: vi.fn(),
+    storage: {
+      upload: vi.fn(),
+    },
+  },
+}))
+
+vi.mock('../../server/lib/generation.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/lib/generation.js')>()
+  return {
+    ...actual,
+    generateVideoFromImage: vi.fn(),
+  }
+})
 
 function makeBodyStream(data: string | Buffer): ReadableStream<Uint8Array> {
   const bytes = new Uint8Array(typeof data === 'string' ? Buffer.from(data) : data)
@@ -45,6 +70,10 @@ describe('External image refs in generation routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    resetFalSchemaCache()
+    runMock.mockResolvedValue({
+      data: { images: [{ url: 'data:image/png;base64,aW1hZ2UtYnl0ZXM=' }] },
+    })
     global.fetch = originalFetch
   })
 
@@ -313,5 +342,105 @@ describe('External image refs in generation routes', () => {
     const savedProject = await getProject(project.id)
     const savedShot = savedProject?.shots.find((s) => s.id === shot.id)
     expect(savedShot?.generatedImages.includes(externalUrl)).toBe(false)
+  })
+
+  it('enhance-image uses Fal schema-backed resolution and aspect ratio controls when enhance model is a Fal endpoint', async () => {
+    const externalUrl = 'https://v3b.fal.media/files/test/fal-enhance.png'
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai%2Fnano-banana-pro')) {
+        return {
+          ok: true,
+          json: async () => ({
+            openapi: '3.1.0',
+            info: { title: 'Fal Queue API', version: '1.0.0' },
+            paths: {},
+            components: {
+              schemas: {
+                NanoBananaInput: {
+                  type: 'object',
+                  properties: {
+                    resolution: { enum: ['1K', '2K', '4K'] },
+                    aspect_ratio: { enum: ['1:1', '16:9'] },
+                  },
+                },
+              },
+            },
+          }),
+        } as Response
+      }
+
+      throw new Error(`Unexpected URL in fetch mock: ${url}`)
+    })
+
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await request(app)
+      .put('/api/settings')
+      .send({
+        falApiKey: 'fal_test_key',
+        defaultEnhanceModel: 'fal-endpoint:fal-ai/nano-banana-pro',
+        enhanceQuality: 'high',
+        enhanceAspectRatio: '16:9',
+      })
+      .expect(200)
+
+    const { project, shot } = await createProjectWithShot({
+      generatedImages: [externalUrl],
+    })
+
+    const res = await request(app)
+      .post(`/api/projects/${project.id}/shots/${shot.id}/enhance-image`)
+      .send({ sourceImage: externalUrl })
+      .expect(200)
+
+    expect(res.body.filename).toMatch(/^enh_\d+\.png$/)
+    expect(runMock).toHaveBeenCalledWith(
+      'fal-ai/nano-banana-pro',
+      expect.objectContaining({
+        input: expect.objectContaining({
+          image_urls: [externalUrl],
+          resolution: '4K',
+          aspect_ratio: '16:9',
+        }),
+      }),
+    )
+  })
+
+  it('generate-video passes external source image URLs through unchanged', async () => {
+    const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+
+    const externalUrl = 'https://images.example.test/video-source.png'
+    const videoUrl = 'https://videos.example/generated.mp4'
+    const { project, shot } = await createProjectWithShot({
+      generatedImages: [externalUrl],
+      enhancedImages: [],
+      status: 'img_review',
+    })
+
+    vi.mocked(generateVideoFromImage).mockResolvedValueOnce(videoUrl)
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === videoUrl) {
+        return mockOkResponse('video-bytes') as unknown as Response
+      }
+
+      throw new Error(`Unexpected URL in fetch mock: ${String(input)}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      await request(app)
+        .post(`/api/projects/${project.id}/shots/${shot.id}/generate-video`)
+        .send({})
+        .expect(200)
+
+      const [input] = vi.mocked(generateVideoFromImage).mock.calls[0] ?? []
+      expect(input?.sourceImageUrl).toBe(externalUrl)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

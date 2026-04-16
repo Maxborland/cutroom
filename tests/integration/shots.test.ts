@@ -1,16 +1,19 @@
 import { describe, it, expect, afterAll, beforeAll, beforeEach, vi } from 'vitest'
 import request from 'supertest'
 import { EventEmitter } from 'node:events'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { createApp } from './setup.js'
 import {
   createProject,
   deleteProject,
   getProject,
+  resolveProjectPath,
   saveProject,
   type Project,
   type ShotMeta,
 } from '../../server/lib/storage.js'
 import { safeLogValue } from '../../server/lib/safe-log.js'
+import { VIDEO_MODELS } from '../../server/lib/generation-models.js'
 
 vi.mock('../../server/lib/generation.js', () => ({
   generateVideoFromImage: vi.fn(),
@@ -413,6 +416,136 @@ describe('Shots API', () => {
   })
 
   describe('POST /api/projects/:id/shots/:shotId/generate-video', () => {
+    it('falls back to a runtime-supported video model when settings contain text-to-video', async () => {
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+
+      await request(app)
+        .put('/api/settings')
+        .send({
+          falApiKey: 'fal_test_key_123',
+          defaultVideoGenModel: 'fal-endpoint:fal-ai/ltx-2.3/text-to-video',
+        })
+        .expect(200)
+
+      shot.status = 'img_review'
+      shot.generatedImages = []
+      shot.enhancedImages = []
+      shot.videoFile = null
+      await saveProject(project)
+
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('https://videos.example.test/runtime-fallback.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce('https://images.example.test/source.png')
+
+      await request(app)
+        .post(`/api/projects/${project.id}/shots/${shot.id}/generate-video`)
+        .send({})
+        .expect(200)
+
+      const [input] = vi.mocked(generateVideoFromImage).mock.calls[0] ?? []
+      expect(input?.model?.id).toBe(VIDEO_MODELS[0].id)
+    })
+
+    it('optimizes the local source image into a transient JPEG before video inference', async () => {
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+
+      const sourceFilename = 'frame.png'
+      const sourcePath = resolveProjectPath(project.id, 'shots', shot.id, 'generated', sourceFilename)
+      await mkdir(resolveProjectPath(project.id, 'shots', shot.id, 'generated'), { recursive: true })
+      await writeFile(
+        sourcePath,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      )
+
+      shot.status = 'img_review'
+      shot.generatedImages = [sourceFilename]
+      shot.enhancedImages = []
+      shot.videoFile = null
+      await saveProject(project)
+
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('https://videos.example.test/transient.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce(sourceFilename)
+
+      const res = await request(app)
+        .post(`/api/projects/${project.id}/shots/${shot.id}/generate-video`)
+        .send({})
+        .expect(200)
+
+      const [input] = vi.mocked(generateVideoFromImage).mock.calls[0] ?? []
+      expect(input).toBeTruthy()
+      expect(input?.sourceImageUrl).toMatch(/^data:image\/jpeg;base64,/)
+      expect(input?.sourceImageUrl).not.toContain('image/png')
+    })
+
+    it('keeps external source images unchanged for video inference', async () => {
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+
+      shot.status = 'img_review'
+      shot.generatedImages = []
+      shot.enhancedImages = []
+      shot.videoFile = null
+      await saveProject(project)
+
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('https://videos.example.test/external.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce('https://images.example.test/source.png')
+
+      await request(app)
+        .post(`/api/projects/${project.id}/shots/${shot.id}/generate-video`)
+        .send({})
+        .expect(200)
+
+      const [input] = vi.mocked(generateVideoFromImage).mock.calls[0] ?? []
+      expect(input?.sourceImageUrl).toBe('https://images.example.test/source.png')
+    })
+
+    it('falls back to the original local data URL when image optimization fails', async () => {
+      vi.doMock('sharp', () => ({
+        default: () => {
+          throw new Error('sharp failed')
+        },
+      }))
+      vi.resetModules()
+
+      const { createApp: createIsolatedApp } = await import('./setup.js')
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+      const isolatedApp = createIsolatedApp()
+
+      const sourceFilename = 'broken-frame.png'
+      const sourcePath = resolveProjectPath(project.id, 'shots', shot.id, 'generated', sourceFilename)
+      await mkdir(resolveProjectPath(project.id, 'shots', shot.id, 'generated'), { recursive: true })
+      await writeFile(sourcePath, Buffer.from('not-a-real-png'))
+
+      shot.status = 'img_review'
+      shot.generatedImages = [sourceFilename]
+      shot.enhancedImages = []
+      shot.videoFile = null
+      await saveProject(project)
+
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('https://videos.example.test/fallback.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce(sourceFilename)
+
+      try {
+        await request(isolatedApp)
+          .post(`/api/projects/${project.id}/shots/${shot.id}/generate-video`)
+          .send({})
+          .expect(200)
+
+        const [input] = vi.mocked(generateVideoFromImage).mock.calls[0] ?? []
+        expect(input).toBeTruthy()
+        expect(input?.sourceImageUrl).toMatch(/^data:image\/png;base64,/)
+        expect(input?.sourceImageUrl).toContain(Buffer.from('not-a-real-png').toString('base64'))
+      } finally {
+        vi.doUnmock('sharp')
+        vi.resetModules()
+      }
+    })
+
     it('sanitizes shot ids before logging local download fallback failures', async () => {
       const { generateVideoFromImage } = await import('../../server/lib/generation.js')
       const { getBestImageFile } = await import('../../server/lib/media-utils.js')
@@ -495,6 +628,43 @@ describe('Shots API', () => {
   })
 
   describe('POST /api/projects/:id/generate-all-videos', () => {
+    it('optimizes the local source image into a transient JPEG before batch video inference', async () => {
+      const { generateVideoFromImage } = await import('../../server/lib/generation.js')
+      const { getBestImageFile } = await import('../../server/lib/media-utils.js')
+
+      const sourceFilename = 'batch-frame.png'
+      const sourcePath = resolveProjectPath(project.id, 'shots', shot.id, 'generated', sourceFilename)
+      await mkdir(resolveProjectPath(project.id, 'shots', shot.id, 'generated'), { recursive: true })
+      await writeFile(
+        sourcePath,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      )
+
+      shot.status = 'img_review'
+      shot.generatedImages = [sourceFilename]
+      shot.enhancedImages = []
+      shot.videoFile = null
+      await saveProject(project)
+
+      vi.mocked(generateVideoFromImage).mockResolvedValueOnce('https://videos.example.test/batch-transient.mp4')
+      vi.mocked(getBestImageFile).mockReturnValueOnce(sourceFilename)
+
+      const res = await request(app)
+        .post(`/api/projects/${project.id}/generate-all-videos`)
+        .send({})
+        .expect(200)
+
+      expect(res.body.generated).toBe(1)
+
+      const [input] = vi.mocked(generateVideoFromImage).mock.calls[0] ?? []
+      expect(input).toBeTruthy()
+      expect(input?.sourceImageUrl).toMatch(/^data:image\/jpeg;base64,/)
+      expect(input?.sourceImageUrl).not.toContain('image/png')
+    })
+
     it('does not persist forbidden external fallback URLs in batch generation', async () => {
       const { generateVideoFromImage } = await import('../../server/lib/generation.js')
       const { getBestImageFile } = await import('../../server/lib/media-utils.js')

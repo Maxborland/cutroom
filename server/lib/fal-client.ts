@@ -173,8 +173,21 @@ function extractPermittedDurationValues(err: any): Array<string | number> {
         .map((value: string | number) => value);
     }
 
-    const msg = String(item?.msg || '');
-    const matches = [...msg.matchAll(/'([^']+)'/g)].map((m) => m[1]).filter(Boolean);
+    const haystack = [item?.msg, item?.ctx?.expected]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join(' ');
+
+    const quotedMatches = [...haystack.matchAll(/'([^']+)'/g)].map((m) => m[1]).filter(Boolean);
+    if (quotedMatches.length > 0) {
+      return quotedMatches;
+    }
+
+    const bareMatches = [...haystack.matchAll(/\b\d+(?:\.\d+)?s?\b/gi)]
+      .map((m) => m[0])
+      .filter(Boolean);
+    const matches = Array.from(new Set(
+      bareMatches.map((value) => (/s$/i.test(value) ? value : Number.parseFloat(value))),
+    )).filter((value) => (typeof value === 'number' ? Number.isFinite(value) : Boolean(value)));
     if (matches.length > 0) {
       return matches;
     }

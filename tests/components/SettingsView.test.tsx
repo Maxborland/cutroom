@@ -18,14 +18,19 @@ vi.mock('../../src/lib/api', () => ({
         defaultImageModel: 'openai/gpt-image-1',
         defaultEnhanceModel: 'openai/gpt-image-1',
         defaultImageGenModel: 'fal/flux-kontext-max',
+        defaultImageNoRefGenModel: 'fal-endpoint:fal-ai/nano-banana-pro',
         defaultVideoGenModel: 'fal/minimax-hailuo',
         defaultAudioGenModel: 'fal/minimax/speech-02-hd',
         imageAspectRatio: '16:9',
         imageSize: 'auto',
         imageQuality: 'high',
+        imageNoRefAspectRatio: '9:16',
+        imageNoRefSize: 'auto',
+        imageNoRefQuality: '4K',
         videoQuality: '1080P',
         enhanceSize: 'auto',
         enhanceQuality: 'high',
+        enhanceAspectRatio: '1:1',
         masterPromptScriptwriter: 'System prompt',
         masterPromptShotSplitter: 'Splitter prompt',
         masterPromptEnhance: '',
@@ -39,7 +44,17 @@ vi.mock('../../src/lib/api', () => ({
           { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
         ],
         imageModels: [{ id: 'openai/gpt-image-1', name: 'GPT Image 1' }],
-        imageGenModels: [{ id: 'fal/flux-kontext-max', name: 'Flux Kontext Max' }],
+        imageGenModels: [
+          { id: 'fal/flux-kontext-max', name: 'Flux Kontext Max' },
+          {
+            id: 'fal-endpoint:fal-ai/nano-banana-pro',
+            name: 'Nano Banana Pro',
+            imageResolutionSupport: 'explicit',
+            imageResolutionOptions: ['1K', '2K', '4K'],
+            imageAspectRatioSupport: 'explicit',
+            imageAspectRatioOptions: ['1:1', '16:9', '9:16'],
+          },
+        ],
         videoGenModels: [
           { id: 'fal/kling-2.1-pro', name: 'Kling 2.1 Pro', videoQualitySupport: 'none' },
           {
@@ -110,7 +125,7 @@ describe('SettingsView', () => {
     })
 
     expect(container.querySelector('#generation')).toBeTruthy()
-    expect(container.querySelector('#quality')).toBeTruthy()
+    expect(container.querySelector('#quality')).toBeFalsy()
     expect(container.querySelector('#director')).toBeTruthy()
     expect(container.querySelector('#access')).toBeTruthy()
     expect(container.querySelector('#prompts')).toBeTruthy()
@@ -189,7 +204,10 @@ describe('SettingsView', () => {
     expect(api.settings.update).toHaveBeenCalledWith(
       expect.objectContaining({
         defaultImageNoRefGenModel: expect.any(String),
+        imageNoRefQuality: expect.any(String),
+        imageNoRefAspectRatio: expect.any(String),
         videoQuality: expect.any(String),
+        enhanceAspectRatio: expect.any(String),
       }),
     )
   })
@@ -224,21 +242,22 @@ describe('SettingsView', () => {
     })
 
     expect(screen.queryByText('High (4K)')).not.toBeInTheDocument()
-    expect(screen.getByText(/4K/)).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '768P' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '1080P' })).toBeInTheDocument()
   })
 
-  it('shows schema-driven supported video durations for the selected model', async () => {
+  it('keeps video model controls inline without extra duration hints', async () => {
     render(<SettingsView />)
 
     await waitFor(() => {
-      expect(screen.getByText(/Поддерживаемые длительности модели:/i)).toBeInTheDocument()
+      expect(screen.getByLabelText(/качество видео/i)).toBeInTheDocument()
     })
 
-    expect(screen.getByText(/5s, 8s/i)).toBeInTheDocument()
-    expect(screen.getByText(/длительность шота будет автоматически приведена/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Поддерживаемые длительности модели:/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/длительность шота будет автоматически приведена/i)).not.toBeInTheDocument()
   })
 
-  it('shows provider-native image capabilities for the selected Fal model', async () => {
+  it('renders provider-native image controls inline for the selected Fal model', async () => {
     vi.mocked(api.models.list).mockResolvedValueOnce({
       textModels: [{ id: 'openai/gpt-4o', name: 'GPT-4o' }],
       imageModels: [{ id: 'openai/gpt-image-1', name: 'GPT Image 1' }],
@@ -266,11 +285,27 @@ describe('SettingsView', () => {
     render(<SettingsView />)
 
     await waitFor(() => {
-      expect(screen.getByText(/Параметры для этой модели подтянуты прямо из схемы Fal API/i)).toBeInTheDocument()
+      expect(screen.getByLabelText(/разрешение генерации/i)).toBeInTheDocument()
     })
 
-    expect(screen.getByText(/Разрешения: 1K, 2K, 4K/i)).toBeInTheDocument()
-    expect(screen.getByText(/Соотношения сторон: 1:1, 16:9/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/^соотношение сторон$/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Параметры для этой модели подтянуты прямо из схемы Fal API/i)).not.toBeInTheDocument()
+  })
+
+  it('renders media controls next to their model blocks instead of a separate quality section', async () => {
+    const { container } = render(<SettingsView />)
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/модель генерации изображений/i)).toBeInTheDocument()
+    })
+
+    expect(container.querySelector('#quality')).toBeFalsy()
+    expect(screen.getByLabelText(/размер генерации/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/размер без референса/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/соотношение сторон без референса/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/качество видео/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/размер enhance/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/соотношение сторон enhance/i)).toBeInTheDocument()
   })
 
   it('creates a teammate invite link from settings', async () => {

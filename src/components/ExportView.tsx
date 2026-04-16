@@ -18,6 +18,9 @@ export function ExportView() {
     window.open(api.export.promptsUrl(project.id))
   }
 
+  const shotHasFinalPhoto = (shot: { generatedImages: string[]; enhancedImages?: string[] }) =>
+    (shot.enhancedImages?.length ?? 0) > 0 || shot.generatedImages.length > 0
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-2xl mx-auto space-y-8">
@@ -62,7 +65,7 @@ export function ExportView() {
                       <Film size={10} />
                       {shot.videoFile}
                     </span>
-                  ) : shot.generatedImages.length > 0 ? (
+                  ) : shotHasFinalPhoto(shot) ? (
                     <span className="flex items-center gap-1 text-sky text-[10px] font-mono">
                       <AlertCircle size={10} />
                       только изображения
@@ -90,7 +93,7 @@ export function ExportView() {
             Экспортировать ZIP
           </button>
           <p className="text-center text-[10px] text-text-muted">
-            ZIP содержит: пронумерованные видеоклипы, изображения, промпты (TXT), metadata.json
+            ZIP содержит: финальные фото full-res, видео шотов, отдельные дорожки диктора и музыки, промпты (TXT) и metadata.json для внешнего монтажа
           </p>
 
           <button

@@ -1,5 +1,10 @@
 import { type Project } from '../../lib/storage.js';
-import { IMAGE_MODELS, VIDEO_MODELS } from '../../lib/generation-models.js';
+import {
+  IMAGE_MODELS,
+  isVideoModelRuntimeSupported,
+  resolveVideoModel,
+  VIDEO_MODELS,
+} from '../../lib/generation-models.js';
 import { getGlobalSettings } from '../../lib/config.js';
 
 // Track active generation requests for cancellation
@@ -164,6 +169,13 @@ export function withDirectorGuardrails(prompt: string): string {
 // Resolve effective model and prompts by merging project + global settings
 export async function resolveSettings(project: Project) {
   const g = await getGlobalSettings();
+  const preferredVideoModel = g.defaultVideoGenModel || VIDEO_MODELS[0].id;
+  const fallbackVideoModel = VIDEO_MODELS.find((model) => isVideoModelRuntimeSupported(model))?.id || VIDEO_MODELS[0].id;
+  const resolvedPreferredVideoModel = resolveVideoModel(preferredVideoModel);
+  const videoGenModel = isVideoModelRuntimeSupported(resolvedPreferredVideoModel)
+    ? preferredVideoModel
+    : fallbackVideoModel;
+
   return {
     model: g.defaultTextModel || project.settings.model,
     scriptModel:
@@ -185,15 +197,19 @@ export async function resolveSettings(project: Project) {
     enhanceModel: g.defaultEnhanceModel || 'openai/gpt-image-1',
     imageSize: g.imageSize || 'auto',
     imageQuality: g.imageQuality || 'high',
+    imageNoRefSize: g.imageNoRefSize || g.imageSize || 'auto',
+    imageNoRefQuality: g.imageNoRefQuality || g.imageQuality || 'high',
+    imageNoRefAspectRatio: g.imageNoRefAspectRatio || g.imageAspectRatio || '16:9',
     videoQuality: g.videoQuality || g.imageQuality || 'high',
     enhanceSize: g.enhanceSize || 'auto',
     enhanceQuality: g.enhanceQuality || 'high',
+    enhanceAspectRatio: g.enhanceAspectRatio || g.imageAspectRatio || '16:9',
     temperature: project.settings.temperature,
     scriptwriterPrompt: g.masterPromptScriptwriter || project.settings.scriptwriterPrompt,
     shotSplitterPrompt: g.masterPromptShotSplitter || project.settings.shotSplitterPrompt,
     enhancePrompt: g.masterPromptEnhance || DEFAULT_ENHANCE_PROMPT,
     imageGenModel: g.defaultImageGenModel || IMAGE_MODELS[0].id,
-    videoGenModel: g.defaultVideoGenModel || VIDEO_MODELS[0].id,
+    videoGenModel,
     imageAspectRatio: g.imageAspectRatio || '16:9',
     directorModel:
       g.defaultDirectorModel ||

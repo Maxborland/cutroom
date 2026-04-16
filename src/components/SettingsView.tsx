@@ -8,7 +8,6 @@ import {
   Loader2,
   CheckCircle2,
   Sparkles,
-  Maximize2,
   Film,
   Crown,
   RefreshCw,
@@ -45,11 +44,60 @@ const ASPECT_RATIO_OPTIONS = [
 
 const EMPTY_MODEL_OPTIONS: string[] = []
 
+function normalizeImageAspectRatioValue(rawAspectRatio: string, model?: ImageModelOption): string {
+  const modelOptions = model?.imageAspectRatioOptions || []
+  const hasExplicitSupport = model?.imageAspectRatioSupport === 'explicit' && modelOptions.length > 0
+  const normalizedAspectRatio = rawAspectRatio.trim()
+
+  if (!hasExplicitSupport) {
+    return normalizedAspectRatio || '16:9'
+  }
+
+  if (!normalizedAspectRatio) return modelOptions[0]
+
+  const exact = modelOptions.find((value) => value.toLowerCase() === normalizedAspectRatio.toLowerCase())
+  return exact || modelOptions[0]
+}
+
+function getImageModelControlState(model?: ImageModelOption) {
+  const modelResolutionOptions = model?.imageResolutionOptions || EMPTY_MODEL_OPTIONS
+  const hasModelResolutionOptions =
+    model?.imageResolutionSupport === 'explicit' && modelResolutionOptions.length > 0
+  const modelAspectRatioOptions = model?.imageAspectRatioOptions || EMPTY_MODEL_OPTIONS
+  const hasModelAspectRatioOptions =
+    model?.imageAspectRatioSupport === 'explicit' && modelAspectRatioOptions.length > 0
+
+  return {
+    modelAspectRatioOptions,
+    hasModelResolutionOptions,
+    hasModelAspectRatioOptions,
+    qualityOptions: hasModelResolutionOptions
+      ? modelResolutionOptions.map((value) => ({ value, label: value }))
+      : QUALITY_OPTIONS,
+    aspectRatioOptions: hasModelAspectRatioOptions
+      ? modelAspectRatioOptions.map((value) => ({ value, label: value }))
+      : ASPECT_RATIO_OPTIONS,
+  }
+}
+
+function dedupeImageModelOptions(models: ImageModelOption[]): ImageModelOption[] {
+  const seen = new Set<string>()
+  const deduped: ImageModelOption[] = []
+
+  for (const model of models) {
+    const id = model.id.trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    deduped.push(model)
+  }
+
+  return deduped
+}
+
 const SECTIONS = [
   { id: 'license', label: 'Лицензия', icon: <Crown size={14} /> },
   { id: 'api', label: 'Ключи и LLM', icon: <Key size={14} /> },
   { id: 'generation', label: 'Генерация медиа', icon: <Film size={14} /> },
-  { id: 'quality', label: 'Размер и качество', icon: <Maximize2 size={14} /> },
   { id: 'director', label: 'Креативный директор', icon: <Crown size={14} /> },
   { id: 'access', label: 'Доступ команды', icon: <UserPlus size={14} /> },
   { id: 'prompts', label: 'Мастер-промпты', icon: <Wand2 size={14} /> },
@@ -155,6 +203,35 @@ function SettingsSection({
   )
 }
 
+function MediaConfigCard({
+  title,
+  accent,
+  note,
+  children,
+}: {
+  title: string
+  accent: string
+  note?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="relative overflow-visible rounded-[8px] border border-border/80 bg-surface-2/90 p-3 sm:p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.02)_inset]">
+      <div className={`pointer-events-none absolute inset-x-0 top-0 h-[2px] ${accent}`} />
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <span className="inline-flex items-center rounded-full border border-border/70 bg-surface-3 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-text-secondary">
+          {title}
+        </span>
+      </div>
+      {note && (
+        <p className="mb-3 max-w-[52ch] text-[10px] leading-relaxed text-text-muted">
+          {note}
+        </p>
+      )}
+      {children}
+    </div>
+  )
+}
+
 export function SettingsView() {
   const currentUser = useAuthStore((state) => state.user)
   const [apiKey, setApiKey] = useState('')
@@ -174,9 +251,13 @@ export function SettingsView() {
   const [imageAspectRatio, setImageAspectRatio] = useState('16:9')
   const [imageSize, setImageSize] = useState('auto')
   const [imageQuality, setImageQuality] = useState('high')
+  const [imageNoRefAspectRatio, setImageNoRefAspectRatio] = useState('16:9')
+  const [imageNoRefSize, setImageNoRefSize] = useState('auto')
+  const [imageNoRefQuality, setImageNoRefQuality] = useState('high')
   const [videoQuality, setVideoQuality] = useState('high')
   const [enhanceSize, setEnhanceSize] = useState('auto')
   const [enhanceQuality, setEnhanceQuality] = useState('high')
+  const [enhanceAspectRatio, setEnhanceAspectRatio] = useState('16:9')
   const [scriptPrompt, setScriptPrompt] = useState('')
   const [splitterPrompt, setSplitterPrompt] = useState('')
   const [directorModel, setDirectorModel] = useState('openai/gpt-4o')
@@ -186,7 +267,7 @@ export function SettingsView() {
   const [imageGenPrompt, setImageGenPrompt] = useState('')
 
   const [textModels, setTextModels] = useState<{ id: string; name: string }[]>([])
-  const [imageModels, setImageModels] = useState<{ id: string; name: string }[]>([])
+  const [imageModels, setImageModels] = useState<ImageModelOption[]>([])
   const [imageGenModels, setImageGenModels] = useState<ImageModelOption[]>([])
   const [videoGenModels, setVideoGenModels] = useState<VideoModelOption[]>([])
   const [audioGenModels, setAudioGenModels] = useState<{ id: string; name: string }[]>([])
@@ -271,9 +352,13 @@ export function SettingsView() {
         if (settings.imageAspectRatio) setImageAspectRatio(settings.imageAspectRatio)
         if (settings.imageSize) setImageSize(settings.imageSize)
         if (settings.imageQuality) setImageQuality(settings.imageQuality)
+        if (settings.imageNoRefAspectRatio) setImageNoRefAspectRatio(settings.imageNoRefAspectRatio)
+        if (settings.imageNoRefSize) setImageNoRefSize(settings.imageNoRefSize)
+        if (settings.imageNoRefQuality) setImageNoRefQuality(settings.imageNoRefQuality)
         if (settings.videoQuality) setVideoQuality(settings.videoQuality)
         if (settings.enhanceSize) setEnhanceSize(settings.enhanceSize)
         if (settings.enhanceQuality) setEnhanceQuality(settings.enhanceQuality)
+        if (settings.enhanceAspectRatio) setEnhanceAspectRatio(settings.enhanceAspectRatio)
         if (settings.masterPromptScriptwriter) setScriptPrompt(settings.masterPromptScriptwriter)
         if (settings.masterPromptShotSplitter) setSplitterPrompt(settings.masterPromptShotSplitter)
         if (settings.defaultDirectorModel) setDirectorModel(settings.defaultDirectorModel)
@@ -321,28 +406,16 @@ export function SettingsView() {
   }, [imageGenModel, imageGenModels, imageQuality])
 
   const selectedImageGenModel = imageGenModels.find((model) => model.id === imageGenModel)
-  const modelImageResolutionOptions = selectedImageGenModel?.imageResolutionOptions || EMPTY_MODEL_OPTIONS
-  const hasModelImageResolutionOptions =
-    selectedImageGenModel?.imageResolutionSupport === 'explicit' && modelImageResolutionOptions.length > 0
-  const modelImageAspectRatioOptions = selectedImageGenModel?.imageAspectRatioOptions || EMPTY_MODEL_OPTIONS
-  const hasModelImageAspectRatioOptions =
-    selectedImageGenModel?.imageAspectRatioSupport === 'explicit' && modelImageAspectRatioOptions.length > 0
-  const imageQualityOptions = hasModelImageResolutionOptions
-    ? modelImageResolutionOptions.map((value) => ({ value, label: value }))
-    : QUALITY_OPTIONS
-  const imageAspectRatioOptions = hasModelImageAspectRatioOptions
-    ? modelImageAspectRatioOptions.map((value) => ({ value, label: value }))
-    : ASPECT_RATIO_OPTIONS
-  const maxModelImageResolution = hasModelImageResolutionOptions
-    ? modelImageResolutionOptions[modelImageResolutionOptions.length - 1]
-    : null
-  const selectedImageModelHasSchemaSummary =
-    hasModelImageResolutionOptions || hasModelImageAspectRatioOptions
-  const noRefImageModelOptions = [
+  const {
+    modelAspectRatioOptions: modelImageAspectRatioOptions,
+    hasModelResolutionOptions: hasModelImageResolutionOptions,
+    hasModelAspectRatioOptions: hasModelImageAspectRatioOptions,
+    qualityOptions: imageQualityOptions,
+    aspectRatioOptions: imageAspectRatioOptions,
+  } = getImageModelControlState(selectedImageGenModel)
+  const noRefImageModelOptions: ImageModelOption[] = [
     { id: '', name: 'OpenRouter (по умолчанию)' },
-    ...imageGenModels
-      .filter((model) => !model.requiresImageInput)
-      .map((model) => ({ id: model.id, name: model.name })),
+    ...imageGenModels.filter((model) => !model.requiresImageInput),
   ]
   if (!noRefImageModelOptions.some((model) => model.id === 'fal-endpoint:fal-ai/nano-banana-pro')) {
     noRefImageModelOptions.push({
@@ -351,33 +424,68 @@ export function SettingsView() {
     })
   }
   if (imageNoRefGenModel && !noRefImageModelOptions.some((model) => model.id === imageNoRefGenModel)) {
-    const fallbackName = imageGenModels.find((model) => model.id === imageNoRefGenModel)?.name || imageNoRefGenModel
-    noRefImageModelOptions.push({ id: imageNoRefGenModel, name: fallbackName })
+    const fallbackModel = imageGenModels.find((model) => model.id === imageNoRefGenModel)
+    noRefImageModelOptions.push(fallbackModel || { id: imageNoRefGenModel, name: imageNoRefGenModel })
   }
+  const selectedNoRefImageModel = noRefImageModelOptions.find((model) => model.id === imageNoRefGenModel)
+  const {
+    modelAspectRatioOptions: modelNoRefImageAspectRatioOptions,
+    hasModelResolutionOptions: hasNoRefImageResolutionOptions,
+    hasModelAspectRatioOptions: hasNoRefImageAspectRatioOptions,
+    qualityOptions: noRefImageQualityOptions,
+    aspectRatioOptions: noRefImageAspectRatioOptions,
+  } = getImageModelControlState(selectedNoRefImageModel)
+  const enhanceModelOptions = dedupeImageModelOptions([
+    ...imageModels,
+    ...imageGenModels,
+  ])
+  if (enhanceModel && !enhanceModelOptions.some((model) => model.id === enhanceModel)) {
+    enhanceModelOptions.push({ id: enhanceModel, name: enhanceModel })
+  }
+  const selectedEnhanceModel = enhanceModelOptions.find((model) => model.id === enhanceModel)
+  const {
+    modelAspectRatioOptions: modelEnhanceAspectRatioOptions,
+    hasModelResolutionOptions: hasEnhanceResolutionOptions,
+    hasModelAspectRatioOptions: hasEnhanceAspectRatioOptions,
+    qualityOptions: enhanceQualityOptions,
+    aspectRatioOptions: enhanceAspectRatioOptions,
+  } = getImageModelControlState(selectedEnhanceModel)
 
   useEffect(() => {
     if (!hasModelImageAspectRatioOptions) return
 
-    const current = imageAspectRatio.trim()
-    const exact = modelImageAspectRatioOptions.find((value) => value.toLowerCase() === current.toLowerCase())
-    if (exact) {
-      if (exact !== imageAspectRatio) setImageAspectRatio(exact)
-      return
-    }
-
-    setImageAspectRatio(modelImageAspectRatioOptions[0])
+    const normalized = normalizeImageAspectRatioValue(imageAspectRatio, selectedImageGenModel)
+    if (normalized !== imageAspectRatio) setImageAspectRatio(normalized)
   }, [hasModelImageAspectRatioOptions, imageAspectRatio, modelImageAspectRatioOptions])
+
+  useEffect(() => {
+    const normalized = normalizeImageQualityValue(imageNoRefQuality, selectedNoRefImageModel)
+    if (normalized !== imageNoRefQuality) setImageNoRefQuality(normalized)
+  }, [imageNoRefGenModel, imageNoRefQuality, selectedNoRefImageModel])
+
+  useEffect(() => {
+    if (!hasNoRefImageAspectRatioOptions) return
+
+    const normalized = normalizeImageAspectRatioValue(imageNoRefAspectRatio, selectedNoRefImageModel)
+    if (normalized !== imageNoRefAspectRatio) setImageNoRefAspectRatio(normalized)
+  }, [hasNoRefImageAspectRatioOptions, imageNoRefAspectRatio, modelNoRefImageAspectRatioOptions, selectedNoRefImageModel])
+
+  useEffect(() => {
+    const normalized = normalizeImageQualityValue(enhanceQuality, selectedEnhanceModel)
+    if (normalized !== enhanceQuality) setEnhanceQuality(normalized)
+  }, [enhanceModel, enhanceQuality, selectedEnhanceModel])
+
+  useEffect(() => {
+    if (!hasEnhanceAspectRatioOptions) return
+
+    const normalized = normalizeImageAspectRatioValue(enhanceAspectRatio, selectedEnhanceModel)
+    if (normalized !== enhanceAspectRatio) setEnhanceAspectRatio(normalized)
+  }, [enhanceAspectRatio, hasEnhanceAspectRatioOptions, modelEnhanceAspectRatioOptions, selectedEnhanceModel])
 
   const selectedVideoModel = videoGenModels.find((model) => model.id === videoGenModel)
   const modelVideoQualityOptions = selectedVideoModel?.videoQualityOptions || EMPTY_MODEL_OPTIONS
   const hasModelVideoQualityOptions =
     selectedVideoModel?.videoQualitySupport === 'explicit' && modelVideoQualityOptions.length > 0
-  const modelVideoDurationOptions = selectedVideoModel?.videoDurationOptions || EMPTY_MODEL_OPTIONS
-  const hasModelVideoDurationOptions =
-    selectedVideoModel?.videoDurationSupport === 'explicit' && modelVideoDurationOptions.length > 0
-  const maxModelVideoQuality = hasModelVideoQualityOptions
-    ? modelVideoQualityOptions[modelVideoQualityOptions.length - 1]
-    : null
 
   const handleSave = async () => {
     setSaving(true)
@@ -386,6 +494,8 @@ export function SettingsView() {
 
     try {
       const normalizedImageQuality = normalizeImageQualityValue(imageQuality, selectedImageGenModel)
+      const normalizedImageNoRefQuality = normalizeImageQualityValue(imageNoRefQuality, selectedNoRefImageModel)
+      const normalizedEnhanceQuality = normalizeImageQualityValue(enhanceQuality, selectedEnhanceModel)
       const normalizedVideoQuality = normalizeVideoQualityValue(videoQuality, selectedVideoModel)
       await api.settings.update({
         openRouterApiKey: apiKey,
@@ -405,9 +515,13 @@ export function SettingsView() {
         imageAspectRatio,
         imageSize,
         imageQuality: normalizedImageQuality,
+        imageNoRefAspectRatio,
+        imageNoRefSize,
+        imageNoRefQuality: normalizedImageNoRefQuality,
         videoQuality: normalizedVideoQuality,
         enhanceSize,
-        enhanceQuality,
+        enhanceQuality: normalizedEnhanceQuality,
+        enhanceAspectRatio,
         defaultDirectorModel: directorModel,
         masterPromptDirector: directorPrompt,
         masterPromptScriptwriter: scriptPrompt,
@@ -417,6 +531,8 @@ export function SettingsView() {
         masterPromptImageGen: imageGenPrompt,
       })
       if (normalizedImageQuality !== imageQuality) setImageQuality(normalizedImageQuality)
+      if (normalizedImageNoRefQuality !== imageNoRefQuality) setImageNoRefQuality(normalizedImageNoRefQuality)
+      if (normalizedEnhanceQuality !== enhanceQuality) setEnhanceQuality(normalizedEnhanceQuality)
       if (normalizedVideoQuality !== videoQuality) setVideoQuality(normalizedVideoQuality)
       await loadModels()
       setSaved(true)
@@ -645,8 +761,12 @@ export function SettingsView() {
                 {modelsError && <p className="text-[11px] text-rose mt-2">{modelsError}</p>}
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <MediaConfigCard
+                  title="Изображения"
+                  accent="bg-gradient-to-r from-amber via-orange-500/70 to-transparent"
+                  note={selectedImageGenModel?.requiresImageInput ? 'Для этой модели обязателен референс из брифа или исходного кадра.' : undefined}
+                >
                   <ModelSelect
                     label="Модель генерации изображений"
                     value={imageGenModel}
@@ -655,24 +775,63 @@ export function SettingsView() {
                     loading={modelsLoading}
                     placeholder="fal/flux-kontext-max"
                   />
-                  {selectedImageGenModel?.requiresImageInput && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      Для этой модели обязателен референс (из брифа или исходного кадра).
-                    </p>
-                  )}
-                  {selectedImageModelHasSchemaSummary && (
-                    <div className="mt-2 rounded-[5px] border border-border/70 bg-surface-3 px-3 py-2 text-[10px] text-text-muted space-y-1">
-                      <p>Параметры для этой модели подтянуты прямо из схемы Fal API.</p>
-                      {hasModelImageResolutionOptions && (
-                        <p>Разрешения: {modelImageResolutionOptions.join(', ')}</p>
-                      )}
-                      {hasModelImageAspectRatioOptions && (
-                        <p>Соотношения сторон: {modelImageAspectRatioOptions.join(', ')}</p>
-                      )}
+                  <div className="mt-4 border-t border-border/70 pt-3">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label htmlFor="image-size" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          Размер генерации
+                        </label>
+                        <select
+                          id="image-size"
+                          value={imageSize}
+                          onChange={(e) => setImageSize(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                          disabled={hasModelImageResolutionOptions}
+                        >
+                          {SIZE_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="image-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          {hasModelImageResolutionOptions ? 'Разрешение генерации' : 'Качество генерации'}
+                        </label>
+                        <select
+                          id="image-quality"
+                          value={imageQuality}
+                          onChange={(e) => setImageQuality(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                        >
+                          {imageQualityOptions.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="image-aspect-ratio" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          Соотношение сторон
+                        </label>
+                        <select
+                          id="image-aspect-ratio"
+                          value={imageAspectRatio}
+                          onChange={(e) => setImageAspectRatio(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                        >
+                          {imageAspectRatioOptions.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                  )}
-                </div>
-                <div>
+                  </div>
+                </MediaConfigCard>
+
+                <MediaConfigCard
+                  title="Без референса"
+                  accent="bg-gradient-to-r from-cyan-400/70 via-sky-400/40 to-transparent"
+                  note="Используется, когда выбранная image-модель требует референс, но у шота нет прикрепленных изображений."
+                >
                   <ModelSelect
                     label={'\u041c\u043e\u0434\u0435\u043b\u044c \u0431\u0435\u0437 \u0440\u0435\u0444\u0435\u0440\u0435\u043d\u0441\u0430'}
                     value={imageNoRefGenModel}
@@ -681,171 +840,168 @@ export function SettingsView() {
                     loading={modelsLoading}
                     placeholder={'OpenRouter (\u043f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e)'}
                   />
-                  <p className="text-[10px] text-text-muted mt-1">
-                    {'\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442\u0441\u044f, \u043a\u043e\u0433\u0434\u0430 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u0430\u044f image-\u043c\u043e\u0434\u0435\u043b\u044c \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u0440\u0435\u0444\u0435\u0440\u0435\u043d\u0441, \u043d\u043e \u0443 \u0448\u043e\u0442\u0430 \u043d\u0435\u0442 \u043f\u0440\u0438\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u043d\u044b\u0445 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0439.'}
-                  </p>
-                </div>
-                <ModelSelect
-                  label="Модель генерации видео"
-                  value={videoGenModel}
-                  onChange={setVideoGenModel}
-                  models={videoGenModels}
-                  loading={modelsLoading}
-                  placeholder="fal/kling-2.1-pro"
-                />
-                <ModelSelect
-                  label="Модель Enhance"
-                  value={enhanceModel}
-                  onChange={setEnhanceModel}
-                  models={imageModels}
-                  loading={modelsLoading}
-                  placeholder="openai/gpt-image-1"
-                />
-                <ModelSelect
-                  label="Модель генерации аудио"
-                  value={audioGenModel}
-                  onChange={setAudioGenModel}
-                  models={audioGenModels}
-                  loading={modelsLoading}
-                  placeholder="fal/minimax/speech-02-hd"
-                />
-              </div>
-            </SettingsSection>
+                  <div className="mt-4 border-t border-border/70 pt-3">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label htmlFor="image-no-ref-size" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          Размер без референса
+                        </label>
+                        <select
+                          id="image-no-ref-size"
+                          value={imageNoRefSize}
+                          onChange={(e) => setImageNoRefSize(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                          disabled={hasNoRefImageResolutionOptions}
+                        >
+                          {SIZE_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="image-no-ref-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          {hasNoRefImageResolutionOptions ? 'Разрешение без референса' : 'Качество без референса'}
+                        </label>
+                        <select
+                          id="image-no-ref-quality"
+                          value={imageNoRefQuality}
+                          onChange={(e) => setImageNoRefQuality(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                        >
+                          {noRefImageQualityOptions.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="image-no-ref-aspect-ratio" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          Соотношение сторон без референса
+                        </label>
+                        <select
+                          id="image-no-ref-aspect-ratio"
+                          value={imageNoRefAspectRatio}
+                          onChange={(e) => setImageNoRefAspectRatio(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                        >
+                          {noRefImageAspectRatioOptions.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </MediaConfigCard>
 
-            <SettingsSection
-              id="quality"
-              icon={<Maximize2 size={14} />}
-              title="Размер и качество"
-              subtitle="Для видео качество доступно только если модель явно отдала поддерживаемые разрешения через API."
-            >
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                <div>
-                  <label htmlFor="image-size" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    Размер генерации
-                  </label>
-                  <select
-                    id="image-size"
-                    value={imageSize}
-                    onChange={(e) => setImageSize(e.target.value)}
-                    className="w-full brutal-input px-3 py-2 text-sm"
-                    disabled={hasModelImageResolutionOptions}
+                <MediaConfigCard
+                  title="Видео"
+                  accent="bg-gradient-to-r from-emerald-400/70 via-lime-400/40 to-transparent"
+                >
+                  <ModelSelect
+                    label="Модель генерации видео"
+                    value={videoGenModel}
+                    onChange={setVideoGenModel}
+                    models={videoGenModels}
+                    loading={modelsLoading}
+                    placeholder="fal/kling-2.1-pro"
+                  />
+                  <div className="mt-4 border-t border-border/70 pt-3">
+                    <label htmlFor="video-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                      Качество видео
+                    </label>
+                    <select
+                      id="video-quality"
+                      value={videoQuality}
+                      onChange={(e) => setVideoQuality(e.target.value)}
+                      className="w-full brutal-input px-3 py-2 text-sm"
+                      disabled={!hasModelVideoQualityOptions}
+                    >
+                      {hasModelVideoQualityOptions
+                        ? modelVideoQualityOptions.map((value) => (
+                            <option key={value} value={value}>{value}</option>
+                          ))
+                        : <option value="auto">Нет доступных resolution-опций</option>}
+                    </select>
+                  </div>
+                </MediaConfigCard>
+
+                <MediaConfigCard
+                  title="Enhance"
+                  accent="bg-gradient-to-r from-fuchsia-400/60 via-rose-400/35 to-transparent"
+                >
+                  <ModelSelect
+                    label="Модель Enhance"
+                    value={enhanceModel}
+                    onChange={setEnhanceModel}
+                    models={enhanceModelOptions}
+                    loading={modelsLoading}
+                    placeholder="openai/gpt-image-1"
+                  />
+                  <div className="mt-4 border-t border-border/70 pt-3">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label htmlFor="enhance-size" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          Размер Enhance
+                        </label>
+                        <select
+                          id="enhance-size"
+                          value={enhanceSize}
+                          onChange={(e) => setEnhanceSize(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                          disabled={hasEnhanceResolutionOptions}
+                        >
+                          {SIZE_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="enhance-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          {hasEnhanceResolutionOptions ? 'Разрешение Enhance' : 'Качество Enhance'}
+                        </label>
+                        <select
+                          id="enhance-quality"
+                          value={enhanceQuality}
+                          onChange={(e) => setEnhanceQuality(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                        >
+                          {enhanceQualityOptions.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="enhance-aspect-ratio" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
+                          Соотношение сторон Enhance
+                        </label>
+                        <select
+                          id="enhance-aspect-ratio"
+                          value={enhanceAspectRatio}
+                          onChange={(e) => setEnhanceAspectRatio(e.target.value)}
+                          className="w-full brutal-input px-3 py-2 text-sm"
+                        >
+                          {enhanceAspectRatioOptions.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </MediaConfigCard>
+
+                <div className="lg:col-span-2">
+                  <MediaConfigCard
+                    title="Аудио"
+                    accent="bg-gradient-to-r from-violet-400/55 via-indigo-400/30 to-transparent"
                   >
-                    {SIZE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                  {hasModelImageResolutionOptions && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      Для выбранной модели размер кадра задаётся через список разрешений справа.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label htmlFor="image-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    {hasModelImageResolutionOptions ? 'Разрешение генерации' : 'Качество генерации'}
-                  </label>
-                  <select
-                    id="image-quality"
-                    value={imageQuality}
-                    onChange={(e) => setImageQuality(e.target.value)}
-                    className="w-full brutal-input px-3 py-2 text-sm"
-                  >
-                    {imageQualityOptions.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                  {hasModelImageResolutionOptions && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      {maxModelImageResolution?.toLowerCase() === '4k'
-                        ? `Максимум для выбранной модели: ${maxModelImageResolution}`
-                        : `Максимум для выбранной модели: ${maxModelImageResolution}. 4K недоступно для этой модели.`}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label htmlFor="image-aspect-ratio" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    Соотношение сторон
-                  </label>
-                  <select
-                    id="image-aspect-ratio"
-                    value={imageAspectRatio}
-                    onChange={(e) => setImageAspectRatio(e.target.value)}
-                    className="w-full brutal-input px-3 py-2 text-sm"
-                  >
-                    {imageAspectRatioOptions.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                  {hasModelImageAspectRatioOptions && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      Список сторон подтянут из возможностей выбранной модели.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label htmlFor="video-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    Качество видео
-                  </label>
-                  <select
-                    id="video-quality"
-                    value={videoQuality}
-                    onChange={(e) => setVideoQuality(e.target.value)}
-                    className="w-full brutal-input px-3 py-2 text-sm"
-                    disabled={!hasModelVideoQualityOptions}
-                  >
-                    {hasModelVideoQualityOptions
-                      ? modelVideoQualityOptions.map((value) => (
-                          <option key={value} value={value}>{value}</option>
-                        ))
-                      : <option value="auto">Нет доступных resolution-опций</option>}
-                  </select>
-                  {hasModelVideoQualityOptions && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      {maxModelVideoQuality?.toLowerCase() === '4k'
-                        ? `Максимум для выбранной модели: ${maxModelVideoQuality}`
-                        : `Максимум для выбранной модели: ${maxModelVideoQuality}. 4K недоступно для этой модели.`}
-                    </p>
-                  )}
-                  {!hasModelVideoQualityOptions && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      У выбранной видео-модели API не вернуло поддерживаемые разрешения.
-                    </p>
-                  )}
-                  {hasModelVideoDurationOptions && (
-                    <p className="text-[10px] text-text-muted mt-1">
-                      Поддерживаемые длительности модели: {modelVideoDurationOptions.join(', ')}. При генерации длительность шота будет автоматически приведена к ближайшему поддерживаемому значению.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label htmlFor="enhance-size" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    Размер Enhance
-                  </label>
-                  <select
-                    id="enhance-size"
-                    value={enhanceSize}
-                    onChange={(e) => setEnhanceSize(e.target.value)}
-                    className="w-full brutal-input px-3 py-2 text-sm"
-                  >
-                    {SIZE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="enhance-quality" className="font-mono text-[10px] uppercase tracking-wider text-text-muted block mb-1.5">
-                    Качество Enhance
-                  </label>
-                  <select
-                    id="enhance-quality"
-                    value={enhanceQuality}
-                    onChange={(e) => setEnhanceQuality(e.target.value)}
-                    className="w-full brutal-input px-3 py-2 text-sm"
-                  >
-                    {QUALITY_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
+                    <ModelSelect
+                      label="Модель генерации аудио"
+                      value={audioGenModel}
+                      onChange={setAudioGenModel}
+                      models={audioGenModels}
+                      loading={modelsLoading}
+                      placeholder="fal/minimax/speech-02-hd"
+                    />
+                  </MediaConfigCard>
                 </div>
               </div>
             </SettingsSection>

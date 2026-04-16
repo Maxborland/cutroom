@@ -362,4 +362,67 @@ describe('fal image generation fallback', () => {
 
     logSpy.mockRestore()
   })
+
+  it('uses dedicated no-reference resolution and aspect ratio settings instead of primary image controls', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai%2Fnano-banana-pro')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            openapi: '3.1.0',
+            info: { title: 'Fal Queue API', version: '1.0.0' },
+            paths: {},
+            components: {
+              schemas: {
+                NanoBananaInput: {
+                  type: 'object',
+                  properties: {
+                    resolution: { enum: ['1K', '2K', '4K'] },
+                    aspect_ratio: { enum: ['1:1', '16:9', '9:16'] },
+                  },
+                },
+              },
+            },
+          }),
+        })
+      }
+
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await request(app)
+      .put('/api/settings')
+      .send({
+        falApiKey: 'fal_test_key',
+        defaultImageGenModel: 'fal/nano-banana-pro',
+        defaultImageNoRefGenModel: 'fal-endpoint:fal-ai/nano-banana-pro',
+        imageQuality: '1K',
+        imageAspectRatio: '1:1',
+        imageNoRefQuality: '4K',
+        imageNoRefAspectRatio: '9:16',
+      })
+      .expect(200)
+
+    const { project, shot } = await createProjectWithShot({
+      assetRefs: [],
+    })
+
+    await request(app)
+      .post(`/api/projects/${project.id}/shots/${shot.id}/generate-image`)
+      .send({})
+      .expect(200)
+
+    expect(runMock).toHaveBeenCalledWith(
+      'fal-ai/nano-banana-pro',
+      expect.objectContaining({
+        input: expect.objectContaining({
+          resolution: '4K',
+          aspect_ratio: '9:16',
+        }),
+      }),
+    )
+  })
 })

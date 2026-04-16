@@ -18,6 +18,7 @@ import {
 import { generateVideoFromImage } from '../../lib/generation.js';
 import { resolveVideoModel, resolveVideoQualityInput } from '../../lib/generation-models.js';
 import { getBestImageFile, getMimeType } from '../../lib/media-utils.js';
+import { optimizeVideoInferenceImage } from '../../lib/video-inference-image.js';
 import { safeLogValue } from '../../lib/safe-log.js';
 import { getErrorMessage, sendApiError } from '../../lib/api-error.js';
 import { resolveSettings, activeGenerations, genKey } from './shared.js';
@@ -118,8 +119,7 @@ router.post('/shots/:shotId/generate-video', generationLimiter, async (req: Requ
         sendApiError(res, 404, `Source image file not found: ${sourceFile}`);
         return;
       }
-      const mimeType = getMimeType(sourceFile);
-      sourceImageUrl = `data:${mimeType};base64,${sourceBuffer.toString('base64')}`;
+      sourceImageUrl = await optimizeVideoInferenceImage(sourceBuffer, getMimeType(sourceFile));
     }
 
     const videoPrompt = req.body.prompt || shot.videoPrompt;
@@ -359,8 +359,7 @@ router.post('/generate-all-videos', generationLimiter, async (req: Request, res:
           continue;
         }
 
-        const mimeType = getMimeType(sourceFile);
-        sourceImageUrl = `data:${mimeType};base64,${sourceBuffer.toString('base64')}`;
+        sourceImageUrl = await optimizeVideoInferenceImage(sourceBuffer, getMimeType(sourceFile));
       }
 
       try {

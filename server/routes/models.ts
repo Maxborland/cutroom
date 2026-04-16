@@ -5,6 +5,7 @@ import {
   DYNAMIC_FAL_MODEL_PREFIX,
   getVideoModelQualityOptions,
   IMAGE_MODELS,
+  isVideoModelRuntimeSupported,
   resolveImageModel,
   resolveVideoModel,
   VIDEO_MODELS,
@@ -273,20 +274,29 @@ function toImageModelOption(
   return option;
 }
 
-function toVideoModelOption(base: ModelOption, explicitVideoQualityOptions: string[] = []): ModelOption {
+function toVideoModelOption(
+  base: ModelOption,
+  explicitVideoQualityOptions: string[] = [],
+  explicitVideoDurationOptions: string[] = [],
+): ModelOption {
   const normalizedExplicit = normalizeVideoQualityOptions(explicitVideoQualityOptions);
+  const normalizedDurations = normalizeModelOptions(explicitVideoDurationOptions);
+
+  const option: ModelOption = {
+    ...base,
+    videoQualitySupport: normalizedExplicit.length > 0 ? 'explicit' : 'none',
+  };
+
   if (normalizedExplicit.length > 0) {
-    return {
-      ...base,
-      videoQualityOptions: normalizedExplicit,
-      videoQualitySupport: 'explicit',
-    };
+    option.videoQualityOptions = normalizedExplicit;
   }
 
-  return {
-    ...base,
-    videoQualitySupport: 'none',
-  };
+  if (normalizedDurations.length > 0) {
+    option.videoDurationSupport = 'explicit';
+    option.videoDurationOptions = normalizedDurations;
+  }
+
+  return option;
 }
 
 function getFalEndpointIdForModel(modelId: string, kind: 'image' | 'video'): string | null {
@@ -478,6 +488,12 @@ function extractVideoQualityOptionsFromFalModel(model: FalApiModel): string[] {
   );
 }
 
+function extractVideoDurationOptionsFromFalModel(model: FalApiModel): string[] {
+  return normalizeModelOptions(
+    collectFalSchemaFieldOptions(model, ['duration', 'length', 'duration_seconds', 'durationSeconds']),
+  );
+}
+
 function extractImageResolutionOptionsFromFalModel(model: FalApiModel): string[] {
   return normalizeImageResolutionOptions(
     collectFalSchemaFieldOptions(model, ['resolution']),
@@ -490,6 +506,87 @@ function extractImageAspectRatioOptionsFromFalModel(model: FalApiModel): string[
   );
 }
 
+function getFalVideoModeLabel(endpoint: string): 'Image to Video' | 'Text to Video' | null {
+  const value = endpoint.toLowerCase();
+  if (value.includes('/image-to-video')) return 'Image to Video';
+  if (value.includes('/text-to-video')) return 'Text to Video';
+  return null;
+}
+
+function withFalVideoModeSuffix(name: string, endpoint: string): string {
+  const modeLabel = getFalVideoModeLabel(endpoint);
+  if (!modeLabel) return name;
+
+  if (/image to video|text to video/i.test(name)) {
+    return name;
+  }
+
+  return `${name} (${modeLabel})`;
+}
+
+function getFalVideoCapabilityFamily(modelId: string): string | null {
+  if (!modelId.startsWith(DYNAMIC_FAL_MODEL_PREFIX)) return null;
+
+  const endpoint = modelId.slice(DYNAMIC_FAL_MODEL_PREFIX.length);
+  return endpoint
+    .replace(/\/(image-to-video|text-to-video)(?=\/|$)/i, '')
+    .replace(/\/+/g, '/')
+    .replace(/\/$/, '');
+}
+
+function hasExplicitVideoQuality(model: ModelOption): boolean {
+  return model.videoQualitySupport === 'explicit'
+    && Array.isArray(model.videoQualityOptions)
+    && model.videoQualityOptions.length > 0;
+}
+
+function hasExplicitVideoDuration(model: ModelOption): boolean {
+  return model.videoDurationSupport === 'explicit'
+    && Array.isArray(model.videoDurationOptions)
+    && model.videoDurationOptions.length > 0;
+}
+
+function harmonizeFalVideoModelCapabilities(models: ModelOption[]): ModelOption[] {
+  const explicitByFamily = new Map<string, ModelOption>();
+
+  for (const model of models) {
+    const family = getFalVideoCapabilityFamily(model.id);
+    if (!family) continue;
+    if (!hasExplicitVideoQuality(model) && !hasExplicitVideoDuration(model)) continue;
+
+    const current = explicitByFamily.get(family);
+    const currentScore = (current?.videoQualityOptions?.length ?? 0) + (current?.videoDurationOptions?.length ?? 0);
+    const nextScore = (model.videoQualityOptions?.length ?? 0) + (model.videoDurationOptions?.length ?? 0);
+    if (!current || nextScore > currentScore) {
+      explicitByFamily.set(family, model);
+    }
+  }
+
+  return models.map((model) => {
+    const family = getFalVideoCapabilityFamily(model.id);
+    if (!family) return model;
+
+    const sibling = explicitByFamily.get(family);
+    if (!sibling) return model;
+
+    const merged: ModelOption = {
+      ...model,
+    };
+
+    if (!hasExplicitVideoQuality(model) && hasExplicitVideoQuality(sibling)) {
+      merged.videoQualitySupport = sibling.videoQualitySupport;
+      merged.videoQualityOptions = sibling.videoQualityOptions;
+    }
+
+    if (!hasExplicitVideoDuration(model) && hasExplicitVideoDuration(sibling)) {
+      merged.videoDurationSupport = sibling.videoDurationSupport;
+      merged.videoDurationOptions = sibling.videoDurationOptions;
+    }
+
+    return merged;
+  });
+}
+
 function toDynamicFalModel(
   model: FalApiModel,
   kind: 'image' | 'video' | 'audio',
@@ -499,9 +596,10 @@ function toDynamicFalModel(
 
   if (kind === 'video') {
     const explicitVideoQualityOptions = extractVideoQualityOptionsFromFalModel(model);
+    const explicitVideoDurationOptions = extractVideoDurationOptionsFromFalModel(model);
     const staticMatch = findStaticFalVideoModelByEndpoint(endpoint);
     if (staticMatch) {
-      return toVideoModelOption(staticMatch, explicitVideoQualityOptions);
+      return toVideoModelOption(staticMatch, explicitVideoQualityOptions, explicitVideoDurationOptions);
     }
 
     const modelId = `${DYNAMIC_FAL_MODEL_PREFIX}${endpoint}`;
@@ -512,17 +610,18 @@ function toDynamicFalModel(
     return toVideoModelOption(
       {
         id: modelId,
-        name: (
+        name: withFalVideoModeSuffix((
           model.metadata?.display_name ||
           model.metadata?.displayName ||
           model.display_name ||
           model.name ||
           endpoint
-        ).trim() || endpoint,
+        ).trim() || endpoint, endpoint),
       },
       explicitVideoQualityOptions.length > 0
         ? explicitVideoQualityOptions
         : inferredVideoQualityOptions,
+      explicitVideoDurationOptions,
     );
   }
 
@@ -732,14 +831,14 @@ async function fetchFalModelGroups(): Promise<{
     'image',
   );
 
-  const videoGenModels = await hydrateFalModelCapabilities(
+  const videoGenModels = harmonizeFalVideoModelCapabilities(await hydrateFalModelCapabilities(
     dedupeById([
       ...dynamicVideoModels,
       ...FALLBACK_FAL_VIDEO_MODELS,
       ...REPLICATE_VIDEO_MODELS,
     ]),
     'video',
-  );
+  )).filter((model) => isVideoModelRuntimeSupported(resolveVideoModel(model.id)));
 
   const models = {
     imageGenModels,
@@ -767,6 +866,9 @@ function ensureModelOption(
 
   if (category === 'video') {
     const resolved = resolveVideoModel(id);
+    if (!isVideoModelRuntimeSupported(resolved)) {
+      return list;
+    }
     const name = resolved?.name || id;
     return dedupeById([...list, toVideoModelOption({ id, name })]);
   }

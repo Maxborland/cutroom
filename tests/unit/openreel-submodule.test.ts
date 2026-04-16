@@ -34,6 +34,9 @@ describe('OpenReel submodule setup', () => {
     const buildScriptPath = path.join(repoRoot, 'scripts', 'openreel', 'build.mjs')
     expect(existsSync(buildScriptPath)).toBe(true)
     expect(() => assertValidJavaScript(buildScriptPath)).not.toThrow()
+
+    const buildScript = readFileSync(buildScriptPath, 'utf8')
+    expect(buildScript).toContain('OPENREEL_BASE')
   })
 
   it('adds npm scripts for openreel sync/build/update', () => {
@@ -45,5 +48,35 @@ describe('OpenReel submodule setup', () => {
       'openreel:build': 'node scripts/openreel/build.mjs',
       'openreel:update': 'node scripts/openreel/sync.mjs && node scripts/openreel/build.mjs',
     })
+  })
+
+  it('exposes the OpenReel project store for the CutRoom bridge loader', () => {
+    const entryPath = path.join(repoRoot, 'vendor', 'openreel-video', 'apps', 'web', 'src', 'main.tsx')
+    expect(existsSync(entryPath)).toBe(true)
+
+    const entrySource = readFileSync(entryPath, 'utf8')
+    expect(entrySource).toContain('__OPENREEL_STORE__')
+  })
+
+  it('configures the OpenReel web app to build under /openreel/app/', () => {
+    const viteConfigPath = path.join(repoRoot, 'vendor', 'openreel-video', 'apps', 'web', 'vite.config.ts')
+    expect(existsSync(viteConfigPath)).toBe(true)
+
+    const viteConfig = readFileSync(viteConfigPath, 'utf8')
+    expect(viteConfig).toContain('OPENREEL_BASE')
+  })
+
+  it('keeps CutRoom immersive branding hooks in the OpenReel editor shell', () => {
+    const editorPath = path.join(repoRoot, 'vendor', 'openreel-video', 'apps', 'web', 'src', 'components', 'editor', 'EditorInterface.tsx')
+    const toolbarPath = path.join(repoRoot, 'vendor', 'openreel-video', 'apps', 'web', 'src', 'components', 'editor', 'Toolbar.tsx')
+    const cssPath = path.join(repoRoot, 'vendor', 'openreel-video', 'apps', 'web', 'src', 'index.css')
+
+    expect(readFileSync(editorPath, 'utf8')).toContain('cutroom-editor-shell')
+    expect(readFileSync(toolbarPath, 'utf8')).toContain('cutroom-toolbar')
+
+    const css = readFileSync(cssPath, 'utf8')
+    expect(css).toContain('.cutroom-editor-shell')
+    expect(css).toContain('.cutroom-toolbar')
+    expect(css).toContain('255, 107, 53')
   })
 })

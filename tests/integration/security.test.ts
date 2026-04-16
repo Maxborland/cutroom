@@ -24,6 +24,22 @@ const withEnv = async (env: Record<string, string | undefined>, fn: () => Promis
 };
 
 describe('Security middleware', () => {
+  it('does not crash rate-limited routes when x-forwarded-for is present', async () => {
+    const app = createApp({
+      allowMissingApiKey: true,
+      apiAccessKey: '',
+      authRepository: null,
+    });
+
+    const res = await request(app)
+      .get('/api/projects/non-existent/export')
+      .set('x-forwarded-for', '1.2.3.4')
+      .set('x-test-rate-limit', '1')
+      .expect(404);
+
+    expect(res.body.error).toBe('Project not found');
+  });
+
   it('returns 503 when API key is required but not configured', async () => {
     const app = createApp({
       allowMissingApiKey: false,
